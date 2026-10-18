@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaExpr, LuaSyntaxKind};
+use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaExpr, LuaLiteralToken, LuaSyntaxKind};
 use rowan::TextRange;
 
 use super::{
@@ -106,7 +106,7 @@ fn infer_call_expr_func_inner(
             db,
             cache,
             type_ref_id.clone(),
-            CallSide::Instance,
+            get_ref_call_side(db, cache, &call_expr, type_ref_id),
             call_expr.clone(),
             infer_guard,
             args_count,
@@ -318,17 +318,21 @@ enum CallSide {
     Instance,
 }
 
-/// The `Call` operators of `type_id` that type a call on `side`. A class-level `@overload` (or the
-/// default constructor) is the class's own call, `@operator call` an instance's, so a class that
-/// declares both keeps `Set{...}` and `s(v)` apart. A type declaring only one kind is callable
-/// through it on both sides, as before; runtime `__call` closures stay on both sides.
+/// The `Call` operators of `type_id`, ordered for a call on `side`. A class-level `@overload` (or the
+/// default constructor) is the class's own call, `@operator call` an instance's, so each side tries
+/// its own kind first: when both kinds accept the arguments, `Set{...}` resolves to the constructor
+/// and `s(v)` to the instance call. A catch-all `@operator call` still loses to a more precise
+/// `@overload` (neovim's `vim.iter`), and a type declaring one kind keeps it on both sides; runtime
+/// `__call` closures stay in declaration order between the two. The one operator dropped is, on the
+/// class side, an instance call naming the class's type parameters, which are unbound there: `call(T)`
+/// would infer `T` from any argument and outscore the constructor.
 fn get_call_operators<'a>(
     db: &'a DbIndex,
     type_id: &LuaTypeDeclId,
     side: CallSide,
 ) -> Option<Vec<&'a LuaOperator>> {
     let operator_index = db.get_operator_index();
-    let operators: Vec<&LuaOperator> = operator_index
+    let mut operators: Vec<&LuaOperator> = operator_index
         .get_operators(&type_id.clone().into(), LuaOperatorMetaMethod::Call)?
         .iter()
         .filter_map(|id| operator_index.get_operator(id))
@@ -337,16 +341,71 @@ fn get_call_operators<'a>(
         CallSide::Class => (LuaOperator::is_class_call, LuaOperator::is_instance_call),
         CallSide::Instance => (LuaOperator::is_instance_call, LuaOperator::is_class_call),
     };
-    if !operators.iter().any(|operator| is_own(operator)) {
-        return Some(operators);
+    if side == CallSide::Class && operators.iter().any(|operator| operator.is_class_call()) {
+        operators.retain(|operator| !operator.is_instance_call_of_class_params());
     }
+    // A stable sort: own kind, then neither, then the other side's kind.
+    operators.sort_by_key(|operator| {
+        if is_own(operator) {
+            0
+        } else if is_other(operator) {
+            2
+        } else {
+            1
+        }
+    });
 
-    Some(
-        operators
-            .into_iter()
-            .filter(|operator| !is_other(operator))
-            .collect(),
-    )
+    Some(operators)
+}
+
+/// A `Ref` names an instance, except where it is a class table handed out by a module: `require`
+/// turns the exported `Def` into a `Ref` (so other files can't define members on the class), and
+/// `local Set = require 'set'` then calls the class itself.
+fn get_ref_call_side(
+    db: &DbIndex,
+    cache: &LuaInferCache,
+    call_expr: &LuaCallExpr,
+    type_id: &LuaTypeDeclId,
+) -> CallSide {
+    if is_required_class_table(db, cache, call_expr, type_id).unwrap_or(false) {
+        CallSide::Class
+    } else {
+        CallSide::Instance
+    }
+}
+
+/// Is the callee a local whose value is `require(...)` of a module that exports `type_id`'s class table?
+fn is_required_class_table(
+    db: &DbIndex,
+    cache: &LuaInferCache,
+    call_expr: &LuaCallExpr,
+    type_id: &LuaTypeDeclId,
+) -> Option<bool> {
+    let LuaExpr::NameExpr(name_expr) = call_expr.get_prefix_expr()? else {
+        return Some(false);
+    };
+    let file_id = cache.get_file_id();
+    let decl_id = db
+        .get_reference_index()
+        .get_local_reference(&file_id)?
+        .get_decl_id(&name_expr.get_range())?;
+    let value_id = db
+        .get_decl_index()
+        .get_decl(&decl_id)?
+        .get_value_syntax_id()?;
+    let root = db.get_vfs().get_syntax_tree(&file_id)?.get_red_root();
+    let value = LuaCallExpr::cast(value_id.to_node_from_root(&root)?)?;
+    if !value.is_require() {
+        return Some(false);
+    }
+    let LuaExpr::LiteralExpr(path) = value.get_args_list()?.get_args().next()? else {
+        return Some(false);
+    };
+    let Some(LuaLiteralToken::String(path)) = path.get_literal() else {
+        return Some(false);
+    };
+    let module_info = db.get_module_index().find_module(&path.get_value())?;
+    Some(matches!(&module_info.export_type, Some(LuaType::Def(id)) if id == type_id))
 }
 
 fn infer_type_doc_function(

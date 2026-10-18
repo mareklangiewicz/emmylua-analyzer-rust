@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod test {
-    use crate::{DiagnosticCode, VirtualWorkspace};
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
     use emmylua_parser::{LuaCallExpr, LuaExpr};
 
     #[test]
@@ -428,5 +428,102 @@ mod test {
         );
 
         assert_eq!(ws.expr_ty("A"), ws.ty("string"));
+    }
+    #[test]
+    fn test_required_class_table_calls_its_overload() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+
+        ws.def_files(vec![(
+            "set.lua",
+            r#"
+            ---@return table
+            local function cls(name) return {} end
+
+            ---@class Set<T>
+            ---@operator call(T): boolean
+            ---@overload fun<V>(src: V[]): Set<V>
+            local Set = cls('Set') --[[@as Set<any>]]
+
+            return Set
+            "#,
+        )]);
+        ws.def(
+            r#"
+            local Set = require 'set'
+
+            ---@type integer[]
+            local xs
+
+            ---@type Set<string>
+            local s
+
+            A = Set(xs)
+            B = s("x")
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("Set<integer>"));
+        assert_eq!(ws.expr_ty("B"), ws.ty("boolean"));
+    }
+    #[test]
+    fn test_catch_all_call_operator_keeps_precise_overloads() {
+        let mut ws = VirtualWorkspace::new();
+
+        // The shape of neovim's `vim.IterModule`: `@operator call` as the fallback beside precise
+        // `@overload`s, reached through a field, so the call is an instance call.
+        ws.def(
+            r#"
+            ---@class It<V>
+
+            ---@class ItModule
+            ---@operator call: It<any>
+            ---@overload fun<T>(src: T[]): It<T>
+            local M = {}
+
+            ---@class Ns
+            ---@field iter ItModule
+            ns = {}
+
+            ---@type string[]
+            local xs
+
+            A = ns.iter(xs)
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("It<string>"));
+    }
+    #[test]
+    fn test_class_table_call_skips_instance_call_naming_class_params() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+
+        // gnd.set's shape: `call(T)` would infer `T` from any argument and outscore the constructor.
+        ws.def_files(vec![(
+            "set.lua",
+            r#"
+            ---@return table
+            local function cls(name) return {} end
+
+            ---@class Set<T>
+            ---@operator call(T): boolean
+            ---@overload fun<V>(src?: V[]|Set<V>): Set<V>
+            local Set = cls('Set') --[[@as Set<any>]]
+
+            return Set
+            "#,
+        )]);
+        ws.def(
+            r#"
+            local Set = require 'set'
+
+            A = Set({ "a" })
+        "#,
+        );
+
+        let ty = ws.expr_ty("A");
+        assert!(
+            matches!(&ty, LuaType::Generic(g) if g.get_base_type_id().get_name() == "Set"),
+            "{ty:?}"
+        );
     }
 }

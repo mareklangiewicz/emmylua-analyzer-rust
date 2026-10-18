@@ -4,7 +4,7 @@ use rowan::{TextRange, TextSize};
 
 use crate::{
     AsyncState, DbIndex, FileId, InFiled, InferFailReason, LuaConstructorReturnMode,
-    LuaFunctionType, LuaSignature, LuaSignatureId, SignatureReturnStatus,
+    LuaFunctionType, LuaSignature, LuaSignatureId, SignatureReturnStatus, TypeVisitTrait,
     db_index::{LuaType, LuaTypeDeclId},
 };
 
@@ -83,6 +83,22 @@ impl LuaOperator {
     /// `@operator call(...)`: types calling an instance of the class.
     pub fn is_instance_call(&self) -> bool {
         matches!(self.func, OperatorFunction::Call { .. })
+    }
+
+    /// An `@operator call(...)` that names the class's own type parameters (`call(T): boolean` on
+    /// `Set<T>`): those are bound only on an instance, so it can't type a call on the class table.
+    pub fn is_instance_call_of_class_params(&self) -> bool {
+        let OperatorFunction::Call { params, ret } = &self.func else {
+            return false;
+        };
+        let mut names_class_param = false;
+        for ty in params.iter().chain(std::iter::once(ret)) {
+            ty.visit_type(&mut |t| {
+                names_class_param |=
+                    matches!(t, LuaType::TplRef(tpl) if tpl.get_tpl_id().is_type());
+            });
+        }
+        names_class_param
     }
 
     pub fn get_operand(&self, db: &DbIndex) -> LuaType {
