@@ -38,7 +38,10 @@ use crate::{
     db_index::{DbIndex, LuaOperator, LuaOperatorMetaMethod, LuaSignatureId, LuaType},
 };
 
-use super::{CacheEntry, LuaInferCache, member::infer_raw_member_type};
+use super::{
+    CacheEntry, LuaInferCache, generic::TypeSubstitutor, instantiate_type_generic,
+    member::infer_raw_member_type,
+};
 
 pub type InferResult = Result<LuaType, InferFailReason>;
 pub use infer_call::InferCallFuncResult;
@@ -169,26 +172,34 @@ fn infer_closure_expr(_: &DbIndex, config: &LuaInferCache, closure: LuaClosureEx
     Ok(LuaType::Signature(signature_id))
 }
 
-fn get_custom_type_operator(
-    db: &DbIndex,
-    operand_type: LuaType,
+fn get_custom_type_operator<'a>(
+    db: &'a DbIndex,
+    operand_type: &LuaType,
     op: LuaOperatorMetaMethod,
-) -> Option<Vec<&LuaOperator>> {
-    if operand_type.is_custom_type() {
-        let type_id = match operand_type {
-            LuaType::Ref(type_id) => type_id,
-            LuaType::Def(type_id) => type_id,
-            _ => return None,
-        };
-        let op_ids = db.get_operator_index().get_operators(&type_id.into(), op)?;
-        let operators = op_ids
-            .iter()
-            .filter_map(|id| db.get_operator_index().get_operator(id))
-            .collect();
+) -> Option<Vec<&'a LuaOperator>> {
+    let type_id = match operand_type {
+        LuaType::Ref(type_id) | LuaType::Def(type_id) => type_id.clone(),
+        LuaType::Generic(generic) => generic.get_base_type_id(),
+        _ => return None,
+    };
+    let op_ids = db.get_operator_index().get_operators(&type_id.into(), op)?;
+    let operators = op_ids
+        .iter()
+        .filter_map(|id| db.get_operator_index().get_operator(id))
+        .collect();
 
-        Some(operators)
-    } else {
-        None
+    Some(operators)
+}
+
+/// An operator declared on a generic class names the class's own type parameters
+/// (`---@operator add(Box<T>): Box<T>`): on an operand of `Box<integer>` they mean `integer`.
+fn instantiate_custom_operator_type(db: &DbIndex, operand_type: &LuaType, ty: LuaType) -> LuaType {
+    match operand_type {
+        LuaType::Generic(generic) => {
+            let substitutor = TypeSubstitutor::from_type_array(generic.get_params().clone());
+            instantiate_type_generic(db, &ty, &substitutor)
+        }
+        _ => ty,
     }
 }
 

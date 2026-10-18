@@ -2,7 +2,7 @@ use emmylua_parser::UnaryOperator;
 
 use crate::db_index::{DbIndex, LuaOperatorMetaMethod, LuaType};
 
-use super::{InferResult, get_custom_type_operator};
+use super::{InferResult, get_custom_type_operator, instantiate_custom_operator_type};
 
 /// 操作数类型已知后的一元运算推断(纯函数, 无表达式推断)
 pub(super) fn infer_unary_expr_result(
@@ -24,11 +24,11 @@ fn infer_unary_custom_operator(
     inner: &LuaType,
     op: LuaOperatorMetaMethod,
 ) -> InferResult {
-    let operators = get_custom_type_operator(db, inner.clone(), op);
+    let operators = get_custom_type_operator(db, inner, op);
     if let Some(operators) = operators {
         for operator in operators {
             if let Ok(res) = operator.get_result(db) {
-                return Ok(res);
+                return Ok(instantiate_custom_operator_type(db, inner, res));
             }
         }
     }

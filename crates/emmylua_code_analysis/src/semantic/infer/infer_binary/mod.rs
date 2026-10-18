@@ -12,7 +12,9 @@ use crate::{
     get_real_type,
 };
 
-use super::{InferFailReason, InferResult, get_custom_type_operator};
+use super::{
+    InferFailReason, InferResult, get_custom_type_operator, instantiate_custom_operator_type,
+};
 
 /// 左右操作数类型已知后的二元运算推断(纯函数, 无表达式推断)
 pub(super) fn infer_binary_expr_result(
@@ -131,26 +133,26 @@ fn infer_binary_custom_operator(
     right: &LuaType,
     op: LuaOperatorMetaMethod,
 ) -> InferResult {
-    // 先检查 left 是否是自定义类型，避免不必要的 clone
-    if left.is_custom_type()
-        && let Some(operators) = get_custom_type_operator(db, left.clone(), op)
-    {
+    // 先检查 left 是否是自定义类型
+    if let Some(operators) = get_custom_type_operator(db, left, op) {
         for operator in operators {
-            let operand = operator.get_operand(db);
+            let operand = instantiate_custom_operator_type(db, left, operator.get_operand(db));
             if check_type_compact(db, &operand, right).is_ok() {
-                return operator.get_result(db);
+                return operator
+                    .get_result(db)
+                    .map(|ty| instantiate_custom_operator_type(db, left, ty));
             }
         }
     }
 
-    // 再检查 right 是否是自定义类型，只在需要时 clone
-    if right.is_custom_type()
-        && let Some(operators) = get_custom_type_operator(db, right.clone(), op)
-    {
+    // 再检查 right 是否是自定义类型
+    if let Some(operators) = get_custom_type_operator(db, right, op) {
         for operator in operators {
-            let operand = operator.get_operand(db);
+            let operand = instantiate_custom_operator_type(db, right, operator.get_operand(db));
             if check_type_compact(db, &operand, left).is_ok() {
-                return operator.get_result(db);
+                return operator
+                    .get_result(db)
+                    .map(|ty| instantiate_custom_operator_type(db, right, ty));
             }
         }
     }

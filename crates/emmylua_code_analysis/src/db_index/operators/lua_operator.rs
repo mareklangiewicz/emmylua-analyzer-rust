@@ -72,6 +72,19 @@ impl LuaOperator {
         self.op
     }
 
+    /// `@overload fun(...)` on a class, or its default constructor: types calling the class itself.
+    pub fn is_class_call(&self) -> bool {
+        matches!(
+            self.func,
+            OperatorFunction::Overload(_) | OperatorFunction::DefaultClassCtor { .. }
+        )
+    }
+
+    /// `@operator call(...)`: types calling an instance of the class.
+    pub fn is_instance_call(&self) -> bool {
+        matches!(self.func, OperatorFunction::Call { .. })
+    }
+
     pub fn get_operand(&self, db: &DbIndex) -> LuaType {
         match &self.func {
             OperatorFunction::BinOp { param, .. } => param.clone(),

@@ -281,4 +281,152 @@ mod test {
 
         assert!(ws.expr_ty("a").is_nullable());
     }
+    #[test]
+    fn test_generic_class_binary_operator() {
+        let mut ws = VirtualWorkspace::new();
+
+        ws.def(
+            r#"
+            ---@class Box<T>
+            ---@operator add(Box<T>): Box<T>
+            ---@operator concat(Box<T>): T
+
+            ---@type Box<integer>
+            local b
+
+            A = b + b
+            B = b .. b
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("Box<integer>"));
+        assert_eq!(ws.expr_ty("B"), ws.ty("integer"));
+    }
+
+    #[test]
+    fn test_generic_class_binary_operator_picks_overload_by_operand() {
+        let mut ws = VirtualWorkspace::new();
+
+        ws.def(
+            r#"
+            ---@class Box<T>
+            ---@operator add(Box<T>): Box<T>
+            ---@operator add(T[]): string
+
+            ---@type Box<integer>
+            local b
+
+            A = b + b
+            B = b + { 1, 2 }
+            C = { 1, 2 } + b
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("Box<integer>"));
+        assert_eq!(ws.expr_ty("B"), ws.ty("string"));
+        assert_eq!(ws.expr_ty("C"), ws.ty("string"));
+    }
+
+    #[test]
+    fn test_generic_class_unary_operator() {
+        let mut ws = VirtualWorkspace::new();
+
+        ws.def(
+            r#"
+            ---@class Box<T>
+            ---@operator unm: Box<T>
+
+            ---@type Box<string>
+            local b
+
+            A = -b
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("Box<string>"));
+    }
+
+    #[test]
+    fn test_class_overload_and_instance_call_operator_are_separate() {
+        let mut ws = VirtualWorkspace::new();
+
+        ws.def(
+            r#"
+            ---@class Pred
+            ---@operator call(any): boolean
+            ---@overload fun(src: any): Pred
+            Pred = {}
+
+            ---@type Pred
+            local p
+
+            A = Pred(1)
+            B = p(1)
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("Pred"));
+        assert_eq!(ws.expr_ty("B"), ws.ty("boolean"));
+    }
+
+    #[test]
+    fn test_generic_class_overload_and_instance_call_operator_are_separate() {
+        let mut ws = VirtualWorkspace::new();
+
+        ws.def(
+            r#"
+            ---@class Set<T>
+            ---@operator call(T): boolean
+            ---@overload fun<V>(src: V[]): Set<V>
+            Set = {}
+
+            ---@type Set<string>
+            local s
+            ---@type integer[]
+            local xs
+
+            A = Set(xs)
+            B = s("x")
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("Set<integer>"));
+        assert_eq!(ws.expr_ty("B"), ws.ty("boolean"));
+    }
+
+    #[test]
+    fn test_call_operator_alone_still_types_the_class_call() {
+        let mut ws = VirtualWorkspace::new();
+
+        ws.def(
+            r#"
+            ---@class Ctor
+            ---@operator call(integer): Ctor
+            Ctor = {}
+
+            A = Ctor(1)
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("Ctor"));
+    }
+
+    #[test]
+    fn test_class_overload_alone_still_types_the_instance_call() {
+        let mut ws = VirtualWorkspace::new();
+
+        ws.def(
+            r#"
+            ---@class Fn
+            ---@overload fun(x: integer): string
+
+            ---@type Fn
+            local f
+
+            A = f(1)
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("string"));
+    }
 }

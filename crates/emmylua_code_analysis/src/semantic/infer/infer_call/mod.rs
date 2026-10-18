@@ -10,8 +10,9 @@ use super::{
 };
 use crate::{
     AsyncState, CacheEntry, DbIndex, InFiled, LuaFunctionType, LuaGenericType, LuaInstanceType,
-    LuaIntersectionType, LuaOperatorMetaMethod, LuaOperatorOwner, LuaSignature, LuaSignatureId,
-    LuaType, LuaTypeDeclId, LuaTypeNode, LuaUnionType, TypeVisitTrait, VariadicType,
+    LuaIntersectionType, LuaOperator, LuaOperatorMetaMethod, LuaOperatorOwner, LuaSignature,
+    LuaSignatureId, LuaType, LuaTypeDeclId, LuaTypeNode, LuaUnionType, TypeVisitTrait,
+    VariadicType,
 };
 use crate::{
     InferGuardRef,
@@ -96,6 +97,7 @@ fn infer_call_expr_func_inner(
             db,
             cache,
             type_def_id.clone(),
+            CallSide::Class,
             call_expr.clone(),
             infer_guard,
             args_count,
@@ -104,6 +106,7 @@ fn infer_call_expr_func_inner(
             db,
             cache,
             type_ref_id.clone(),
+            CallSide::Instance,
             call_expr.clone(),
             infer_guard,
             args_count,
@@ -308,10 +311,49 @@ fn infer_signature_doc_function(
     resolve_signature(db, cache, overloads, call_expr, is_generic, args_count)
 }
 
+/// What a call on a named type calls: the class table itself (`Def`), or an instance of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallSide {
+    Class,
+    Instance,
+}
+
+/// The `Call` operators of `type_id` that type a call on `side`. A class-level `@overload` (or the
+/// default constructor) is the class's own call, `@operator call` an instance's, so a class that
+/// declares both keeps `Set{...}` and `s(v)` apart. A type declaring only one kind is callable
+/// through it on both sides, as before; runtime `__call` closures stay on both sides.
+fn get_call_operators<'a>(
+    db: &'a DbIndex,
+    type_id: &LuaTypeDeclId,
+    side: CallSide,
+) -> Option<Vec<&'a LuaOperator>> {
+    let operator_index = db.get_operator_index();
+    let operators: Vec<&LuaOperator> = operator_index
+        .get_operators(&type_id.clone().into(), LuaOperatorMetaMethod::Call)?
+        .iter()
+        .filter_map(|id| operator_index.get_operator(id))
+        .collect();
+    let (is_own, is_other): (fn(&LuaOperator) -> bool, fn(&LuaOperator) -> bool) = match side {
+        CallSide::Class => (LuaOperator::is_class_call, LuaOperator::is_instance_call),
+        CallSide::Instance => (LuaOperator::is_instance_call, LuaOperator::is_class_call),
+    };
+    if !operators.iter().any(|operator| is_own(operator)) {
+        return Some(operators);
+    }
+
+    Some(
+        operators
+            .into_iter()
+            .filter(|operator| !is_other(operator))
+            .collect(),
+    )
+}
+
 fn infer_type_doc_function(
     db: &DbIndex,
     cache: &mut LuaInferCache,
     type_id: LuaTypeDeclId,
+    side: CallSide,
     call_expr: LuaCallExpr,
     infer_guard: &InferGuardRef,
     args_count: Option<usize>,
@@ -337,15 +379,10 @@ fn infer_type_doc_function(
         return Err(InferFailReason::None);
     }
 
-    let operator_index = db.get_operator_index();
-    let operator_ids = operator_index
-        .get_operators(&type_id.clone().into(), LuaOperatorMetaMethod::Call)
-        .ok_or(InferFailReason::UnResolveOperatorCall)?;
+    let operators =
+        get_call_operators(db, &type_id, side).ok_or(InferFailReason::UnResolveOperatorCall)?;
     let mut overloads = Vec::new();
-    for overload_id in operator_ids {
-        let operator = operator_index
-            .get_operator(overload_id)
-            .ok_or(InferFailReason::None)?;
+    for operator in operators {
         let func = operator.get_operator_func(db);
         match func {
             LuaType::DocFunction(f) => {
@@ -415,15 +452,10 @@ fn infer_generic_type_doc_function(
         return Err(InferFailReason::None);
     }
 
-    let operator_index = db.get_operator_index();
-    let operator_ids = operator_index
-        .get_operators(&type_id.into(), LuaOperatorMetaMethod::Call)
-        .ok_or(InferFailReason::None)?;
+    let operators =
+        get_call_operators(db, &type_id, CallSide::Instance).ok_or(InferFailReason::None)?;
     let mut overloads = Vec::new();
-    for overload_id in operator_ids {
-        let operator = operator_index
-            .get_operator(overload_id)
-            .ok_or(InferFailReason::None)?;
+    for operator in operators {
         let func = operator.get_operator_func(db);
         match func {
             LuaType::DocFunction(_) => {
