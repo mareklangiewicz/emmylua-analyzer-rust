@@ -336,20 +336,46 @@ fn eval_sub_call(model: &SemanticModel, call: &LuaAliasCallType) -> Option<LuaTy
     if left.contain_tpl() {
         return None;
     }
+    Some(subtract(&left, right))
+}
+
+/// Settle the `L - R` calls a finished call result still holds: their `T` was left unbound, so
+/// `T -?` becomes `T`, as a bare unbound `T` would be.
+pub(crate) fn settle_unbound_sub_calls(ty: &LuaType) -> LuaType {
+    if !ty.any_type(
+        |ty| matches!(ty, LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::Sub),
+    ) {
+        return ty.clone();
+    }
+    map_type(ty, &mut |ty| match ty {
+        LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::Sub => {
+            match call.get_operands().as_slice() {
+                [left, right] if left.contain_tpl() => {
+                    Some(subtract(&settle_unbound_sub_calls(left), right))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+/// The members of `left` that are not members of `right`.
+fn subtract(left: &LuaType, right: &LuaType) -> LuaType {
     let removed = match right {
         LuaType::Union(union) => union.into_vec(),
         other => vec![other.clone()],
     };
-    let kept: Vec<LuaType> = match &left {
+    let kept: Vec<LuaType> = match left {
         LuaType::Union(union) => union.into_vec(),
         other => vec![other.clone()],
     }
     .into_iter()
     .filter(|member| !removed.contains(member))
     .collect();
-    Some(if kept.is_empty() {
+    if kept.is_empty() {
         LuaType::Never
     } else {
         LuaType::from_vec(kept)
-    })
+    }
 }
