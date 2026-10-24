@@ -3210,4 +3210,24 @@ return t
             );
         }
     }
+
+    /// A local alias of another file's function (`local floor = math.floor`) is a
+    /// `Signature` value; calling it still has the declared return.
+    #[test]
+    fn test_call_through_cross_file_signature_alias_keeps_return() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            local floor = math.floor
+            ---@param q number
+            local function g(q)
+                ---@type string
+                local a = floor(q)
+                return a
+            end
+            return g
+            "#
+        ));
+    }
 }
