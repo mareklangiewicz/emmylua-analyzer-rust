@@ -2366,4 +2366,36 @@ mod test {
             diagnostics
         );
     }
+
+    /// An un-annotated closure's `c and T or U` result is `T|U`: `and` passes on only
+    /// the condition's falsy part, and `or` drops it again.
+    #[test]
+    fn test_closure_and_or_result_drops_condition() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@param f fun(dir: string): string[]?
+            function use_lister(f) end
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            use_lister(function(dir) return dir == '/t' and { 'a' } or {} end)
+            use_lister(function(dir) return dir ~= '' and { 'a' } or nil end)
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            use_lister(function(dir) return dir == '/t' and { 'a' } or false end)
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            use_lister(function(dir) return dir == '/t' or { 'a' } end)
+            "#
+        ));
+    }
 }

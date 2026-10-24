@@ -10,7 +10,7 @@ use super::def::{
 };
 use super::facts::FileFacts;
 use super::flow::{FlowId, FlowNodeKind};
-use super::types::{PrimitiveType, TypeCandidate, TypeShell};
+use super::types::{LiteralShell, PrimitiveType, TypeCandidate, TypeShell};
 use crate::check::{CheckConfig, check_file};
 use crate::{
     DiagnosticCode, Emmyrc, EmmyrcWorkspaceModuleMap, FileId, LuaType, LuaTypeDeclId,
@@ -695,7 +695,7 @@ fn test_member_cycle_converges() {
 #[test]
 fn test_expr_logic_and_comparison() {
     let mut db = setup();
-    // and → merge; comparison → boolean; .. → string.
+    // and → the left's falsy part + the right; comparison → boolean; .. → string.
     let fid = set_test_file(
         &mut db,
         1,
@@ -717,7 +717,7 @@ fn test_expr_logic_and_comparison() {
     assert!(
         a_shell
             .candidates
-            .contains(&TypeCandidate::Primitive(PrimitiveType::Boolean))
+            .contains(&TypeCandidate::Literal(LiteralShell::Boolean(false)))
     );
     assert_primitive(
         &db.analysis().decl_type(fid, b).expect("b"),

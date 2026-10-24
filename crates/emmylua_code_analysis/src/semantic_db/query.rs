@@ -3095,9 +3095,10 @@ fn expr_type_node(
         LuaExpr::BinaryExpr(binary) => {
             let op = binary.get_op_token().map(|token| token.get_op());
             match op {
-                Some(BinaryOperator::OpOr) | Some(BinaryOperator::OpAnd) => {
+                Some(op @ (BinaryOperator::OpOr | BinaryOperator::OpAnd)) => {
                     if let Some((left, right)) = binary.get_exprs() {
-                        let mut shell = expr_type(db, facts, file, config, left).first_result();
+                        let left = expr_type(db, facts, file, config, left).first_result();
+                        let mut shell = logical_left_part(left, op == BinaryOperator::OpOr);
                         shell.merge(&expr_type(db, facts, file, config, right).first_result());
                         return shell;
                     }
@@ -3143,6 +3144,38 @@ fn expr_type_node(
             .unwrap_or_else(TypeShell::unknown),
         _ => TypeShell::unknown(),
     }
+}
+
+/// The left operand's values that a logical operator yields: its truthy ones for `or`,
+/// its falsy ones for `and` (the right operand covers the rest). Candidates whose
+/// truthiness the shell cannot tell (named types, generics) are kept whole.
+fn logical_left_part(left: TypeShell, truthy: bool) -> TypeShell {
+    let candidates = left
+        .candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let is_truthy = match &candidate {
+                TypeCandidate::Primitive(PrimitiveType::Boolean) => {
+                    return Some(TypeCandidate::Literal(LiteralShell::Boolean(truthy)));
+                }
+                TypeCandidate::Primitive(PrimitiveType::Nil)
+                | TypeCandidate::Literal(LiteralShell::Nil | LiteralShell::Boolean(false)) => false,
+                TypeCandidate::Primitive(_)
+                | TypeCandidate::Literal(_)
+                | TypeCandidate::Table(_)
+                | TypeCandidate::Array(_)
+                | TypeCandidate::Tuple(_)
+                | TypeCandidate::Function(_)
+                | TypeCandidate::StrTpl(_) => true,
+                _ => return Some(candidate),
+            };
+            (is_truthy == truthy).then_some(candidate)
+        })
+        .collect();
+    let mut shell = TypeShell { candidates };
+    shell.candidates.sort();
+    shell.candidates.dedup();
+    shell
 }
 
 /// Evaluate numeric categories and checked constants in one source-bounded walk.
