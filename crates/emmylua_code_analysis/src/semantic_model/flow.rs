@@ -579,13 +579,21 @@ pub(crate) fn type_of_expr_at_node(
                 if let SemanticId::Decl(owner_decl) = &resolved.owner
                     && let Some(facts) = model.file_facts_of(owner_decl.file_id)
                 {
+                    let mut runtime_members = facts
+                        .members_of_owner(&resolved.owner)
+                        .filter(|m| m.key.name() == Some(resolved.name.as_str()));
                     if !resolved_is_runtime
-                        && let Some(runtime_member) = facts
-                            .members_of_owner(&resolved.owner)
-                            .find(|m| m.key.name() == Some(resolved.name.as_str()))
+                        && let Some(runtime_member) = runtime_members.next()
                         // Table fields from a declared initializer are not "runtime overrides": `local b: B = { field = 1 }`
                         // field access is still governed by the class `@field` type, avoiding widening `integer` to `number`.
                         && !model.is_initializer_table_field(&runtime_member.id, runtime_member)
+                        // A runtime member only overrides the field once one of its writes precedes the read:
+                        // before that, `t.x` still holds the declared field, not a later `t.x = value`.
+                        && model.flow_tree().is_some_and(|tree| {
+                            std::iter::once(runtime_member).chain(runtime_members).any(|m| {
+                                tree.latest_member_assignment(&m.id, offset).is_some()
+                            })
+                        })
                     {
                         let runtime_ty = type_of_member_at(model, &runtime_member.id, offset);
                         if !matches!(runtime_ty, LuaType::Unknown) {
