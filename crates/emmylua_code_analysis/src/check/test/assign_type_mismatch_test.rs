@@ -2820,4 +2820,111 @@ return t
             "{diagnostics:#?}"
         );
     }
+
+    #[test]
+    fn test_nested_member_of_local_belongs_to_its_table() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_check(DiagnosticCode::AssignTypeMismatch);
+        // `M.A.init` is a member of the `M.A` table, not of `M`: it is read through `M.A`
+        // (each read below has a type that `boolean` rejects), and `M.init` stays unknown.
+        let file_id = ws.def(
+            r#"
+            local M = {}
+            M.A = {}
+            M.B = {}
+
+            ---@return integer
+            function M.A.init() return 1 end
+
+            ---@return string
+            function M.B.sinit() return 's' end
+
+            ---@type boolean
+            local a = M.A.init()
+            ---@type boolean
+            local b = M.B.sinit()
+            ---@type boolean
+            local c = M.init()
+            ---@type boolean
+            local d = M.sinit()
+            return M
+        "#,
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file_id, tokio_util::sync::CancellationToken::new())
+            .unwrap_or_default();
+        let code = Some(lsp_types::NumberOrString::String(
+            DiagnosticCode::AssignTypeMismatch.get_name().to_string(),
+        ));
+        let lines = diagnostics
+            .iter()
+            .filter(|diag| diag.code == code)
+            .map(|diag| diag.range.start.line)
+            .collect::<Vec<_>>();
+        assert_eq!(lines, vec![12, 14], "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn test_nested_member_read_skips_same_name_member_of_local() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_check(DiagnosticCode::AssignTypeMismatch);
+        // `M.init`/`M.A.init` and `M.x`/`M.A.x` are different members: each read finds its own.
+        // `M.A.y.z` is never set (no mismatch), only `M.A.u.y.z` is.
+        let file_id = ws.def(
+            r#"
+            local M = {}
+            M.A = {}
+
+            ---@return integer
+            function M.init() return 1 end
+
+            ---@return string
+            function M.A.init() return 's' end
+
+            ---@type boolean
+            local a = M.init()
+            ---@type boolean
+            local b = M.A.init()
+
+            M.x = 1
+            M.A.x = 's'
+            ---@type boolean
+            local c = M.x
+            ---@type boolean
+            local d = M.A.x
+
+            -- `M.A.u` holds no table literal, so `M.A.u.y.z` never reaches `M.A.y`.
+            M.A.y = {}
+            M.A.u = setmetatable({}, {})
+            M.A.u.y.z = 1
+            ---@type boolean
+            local e = M.A.y.z
+            return M
+        "#,
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file_id, tokio_util::sync::CancellationToken::new())
+            .unwrap_or_default();
+        let code = Some(lsp_types::NumberOrString::String(
+            DiagnosticCode::AssignTypeMismatch.get_name().to_string(),
+        ));
+        let found = diagnostics
+            .iter()
+            .filter(|diag| diag.code == code)
+            .map(|diag| {
+                let found = diag.message.split("found `").nth(1).unwrap_or_default();
+                (
+                    diag.range.start.line,
+                    found.split('`').next().unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            vec![(11, "integer"), (13, "string"), (18, "1"), (20, "\"s\"")],
+            "{diagnostics:#?}"
+        );
+    }
 }

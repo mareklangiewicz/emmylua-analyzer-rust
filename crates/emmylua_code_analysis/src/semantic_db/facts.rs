@@ -1920,21 +1920,34 @@ impl FactsBuilder {
     }
 
     /// Resolves a member owner's prefix into `SemanticId`.
-    /// Local root → `Decl(local)`; global root → `Name(full path "a.b")` (linked in phase 2).
+    /// Local root → `Decl(local)`, or `Member(table literal)` under a path; global root → `Name(full path "a.b")` (linked in phase 2).
     fn resolve_member_owner(
         &self,
         expr: LuaExpr,
         segments: &mut Vec<SmolStr>,
     ) -> Option<SemanticId> {
+        self.resolve_member_owner_path(expr, segments)
+            .map(|(owner, _)| owner)
+    }
+
+    /// `resolve_member_owner`, plus whether every segment of a local-rooted path reached its table.
+    fn resolve_member_owner_path(
+        &self,
+        expr: LuaExpr,
+        segments: &mut Vec<SmolStr>,
+    ) -> Option<(SemanticId, bool)> {
         match expr {
             // `(t).x = v` is equivalent to `t.x = v`; the member belongs to the same underlying declaration.
-            LuaExpr::ParenExpr(paren) => self.resolve_member_owner(paren.get_expr()?, segments),
+            LuaExpr::ParenExpr(paren) => {
+                self.resolve_member_owner_path(paren.get_expr()?, segments)
+            }
             LuaExpr::IndexExpr(parent) => {
                 let segment = parent
                     .get_index_key()
                     .map(|k| k.get_path_part())
                     .and_then(|p| (!p.is_empty()).then(|| SmolStr::new(p)))?;
-                let owner = self.resolve_member_owner(parent.get_prefix_expr()?, segments)?;
+                let (owner, reached) =
+                    self.resolve_member_owner_path(parent.get_prefix_expr()?, segments)?;
                 segments.push(segment);
                 // Global root: rebuild the full path (root name + all segments, e.g. "M.N").
                 if let SemanticId::Name(root) = &owner {
@@ -1943,22 +1956,34 @@ impl FactsBuilder {
                         path.push('.');
                         path.push_str(s);
                     }
-                    return Some(SemanticId::name(SmolStr::new(path)));
+                    return Some((SemanticId::name(SmolStr::new(path)), true));
                 }
-                Some(owner)
+                // Local root: `M.A.f` belongs to the table `M.A` holds, not to `M`. A path stops at
+                // the deepest table it reached (`resolve_expr_root` resolves reads the same way).
+                let table = parent
+                    .get_index_key()
+                    .and_then(member_key_from_index_key)
+                    .filter(|_| reached)
+                    .and_then(|key| {
+                        nested_table_owner(self.members.iter(), &owner, &key, parent.get_position())
+                    });
+                Some(match table {
+                    Some(table) => (table, true),
+                    None => (owner, false),
+                })
             }
             LuaExpr::NameExpr(name_expr) => {
                 let name = name_expr.get_name_text()?;
                 if name == "_ENV" || name == "_G" {
-                    return Some(SemanticId::name(SmolStr::new(&name)));
+                    return Some((SemanticId::name(SmolStr::new(&name)), true));
                 }
                 let offset = name_expr.get_position();
                 if let Some(decl) = self.find_visible_decl_before_offset(&name, offset)
                     && !matches!(decl.kind, DeclKind::Global)
                 {
-                    return Some(decl.id.clone());
+                    return Some((decl.id.clone(), true));
                 }
-                Some(SemanticId::name(SmolStr::new(name)))
+                Some((SemanticId::name(SmolStr::new(name)), true))
             }
             _ => None,
         }
@@ -2437,8 +2462,33 @@ fn is_scope_owner(node: &LuaAst) -> bool {
     )
 }
 
+/// The owner of `owner.key`'s own members, for a local-rooted path like `M.A` in `M.A.f`: the table
+/// literal last stored in `owner.key` before `offset` (`M.A = {}` / `local M = { A = {} }`), whose
+/// fields already use the literal as their owner. Any other value (`M.A = f()`, a typed param's
+/// field) → None. Shared by member collection and member reads, so both agree on the owner.
+pub(crate) fn nested_table_owner<'a>(
+    members: impl Iterator<Item = &'a Member>,
+    owner: &SemanticId,
+    key: &LuaMemberKey,
+    offset: TextSize,
+) -> Option<SemanticId> {
+    let member = members
+        .filter(|member| &member.owner == owner && &member.key == key)
+        .filter(
+            |member| matches!(&member.id, SemanticId::Member(id) if id.key_range.start() < offset),
+        )
+        .last()?;
+    let SemanticId::Member(id) = &member.id else {
+        return None;
+    };
+    let table = member
+        .value_syntax
+        .filter(|value| LuaTableExpr::can_cast(value.get_kind()))?;
+    Some(SemanticId::member(id.file_id, table.get_range()))
+}
+
 /// `LuaIndexKey` → file-independent member key.
-fn member_key_from_index_key(key: LuaIndexKey) -> Option<LuaMemberKey> {
+pub(crate) fn member_key_from_index_key(key: LuaIndexKey) -> Option<LuaMemberKey> {
     match key {
         LuaIndexKey::Name(_) | LuaIndexKey::String(_) => {
             Some(LuaMemberKey::Name(SmolStr::new(key.get_path_part())))
