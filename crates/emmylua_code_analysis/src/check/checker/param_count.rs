@@ -651,6 +651,23 @@ fn callee_has_variadic_doc_return(
     }))
 }
 
+/// The declared parameter that argument `arg_index` of a call fills, following
+/// `param_type_check::check_candidate`: a colon call's receiver takes `self` or a plain
+/// function's first parameter, and a colon-defined method called with a dot takes its
+/// receiver as argument 0, which fills no user parameter.
+pub(crate) fn call_arg_param_index(
+    func: &LuaFunctionType,
+    arg_index: usize,
+    colon_call: bool,
+) -> Option<usize> {
+    let self_param = first_param_is_self(func);
+    match (colon_call, self_param || !func.is_colon_define()) {
+        (true, true) => Some(arg_index + 1),
+        (false, false) => arg_index.checked_sub(1),
+        _ => Some(arg_index),
+    }
+}
+
 pub(crate) fn first_param_is_self(func: &LuaFunctionType) -> bool {
     func.get_params().first().is_some_and(|(name, ty)| {
         name == "self"
