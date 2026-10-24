@@ -936,7 +936,6 @@ impl<'db> SemanticModel<'db> {
             _ => false,
         }
     }
-    /// If the member belongs to an `---@enum` table and its value is an integer literal, return the corresponding IntegerConst.
     /// The runtime table an `---@enum` comment annotates, on which the enum's values hang: the
     /// table literal of the statement owning the comment (`local Op = {..}`, `Op = {..}` or
     /// `M.Op = {..}`; every literal's fields have its synthetic member identity), else a
@@ -967,6 +966,7 @@ impl<'db> SemanticModel<'db> {
             .map(|decl| decl.id.clone())
     }
 
+    /// If the member belongs to an `---@enum` table and its value is an integer literal, return the corresponding IntegerConst.
     pub(crate) fn enum_member_const(
         &self,
         member_file: FileId,
