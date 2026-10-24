@@ -9,6 +9,7 @@ use emmylua_parser::{
 
 use crate::DiagnosticCode;
 use crate::semantic_model::SemanticModel;
+use crate::semantic_model::infer::vm::bind_signature_generics;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
 use crate::{Decl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind};
 
@@ -164,8 +165,10 @@ fn check_call_args(
             let LuaExpr::TableExpr(table) = arg else {
                 continue;
             };
-            if is_structured_table_target(semantic_model, param_ty) {
-                check_table_fields(context, semantic_model, param_ty, &table);
+            // Signature params keep a `---@generic V` as `Ref("V")`; bind it before checking.
+            let param_ty = bind_signature_generics(param_ty, candidate.get_generic_params());
+            if is_structured_table_target(semantic_model, &param_ty) {
+                check_table_fields(context, semantic_model, &param_ty, &table);
             }
         }
     }
