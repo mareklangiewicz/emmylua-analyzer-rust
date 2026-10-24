@@ -2558,4 +2558,52 @@ mod test {
             "#
         ));
     }
+
+    /// `require` of a `return M` module is `(M|{...})`, `M` being only the export's name identity:
+    /// the module's table may be passed where a `table` (or a matching class) is expected.
+    #[test]
+    fn test_required_module_as_table_argument() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file(
+            "mymod.lua",
+            r#"
+            local M = {}
+            M.X = 1
+            function M.f() end
+            return M
+        "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param t table
+            local function f(t) end
+            local m = require 'mymod'
+            f(m)
+            rawset(m, 'X', 2)
+        "#
+        ));
+    }
+
+    /// ...but it is still not a string.
+    #[test]
+    fn test_required_module_is_not_a_string() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file(
+            "mymod.lua",
+            r#"
+            local M = {}
+            M.X = 1
+            return M
+        "#,
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param s string
+            local function f(s) end
+            f(require 'mymod')
+        "#
+        ));
+    }
 }
