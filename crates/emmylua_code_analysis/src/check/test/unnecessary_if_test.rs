@@ -77,4 +77,26 @@ mod test {
         "#
         ));
     }
+
+    /// A local captured by a closure that reassigns it is read, inside the closure, as any
+    /// value it can hold: `if ended` in a later call can be true.
+    #[test]
+    fn test_captured_reassigned_local_is_not_its_initializer() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                local function mk()
+                    local ended = false
+                    local n = 0
+                    return function()
+                        if ended then return nil end
+                        if n > 3 then ended = true end
+                        n = n + 1
+                        return n
+                    end
+                end
+            "#
+        ));
+    }
 }

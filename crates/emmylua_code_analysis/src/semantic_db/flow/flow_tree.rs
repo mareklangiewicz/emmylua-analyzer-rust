@@ -352,6 +352,15 @@ impl FlowTree {
             || has_node_between(&self.branch_nodes, start, end, include_start)
     }
 
+    /// Flow ids of every assignment to `decl`, in source order.
+    pub fn decl_assignment_flows(&self, decl: &SemanticId) -> impl Iterator<Item = FlowId> + '_ {
+        self.decl_assignments
+            .get(decl)
+            .into_iter()
+            .flatten()
+            .map(|(_, flow_id)| *flow_id)
+    }
+
     /// Whether any assignment to `decl` occurs in the flow tree.
     pub fn has_decl_assignment(&self, decl: &SemanticId) -> bool {
         self.decl_assignments.contains_key(decl)

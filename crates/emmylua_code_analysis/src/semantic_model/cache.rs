@@ -177,6 +177,8 @@ pub(crate) struct TraceStateKey {
     pub(crate) casts: bool,
     pub(crate) assignments: bool,
     pub(crate) merge_branch: bool,
+    /// The capturing closure of a captured-local read (see `TraceOptions::capture`).
+    pub(crate) capture: Option<rowan::TextRange>,
 }
 
 #[derive(Default)]

@@ -40,7 +40,7 @@ use super::cache;
 use super::member::find_self_return_cast_member;
 use crate::semantic_model::infer::infer_call_with_bindings;
 use crate::semantic_model::infer::unify::substitute;
-use crate::semantic_model::infer::vm::{binary_type, widen_const};
+use crate::semantic_model::infer::vm::{binary_type, widen_const, widen_variadic_const};
 use crate::signature::LuaSignatureId;
 use guards::{guarded_on_all_paths, literal_comparison, normalize_condition};
 
@@ -50,6 +50,10 @@ struct TraceOptions {
     guards: bool,
     casts: bool,
     assignments: bool,
+    /// A read of a reassigned local inside a closure that captures it: that closure's range.
+    /// The closure may run after any assignment outside it, so those are skipped and the
+    /// declaration contributes `captured_local_type` instead of its initializer.
+    capture: Option<rowan::TextRange>,
 }
 
 impl TraceOptions {
@@ -57,12 +61,14 @@ impl TraceOptions {
         guards: true,
         casts: true,
         assignments: true,
+        capture: None,
     };
     /// Assignment target: only the declaration type plus path casts, ignoring this and earlier assignments and branch narrowing.
     const ASSIGN_TARGET: Self = Self {
         guards: false,
         casts: true,
         assignments: false,
+        capture: None,
     };
 }
 
@@ -105,7 +111,9 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     // No assignment to this decl and no narrowing/merge event after declaration:
     // the flow value is exactly the declared value. This keeps straight-line
     // initialization sections from walking O(offset) CFG nodes for every read.
-    if let Some(decl_start) = decl_owner_syntax_start(model, decl)
+    let capture = capturing_closure(model, &tree, decl, offset);
+    if capture.is_none()
+        && let Some(decl_start) = decl_owner_syntax_start(model, decl)
         && tree.latest_decl_assignment(decl, offset).is_none()
         && !tree.has_flow_event_between(decl_start, offset, true)
     {
@@ -121,12 +129,62 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
         decl,
         &tree,
         start,
-        TraceOptions::FLOW_READ,
+        TraceOptions {
+            capture,
+            ..TraceOptions::FLOW_READ
+        },
         TraceMode::Point,
         &mut visited,
         &mut path,
     )
     .unwrap_or_else(fallback)
+}
+
+/// The innermost closure around `offset` that captures `decl` from an enclosing scope, when
+/// `decl` is a local reassigned somewhere (so the closure can see any of its values).
+fn capturing_closure(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    decl: &SemanticId,
+    offset: TextSize,
+) -> Option<rowan::TextRange> {
+    let info = model.file_facts()?.decl_by_id(decl)?;
+    if !matches!(info.kind, crate::DeclKind::Local { .. }) || !tree.has_decl_assignment(decl) {
+        return None;
+    }
+    let root = model.syntax_tree()?.get_red_root();
+    let token = root.token_at_offset(offset).right_biased()?;
+    let closure = token
+        .parent_ancestors()
+        .find(|node| node.kind() == emmylua_parser::LuaSyntaxKind::ClosureExpr.into())?;
+    let range = closure.text_range();
+    (!range.contains(info.name_range.start())).then_some(range)
+}
+
+/// A captured local's value inside the closure: any value it is assigned anywhere, widened,
+/// or its declaration's.
+fn captured_local_type(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    decl: &SemanticId,
+) -> Option<LuaType> {
+    let mut types = vec![widen_variadic_const(&model.type_of_decl(decl)?)];
+    for flow_id in tree.decl_assignment_flows(decl) {
+        for effect in tree.get_flow_effects(flow_id) {
+            if let FlowEffect::AssignDecl {
+                decl: assigned,
+                value_syntax,
+            } = effect
+                && assigned == decl
+            {
+                let ty = widen_variadic_const(&model.type_of_expr(*value_syntax));
+                if !matches!(ty, LuaType::Unknown) && !types.contains(&ty) {
+                    types.push(ty);
+                }
+            }
+        }
+    }
+    Some(LuaType::from_vec(types))
 }
 
 /// Flow-sensitive type of `decl` at a concrete CFG start node.
@@ -1804,6 +1862,7 @@ fn trace_decl(
         casts: options.casts,
         assignments: options.assignments,
         merge_branch: matches!(mode, TraceMode::MergeBranch),
+        capture: options.capture,
     };
     {
         let cache = model.cache.borrow();
@@ -1850,8 +1909,12 @@ fn trace_decl_uncached(
         match &node.kind {
             FlowNodeKind::Assignment(assign_ptr) => {
                 // Effect summary: assignment of decl ← value on this node (ASSIGN_TARGET mode ignores assignments).
-                if options.assignments {
-                    let assign_pos = assign_ptr.get_syntax_id().get_range().start();
+                let assign_pos = assign_ptr.get_syntax_id().get_range().start();
+                if options.assignments
+                    && options
+                        .capture
+                        .is_none_or(|closure| closure.contains(assign_pos))
+                {
                     for effect in tree.get_flow_effects(current) {
                         if let FlowEffect::AssignDecl {
                             decl: assigned_decl,
@@ -1963,15 +2026,16 @@ fn trace_decl_uncached(
                     && let Some(d) = facts.decl_by_id(decl)
                     && d.owner_syntax.map(|s| s.get_range().start()) == Some(*pos)
                 {
+                    let base = options
+                        .capture
+                        .and_then(|_| captured_local_type(model, tree, decl))
+                        .or_else(|| model.type_of_decl(decl))
+                        .unwrap_or(LuaType::Unknown);
                     return finish_decl_frames(
                         model,
                         decl,
                         tree,
-                        finalize(
-                            model,
-                            model.type_of_decl(decl).unwrap_or(LuaType::Unknown),
-                            path,
-                        ),
+                        finalize(model, base, path),
                         frames,
                         root_mode,
                     );
