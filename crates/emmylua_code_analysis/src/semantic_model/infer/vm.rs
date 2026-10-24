@@ -23,7 +23,7 @@ use crate::semantic_db::def::{
     SignatureDoc,
 };
 use crate::semantic_db::types::PrimitiveType;
-use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
+use crate::semantic_model::flow::{ExprCastMode, apply_expr_casts, type_of_expr_with_cast};
 use crate::semantic_model::member::{MemberInfo, table_const_class_type, table_metatable_type};
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
@@ -64,6 +64,9 @@ pub enum Instr {
     PushUnknown,
     /// Reduce a multiple-value expression to its first value (nil when empty).
     AdjustToOne,
+    /// Apply the `--[[@as T]]` casts bound to this expression (the inner expression of
+    /// parentheses, which own a cast comment written inside them).
+    ApplyAsCasts(LuaSyntaxId),
     /// Closure reference (marks syntax for Call to back-infer params).
     PushClosure {
         syntax: LuaSyntaxId,
@@ -125,6 +128,7 @@ impl Value {
 enum CTask {
     Expr(LuaExpr),
     AdjustToOne,
+    ApplyAsCasts(LuaSyntaxId),
     Index(IndexKey),
     Call {
         arg_count: usize,
@@ -156,6 +160,7 @@ pub fn compile(expr: LuaExpr, file_id: FileId, out: &mut Vec<Instr>) {
         match task {
             CTask::Expr(expr) => compile_expr(&expr, file_id, out, &mut stack),
             CTask::AdjustToOne => out.push(Instr::AdjustToOne),
+            CTask::ApplyAsCasts(syntax) => out.push(Instr::ApplyAsCasts(syntax)),
             CTask::Index(key) => out.push(Instr::IndexMember(key)),
             CTask::Call {
                 arg_count,
@@ -343,6 +348,8 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
         }
         LuaExpr::ParenExpr(paren) => {
             if let Some(inner) = paren.get_expr() {
+                // `(x --[[@as T]]).f`: the cast types the parenthesized value.
+                stack.push(CTask::ApplyAsCasts(inner.get_syntax_id()));
                 stack.push(CTask::AdjustToOne);
                 stack.push(CTask::Expr(inner));
             } else {
@@ -468,6 +475,16 @@ impl<'a> InferVm<'a> {
             Instr::AdjustToOne => {
                 if let Some(value) = self.stack.last_mut() {
                     value.ty = value.ty.get_result_slot_type(0).unwrap_or(LuaType::Nil);
+                }
+            }
+            Instr::ApplyAsCasts(syntax) => {
+                if let Some(value) = self.stack.last_mut() {
+                    value.ty = apply_expr_casts(
+                        self.model,
+                        syntax,
+                        value.ty.clone(),
+                        ExprCastMode::AsOnly,
+                    );
                 }
             }
             Instr::PushClosure { syntax } => self.stack.push(Value {

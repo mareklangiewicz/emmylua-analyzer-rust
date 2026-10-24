@@ -263,10 +263,10 @@ impl<'a, 'b> BindEngine<'a, 'b> {
                 Step::Done(current)
             }
             LuaExpr::LiteralExpr(_) => Step::Done(current),
-            LuaExpr::ParenExpr(paren_expr) => match paren_expr.get_expr() {
-                Some(inner) => Step::Task(Task::Expr(inner, current)),
-                None => Step::Done(current),
-            },
+            // Children, not just the inner expression: `(x --[[@as T]])` binds its cast comment.
+            LuaExpr::ParenExpr(paren_expr) => {
+                self.spawn_children(LuaAst::LuaParenExpr(paren_expr), current)
+            }
             LuaExpr::ClosureExpr(closure_expr) => {
                 self.spawn_children(LuaAst::LuaClosureExpr(closure_expr), current)
             }
