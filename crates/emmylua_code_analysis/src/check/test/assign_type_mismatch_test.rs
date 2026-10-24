@@ -2820,4 +2820,39 @@ return t
             "{diagnostics:#?}"
         );
     }
+
+    #[test]
+    fn test_global_env_member_reads_the_global() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.enable_check(DiagnosticCode::AssignTypeMismatch);
+        // `_G.x` is the global `x`: each read below has a type that `boolean` rejects.
+        let file_id = ws.def(
+            r#"
+            ---@class Api
+            ---@field n integer
+
+            ---@type Api
+            G = { n = 1 }
+
+            ---@type boolean
+            local t1 = _G.G
+            ---@type boolean
+            local t2 = _G.print
+            ---@type boolean
+            local t3 = _G.G.n
+        "#,
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file_id, tokio_util::sync::CancellationToken::new())
+            .unwrap_or_default();
+        let code = Some(lsp_types::NumberOrString::String(
+            DiagnosticCode::AssignTypeMismatch.get_name().to_string(),
+        ));
+        assert_eq!(
+            diagnostics.iter().filter(|diag| diag.code == code).count(),
+            3,
+            "{diagnostics:#?}"
+        );
+    }
 }

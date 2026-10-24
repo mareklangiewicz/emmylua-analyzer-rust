@@ -1045,6 +1045,18 @@ impl<'a> InferVm<'a> {
         if owner.ty.is_any() {
             return Value::plain(LuaType::Any);
         }
+        // `_G.x` (`_G` is `---@type global`) reads the global `x`, as a bare `x` does.
+        if matches!(owner.ty, LuaType::Global)
+            && let LuaMemberKey::Name(name) = key
+        {
+            let owner = SemanticId::name(name.clone());
+            return Value {
+                ty: self.global_type(&owner),
+                owner: Some(owner),
+                closure_syntax: None,
+                receiver: None,
+            };
+        }
         // Member access on generic param `T: Base`: use the constraint type as the
         // member-lookup owner.
         if let LuaType::TplRef(tpl) = &owner.ty
