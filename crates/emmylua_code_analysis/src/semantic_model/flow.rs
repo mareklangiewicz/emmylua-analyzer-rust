@@ -166,7 +166,8 @@ fn capturing_closure(
 }
 
 /// A captured local's value inside the closure: any value it is assigned anywhere, widened,
-/// or its declaration's. A value computed from the local itself (`n = n + 1`) adds nothing.
+/// or its declaration's; unknown when one of those values is. A value computed from the local
+/// itself (`n = n + 1`) adds nothing.
 fn captured_local_type(
     model: &SemanticModel,
     tree: &FlowTree,
@@ -192,7 +193,13 @@ fn captured_local_type(
                 && !reads_itself(value_syntax)
             {
                 let ty = widen_variadic_const(&model.type_of_expr(*value_syntax));
-                if !matches!(ty, LuaType::Unknown) && !types.contains(&ty) {
+                // A value of unknown type makes the whole capture unknown, not narrower.
+                if ty.is_unknown()
+                    || matches!(&ty, LuaType::Union(u) if u.into_vec().iter().any(|t| t.is_unknown()))
+                {
+                    return Some(LuaType::Unknown);
+                }
+                if !types.contains(&ty) {
                     types.push(ty);
                 }
             }
