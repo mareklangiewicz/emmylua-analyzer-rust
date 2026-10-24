@@ -366,4 +366,20 @@ mod test {
         "#
         ));
     }
+
+    /// `file:seek([whence [, offset]])`: both params are optional (Lua manual), so the
+    /// documented `file:seek("set")` is a complete call.
+    #[test]
+    fn test_std_file_seek_params_optional() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::MissingParameter,
+            r#"
+                local f = io.tmpfile()
+                f:seek("set")
+                f:seek 'end'
+                f:seek()
+            "#
+        ));
+    }
 }

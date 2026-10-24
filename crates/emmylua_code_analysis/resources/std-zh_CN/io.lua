@@ -191,8 +191,8 @@ function file:read(...) end
 --- 调用 `file:seek("set")` 将位置设置为文件开头（并返回 0）；
 --- 调用 `file:seek("end")` 将位置设置为文件末尾，并返回其大小。
 --- @overload fun()
---- @param whence string | 'set' | 'cur' | 'end'
---- @param offset integer
+--- @param whence? string | 'set' | 'cur' | 'end'
+--- @param offset? integer
 --- @return_overload integer pos
 --- @return_overload nil, string err
 function file:seek(whence, offset) end

@@ -231,8 +231,8 @@ function file:read(...) end
 --- file (and returns 0); and the call `file:seek("end")` sets the position
 --- to the end of the file, and returns its size.
 --- @overload fun()
---- @param whence string | 'set' | 'cur' | 'end'
---- @param offset integer
+--- @param whence? string | 'set' | 'cur' | 'end'
+--- @param offset? integer
 --- @return_overload integer pos
 --- @return_overload nil, string err
 function file:seek(whence, offset) end
