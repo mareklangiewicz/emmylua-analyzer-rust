@@ -74,20 +74,19 @@ pub fn structural_table_type(model: &SemanticModel, ty: &LuaType) -> LuaType {
 /// Table literal -> Array (for structural unification with `T[]` params).
 /// Only positive integer-keyed members are collected and widened to the array element
 /// base type (`{1,2,3}` -> `integer[]`). A table with no members at all is an empty array
-/// of any element (`{}` -> `unknown[]`).
+/// of any element (`{}` -> `any[]`).
 fn table_literal_as_array(model: &SemanticModel, ty: &LuaType) -> Option<LuaType> {
     let LuaType::TableConst(table) = ty else {
         return None;
     };
-    let owner = SemanticId::member(table.file_id, table.value);
-    let members = model.members_of_owner(&owner);
-    if members.is_empty() {
+    if is_memberless_table(model, ty) {
         return Some(LuaType::Array(Rc::new(LuaArrayType::from_base_type(
-            LuaType::Unknown,
+            LuaType::Any,
         ))));
     }
+    let owner = SemanticId::member(table.file_id, table.value);
     let mut base_types = Vec::new();
-    for member_ref in members.iter() {
+    for member_ref in model.members_of_owner(&owner).iter() {
         let Some(facts) = model.file_facts_of(member_ref.file_id) else {
             continue;
         };
@@ -122,6 +121,16 @@ fn table_literal_as_array(model: &SemanticModel, ty: &LuaType) -> Option<LuaType
         LuaType::from_vec(base_types)
     };
     Some(LuaType::Array(Rc::new(LuaArrayType::from_base_type(base))))
+}
+
+/// A table literal (or a local still holding one) with no members at all: `{}`.
+fn is_memberless_table(model: &SemanticModel, ty: &LuaType) -> bool {
+    let LuaType::TableConst(table) = ty else {
+        return false;
+    };
+    model
+        .members_of_owner(&SemanticId::member(table.file_id, table.value))
+        .is_empty()
 }
 
 /// Expand a non-generic named alias (`LocalTimer.OnTimer` -> `DocFunction`).
@@ -604,6 +613,14 @@ fn match_call_candidate_impl(
         };
         if !call_bind_ok {
             return None;
+        }
+        // `{}` says nothing about the element: it binds a `V[]` element generic to `any`.
+        if let (Some(arg), LuaType::Array(array)) = (arg, &param_ty)
+            && let LuaType::TplRef(tpl) = array.get_base()
+            && !bindings.contains_key(&tpl.get_tpl_id())
+            && is_memberless_table(model, &arg.ty)
+        {
+            bindings.insert(tpl.get_tpl_id(), LuaType::Any);
         }
         score += if arg.is_some() {
             score_param_match(&param_ty, &arg_ty)
