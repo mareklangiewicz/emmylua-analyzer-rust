@@ -1778,6 +1778,39 @@ mod test {
     }
 
     #[test]
+    fn test_required_module_field_as_argument() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "hoststat.lua",
+            r#"
+            local M = {}
+            M.MEMINFO = '/proc/meminfo'
+            return M
+        "#,
+        );
+        ws.def_file(
+            "ctor.lua",
+            r#"
+            local M = { LOADAVG = '/proc/loadavg' }
+            return M
+        "#,
+        );
+
+        // A field of a `require`d module read straight into an argument has its assigned type.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param path string
+            local function read(path) end
+            local hoststat = require 'hoststat'
+            local ctor = require 'ctor'
+            read(hoststat.MEMINFO)
+            read(ctor.LOADAVG)
+        "#
+        ));
+    }
+
+    #[test]
     fn test_self_contain_tpl() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(
