@@ -3024,4 +3024,29 @@ return t
             "{diagnostics:#?}"
         );
     }
+
+    /// One assignment target takes its expression's FIRST value: the mismatch names that value,
+    /// not the whole return list.
+    #[test]
+    fn test_single_target_reports_first_return_value() {
+        let source = r#"
+            ---@return string? r
+            ---@return integer? n
+            local function m() end
+
+            ---@type integer
+            local x = m()
+            "#;
+        let diagnostics = check_source(source);
+        let messages = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::AssignTypeMismatch)
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 1, "{diagnostics:#?}");
+        assert!(
+            messages[0].starts_with("expected `integer` but found `string?`"),
+            "{messages:?}"
+        );
+    }
 }
