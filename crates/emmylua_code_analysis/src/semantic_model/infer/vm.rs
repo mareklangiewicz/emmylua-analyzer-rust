@@ -4341,7 +4341,7 @@ fn primitive_lua_type(p: PrimitiveType) -> LuaType {
 }
 
 /// Whether `ty` is a `TableConst` from an empty table literal.
-fn is_empty_table_literal(model: &SemanticModel, ty: &LuaType) -> bool {
+pub(crate) fn is_empty_table_literal(model: &SemanticModel, ty: &LuaType) -> bool {
     let LuaType::TableConst(table) = ty else {
         return false;
     };
