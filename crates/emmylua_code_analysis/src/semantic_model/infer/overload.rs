@@ -117,6 +117,56 @@ fn table_literal_as_array(model: &SemanticModel, ty: &LuaType) -> Option<LuaType
     Some(LuaType::Array(Rc::new(LuaArrayType::from_base_type(base))))
 }
 
+/// Table literal -> `table<K, V>` (for unification with `table<K, V>` params): `K` is the
+/// union of its key types, `V` the union of its widened value types.
+fn table_literal_as_map(
+    model: &SemanticModel,
+    ty: &LuaType,
+    map: &LuaGenericType,
+) -> Option<LuaType> {
+    let LuaType::TableConst(table) = ty else {
+        return None;
+    };
+    let owner = SemanticId::member(table.file_id, table.value);
+    let mut key_types = Vec::new();
+    let mut value_types = Vec::new();
+    for member_ref in model.members_of_owner(&owner).iter() {
+        let Some(facts) = model.file_facts_of(member_ref.file_id) else {
+            continue;
+        };
+        let Some(member) = facts.member_by_id(&member_ref.id) else {
+            continue;
+        };
+        let key_ty = match member.key {
+            LuaMemberKey::Name(_) => LuaType::String,
+            LuaMemberKey::Integer(_) => LuaType::Integer,
+            _ => continue,
+        };
+        let value_ty = if let Some(value_syntax) = member.value_syntax {
+            model.type_of_expr(value_syntax)
+        } else {
+            model
+                .type_of_member(&member_ref.id)
+                .unwrap_or(LuaType::Unknown)
+        };
+        let value_ty = widen_const(&value_ty);
+        if !key_types.contains(&key_ty) {
+            key_types.push(key_ty);
+        }
+        if !matches!(value_ty, LuaType::Unknown | LuaType::Any) && !value_types.contains(&value_ty)
+        {
+            value_types.push(value_ty);
+        }
+    }
+    if key_types.is_empty() || value_types.is_empty() {
+        return None;
+    }
+    Some(LuaType::Generic(Rc::new(LuaGenericType::new(
+        map.get_base_type_id(),
+        vec![LuaType::from_vec(key_types), LuaType::from_vec(value_types)],
+    ))))
+}
+
 /// Expand a non-generic named alias (`LocalTimer.OnTimer` -> `DocFunction`).
 fn expand_non_generic_alias(model: &SemanticModel, ty: &LuaType) -> LuaType {
     let (LuaType::Ref(id) | LuaType::Def(id)) = ty else {
@@ -563,6 +613,13 @@ fn match_call_candidate_impl(
                     // Array param: structurally unify table literals by element type
                     // (`map({1,2,3}, ...)`).
                     table_literal_as_array(model, &arg.ty).unwrap_or_else(|| arg.ty.clone())
+                } else if let LuaType::Generic(map) = &param_ty
+                    && map.get_base_type_id().get_name() == "table"
+                    && map.get_params().len() == 2
+                {
+                    // `table<K, V>` param: unify table literals by key and value types.
+                    table_literal_as_map(model, &arg.ty, map)
+                        .unwrap_or_else(|| structural_table_type(model, &arg.ty))
                 } else {
                     structural_table_type(model, &arg.ty)
                 }

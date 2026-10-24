@@ -349,4 +349,27 @@ mod test {
         let a_ty = ws.expr_ty("A");
         assert_eq!(ws.humanize_type(a_ty), "integer");
     }
+
+    /// A table literal argument binds a `table<K, V>` param's generics: `K` from its keys,
+    /// `V` from its (widened) values.
+    #[test]
+    fn test_table_literal_binds_table_generic_params() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@generic K, V
+            ---@param t table<K, V>
+            ---@return K, V
+            local function first(t) end
+
+            local CODES = { red = '31', green = '32' }
+            local k, v = first(CODES)
+            Key = k
+            Val = v
+            "#,
+        );
+
+        assert_eq!(ws.expr_ty("Key"), ws.ty("string"));
+        assert_eq!(ws.expr_ty("Val"), ws.ty("string"));
+    }
 }
