@@ -169,4 +169,27 @@ mod test {
             "#
         ));
     }
+
+    /// A captured counter (`i = i + 1` inside the closure) stays an `integer`: a value
+    /// computed from the local itself adds nothing to what it can hold.
+    #[test]
+    fn test_captured_counter_stays_integer() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@param s any[]
+                local function mk(s)
+                    local i, n = 0, #s
+                    return function()
+                        if i >= n then return nil end
+                        i = i + 1
+                        local v = s[i]
+                        if v == nil then i = n end
+                        return v
+                    end
+                end
+            "#
+        ));
+    }
 }
