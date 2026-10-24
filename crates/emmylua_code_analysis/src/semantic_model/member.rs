@@ -447,7 +447,8 @@ pub(crate) fn table_metatable_type(
     None
 }
 
-/// If a table literal is the runtime class table for a `---@class Foo` annotation, returns that class's Ref/Def.
+/// If a table literal is the runtime class table for a `---@class Foo` annotation, returns that class's Ref/Def;
+/// for a declaration typed `---@type Foo` (`G = {}`), that named type.
 pub(crate) fn table_const_class_type(
     model: &SemanticModel,
     table: &InFiled<rowan::TextRange>,
@@ -458,8 +459,18 @@ pub(crate) fn table_const_class_type(
     }
     let facts = model.file_facts_of(table.file_id)?;
     let decl = facts.decl_by_value_range(table.value)?;
-    let def = facts.type_def_by_owner_syntax(decl.owner_syntax?)?;
-    Some(model.type_def_ref(def))
+    if let Some(def) = decl
+        .owner_syntax
+        .and_then(|owner| facts.type_def_by_owner_syntax(owner))
+    {
+        return Some(model.type_def_ref(def));
+    }
+    let declared = model.doc_type_lua(decl.doc_type_syntax?);
+    matches!(
+        declared,
+        LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+    )
+    .then_some(declared)
 }
 
 /// Returns the `__index` member info on the metatable corresponding to a table literal.
