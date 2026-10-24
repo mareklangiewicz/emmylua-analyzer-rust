@@ -1882,7 +1882,21 @@ impl<'a> InferVm<'a> {
             // it sees `---@as` / flow casts inside the body, avoiding the apply path using
             // bare VM table identity to overwrite callback return generics. Variadic returns
             // (`R...`) still go through the apply path to preserve multi-return slot semantics.
-            let callback_ret = if let Some(closure_syntax) = arg.closure_syntax
+            // A multi-value callback (`fun(): X, Y`) takes the body's values too when every
+            // return has one value sequence: "calling" the closure with only the later args
+            // would leave its own params (bound from the receiver) unknown.
+            let closure_multi_ret = arg
+                .closure_syntax
+                .filter(|_| matches!(original_callback_ret, LuaType::Variadic(_)))
+                .map(|closure_syntax| self.closure_return_type_with_env(closure_syntax))
+                .filter(|ret| {
+                    matches!(ret, LuaType::Variadic(v) if matches!(v.as_ref(),
+                        VariadicType::Multi(slots)
+                            if slots.iter().any(|slot| !matches!(slot, LuaType::Unknown | LuaType::Any))))
+                });
+            let callback_ret = if let Some(ret) = closure_multi_ret {
+                ret
+            } else if let Some(closure_syntax) = arg.closure_syntax
                 && !matches!(original_callback_ret, LuaType::Variadic(_))
             {
                 let ret = self.closure_return_type_with_env(closure_syntax);
