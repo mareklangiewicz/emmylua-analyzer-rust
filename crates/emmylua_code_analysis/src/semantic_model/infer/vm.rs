@@ -4556,9 +4556,7 @@ pub(crate) fn binary_type(
     match op {
         // Short-circuit evaluation: `a and b` = falsy(a) | b; `a or b` = truthy(a) | b.
         OpAnd => {
-            if matches!(left, LuaType::Unknown) {
-                LuaType::Nil
-            } else if left.is_always_falsy() {
+            if left.is_always_falsy() {
                 left.clone()
             } else if left.is_always_truthy() {
                 right.clone()

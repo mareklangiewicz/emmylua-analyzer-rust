@@ -2823,4 +2823,26 @@ mod test {
             "#
         ));
     }
+
+    /// `a and b` with an unknown `a` may yield either operand, not `nil`: a closure
+    /// returning `e:isa(1) and e:isa(2)` still returns something.
+    #[test]
+    fn test_unknown_and_operand_is_not_nil() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param pred fun(err: any): boolean
+            local function throws(pred) end
+            throws(function(e) return e:isa(1) and e:isa(2) end)
+            "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            local x = unknown_call() and 1
+            if x then print(x) end
+            "#
+        ));
+    }
 }
