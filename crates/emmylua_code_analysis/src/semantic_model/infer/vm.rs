@@ -3091,6 +3091,12 @@ impl<'a> InferVm<'a> {
     ) -> Vec<LuaFunctionType> {
         match ty {
             LuaType::DocFunction(fun) => vec![fun.as_ref().clone()],
+            // A function value aliased from another file (`local floor = math.floor`).
+            LuaType::Signature(signature_id) => self
+                .model
+                .function_type_by_signature_id(signature_id)
+                .into_iter()
+                .collect(),
             LuaType::Union(union) => union
                 .into_vec()
                 .iter()
