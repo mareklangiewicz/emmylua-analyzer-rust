@@ -135,6 +135,12 @@ fn check_index_assign(
             }
             continue;
         }
+        // `table<K, V>` is a map: a key `K` accepts is an entry, not an injected field.
+        if let Some(key_ty) = table_generic_key_type(&prefix_ty)
+            && index_key_type_accepts(key_ty, &key)
+        {
+            continue;
+        }
         let Some(target_id) = resolve_target(semantic_model, &prefix_ty) else {
             continue;
         };
@@ -250,7 +256,6 @@ pub(super) fn static_member_key(
     }
 }
 
-/// Whether an object index-signature key type accepts this member key (`{[number]: ...}` does not accept string keys).
 /// The array-like member of a union that a sequence literal (`{ 1, 2 }`) is checked
 /// against: `Plain|integer[]` takes `{ 1, 2 }` as the array, not as a `Plain` with fields
 /// `[1]`, `[2]` and none of its own.
@@ -273,6 +278,21 @@ pub(super) fn union_array_for_sequence(
         })
 }
 
+/// The key type `K` of `table<K, V>`.
+fn table_generic_key_type(ty: &LuaType) -> Option<&LuaType> {
+    match ty {
+        LuaType::TableGeneric(params) if params.len() == 2 => params.first(),
+        LuaType::Generic(generic)
+            if generic.get_base_type_id().get_name() == "table"
+                && generic.get_params().len() == 2 =>
+        {
+            generic.get_params().first()
+        }
+        _ => None,
+    }
+}
+
+/// Whether an object index-signature key type accepts this member key (`{[number]: ...}` does not accept string keys).
 fn index_key_type_accepts(key_ty: &LuaType, member_key: &LuaMemberKey) -> bool {
     match member_key {
         LuaMemberKey::Name(_) => key_type_contains(key_ty, &LuaType::String),

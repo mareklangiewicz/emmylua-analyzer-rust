@@ -810,4 +810,33 @@ mod test_issue_1318 {
             );
         }
     }
+
+    /// `table<string, V>` is a map: a string key is an entry, not an injected field. A key
+    /// the map's key type does not accept still is.
+    #[test]
+    fn test_table_generic_map_accepts_its_keys() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            r#"
+                ---@type table<string, string[]>
+                local ann = {}
+                ann.bind = { "x" }
+
+                ---@class Rec
+                ---@field ann table<string, string[]>
+                ---@type Rec
+                local rec
+                rec.ann.bind = { "x" }
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            r#"
+                ---@type table<integer, string>
+                local byidx = {}
+                byidx.name = "x"
+            "#
+        ));
+    }
 }
