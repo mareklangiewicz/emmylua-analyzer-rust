@@ -2366,4 +2366,31 @@ mod test {
             diagnostics
         );
     }
+
+    #[test]
+    fn test_logical_operand_call_is_its_first_value() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        // A call operand contributes only its first value: `va() or ''` is `string`,
+        // not the `string?...` sequence, and `two() or 3` is `integer`.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param s string
+            local function take(s) end
+            ---@return string?...
+            local function va() end
+            take(va() or '')
+            "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@return integer?, integer?
+            local function two() end
+            ---@type integer
+            local i = 1
+            i = two() or 3
+            "#
+        ));
+    }
 }

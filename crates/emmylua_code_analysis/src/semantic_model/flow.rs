@@ -637,6 +637,13 @@ pub(crate) fn type_of_expr_at_node(
             let Some((left_expr, right_expr)) = binary_expr.get_exprs() else {
                 return apply_casts(model.type_of_expr_node(&expr), All);
             };
+            // An operand contributes only its first value (`f() or x`), as on the VM path.
+            let operand_type = |operand: &LuaExpr| {
+                model
+                    .type_of_expr_at(operand.get_syntax_id(), operand.get_position())
+                    .get_result_slot_type(0)
+                    .unwrap_or(LuaType::Nil)
+            };
             // Preserve the legacy semantics that "array table literals in short-circuit expressions are tuple":
             // only when the right side is a sequential array table and the left side is a logical short-circuit, replace the right table type with tuple.
             if matches!(
@@ -644,17 +651,18 @@ pub(crate) fn type_of_expr_at_node(
                 BinaryOperator::OpAnd | BinaryOperator::OpOr
             ) && let Some(tuple_ty) = array_table_literal_tuple_type(model, &right_expr)
             {
-                let left_ty =
-                    model.type_of_expr_at(left_expr.get_syntax_id(), left_expr.get_position());
-                let result = logical_binary_type(model, op_token.get_op(), left_ty, tuple_ty);
+                let result = logical_binary_type(
+                    model,
+                    op_token.get_op(),
+                    operand_type(&left_expr),
+                    tuple_ty,
+                );
                 return apply_casts(result, All);
             }
             // General binary expressions: subexpressions first use flow-sensitive types (member/variable branch narrowing),
             // then merge with the same VM operator rules, ensuring `right.value + 1` uses the narrow type of `right.value` in the branch.
-            let left_ty =
-                model.type_of_expr_at(left_expr.get_syntax_id(), left_expr.get_position());
-            let right_ty =
-                model.type_of_expr_at(right_expr.get_syntax_id(), right_expr.get_position());
+            let left_ty = operand_type(&left_expr);
+            let right_ty = operand_type(&right_expr);
             // If either operand in an arithmetic expression fails to infer (unresolved global/field), treat it as an "inference error":
             // don't return the VM's fallback number; let the assignment layer keep the variable's previously known type.
             if matches!(
