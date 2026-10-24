@@ -1113,6 +1113,24 @@ fn test_require_fuzzy_suffix_prefers_exact() {
 }
 
 #[test]
+fn test_require_fuzzy_suffix_before_prefix_stripping() {
+    let mut db = setup();
+    // `logsync.lint` has no exact module: the file below is `spector.lua.logsync.lint`. A suffix
+    // match keeps every requested segment, so it beats stripping `logsync.` down to the
+    // unrelated top-level `lint`.
+    set_test_file(&mut db, 2, "lint.lua", "return 1");
+    set_test_file(&mut db, 3, "spector/lua/logsync/lint.lua", "return 'x'");
+    let fid = set_test_file(&mut db, 1, "a.lua", "local l = require('logsync.lint')");
+
+    let facts = db.analysis().file_facts(fid).expect("facts");
+    let l = decl_local(&facts, "l");
+    assert_primitive(
+        &db.analysis().decl_type(fid, l).expect("l type"),
+        PrimitiveType::String,
+    );
+}
+
+#[test]
 fn test_dual_identity_type_and_runtime_members() {
     let mut db = setup();
     // B: @class M + local M = {} (runtime value) + @field f + runtime M.x = 1.

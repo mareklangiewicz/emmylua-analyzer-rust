@@ -1267,11 +1267,15 @@ fn module_file_in_root(
         }
     }
     let patterns = config.module_patterns();
+    // A suffix match keeps every requested segment, so it goes before prefix stripping:
+    // `logsync.lint` is `x.lua.logsync.lint`, not an unrelated top-level `lint`.
     for query in [mapped.as_str(), name.as_str()] {
-        if let Some(file) = lookup(&|index| index.fuzzy_prefix(query, source_root)) {
+        if let Some(file) = lookup(&|index| index.fuzzy(query, source_root)) {
             return Some(file);
         }
-        if let Some(file) = lookup(&|index| index.fuzzy(query, source_root)) {
+    }
+    for query in [mapped.as_str(), name.as_str()] {
+        if let Some(file) = lookup(&|index| index.fuzzy_prefix(query, source_root)) {
             return Some(file);
         }
     }
