@@ -2882,4 +2882,39 @@ return t
             );
         }
     }
+
+    /// An index signature read through a nullable owner (`table<K, V>?`) still has `V`,
+    /// guarded by the local or by a member narrowing (the VM re-reads the member unnarrowed).
+    #[test]
+    fn test_index_signature_read_through_nullable_owner() {
+        for read in [
+            "t.X",
+            "t and t.X",
+            "r.ann.X",
+            "r.ann and r.ann.X",
+            "r.ann and r.ann[k]",
+        ] {
+            let source = format!(
+                r#"
+                ---@class R
+                ---@field ann table<string, integer>?
+
+                ---@param r R
+                ---@param t table<string, integer>?
+                ---@param k string
+                local function g(r, t, k)
+                    ---@type boolean
+                    local a = {read}
+                    return a
+                end
+                return g
+                "#
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                "{source}"
+            );
+        }
+    }
 }

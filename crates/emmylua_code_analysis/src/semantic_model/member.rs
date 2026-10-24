@@ -455,6 +455,16 @@ pub(crate) fn index_signature_type(
                     .is_some_and(|index_key| model.type_check(key_type, index_key))
             })
             .map(|info| info.typ),
+        // `table<K, V>?`: nil is need-check-nil's concern; every other member must have one.
+        LuaType::Union(union) => {
+            let values = union
+                .into_vec()
+                .iter()
+                .filter(|member| !member.is_nil())
+                .map(|member| index_signature_type(model, member, key_type))
+                .collect::<Option<Vec<_>>>()?;
+            (!values.is_empty()).then(|| LuaType::from_vec(values))
+        }
         _ => None,
     }
 }
