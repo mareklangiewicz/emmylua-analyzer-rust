@@ -1811,6 +1811,40 @@ mod test {
     }
 
     #[test]
+    fn test_union_missing_member_accepted_by_nullable_param() {
+        let mut ws = VirtualWorkspace::new();
+        // `opts or {}` is `{ id?: any }|{}`: `opts.id` may be missing, which a param that
+        // accepts nil takes as is.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param id any
+            ---@param label? string
+            local function issue(id, label) end
+
+            ---@param opts? { id?: any, label?: string }
+            local function ask(opts)
+                opts = opts or {}
+                issue(opts.id, opts.label)
+            end
+        "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param label string
+            local function need(label) end
+
+            ---@param opts? { label?: string }
+            local function ask(opts)
+                opts = opts or {}
+                need(opts.label)
+            end
+        "#
+        ));
+    }
+
+    #[test]
     fn test_self_contain_tpl() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(
