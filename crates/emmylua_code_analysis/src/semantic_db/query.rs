@@ -17,7 +17,7 @@ use super::def::{
 use super::exports::{
     FileExports, GlobalExport, MemberExport, module_export_owner_file, owner_id_from_semantic_id,
 };
-use super::facts::{FactsBuilder, FileFacts};
+use super::facts::{FactsBuilder, FileFacts, member_key_from_index_key, nested_table_owner};
 use super::inputs::WorkspaceRoot;
 use super::types::{
     LiteralShell, PrimitiveType, TableId, TypeCandidate, TypeShell, checked_integer_arithmetic,
@@ -3659,6 +3659,8 @@ fn resolve_expr_root(
     // Deep member chains: expand IndexExpr with an explicit task stack to avoid native stack recursion.
     let mut current = expr;
     let mut segments = Vec::new();
+    // Local root: the table each segment holds, as member collection resolved it.
+    let mut keys = Vec::new();
     loop {
         match current {
             LuaExpr::ParenExpr(paren) => {
@@ -3666,6 +3668,10 @@ fn resolve_expr_root(
             }
             LuaExpr::IndexExpr(parent) => {
                 segments.push(SmolStr::new(parent.get_index_key()?.get_path_part()));
+                keys.push((
+                    parent.get_index_key().and_then(member_key_from_index_key),
+                    parent.get_position(),
+                ));
                 current = parent.get_prefix_expr()?;
             }
             _ => break,
@@ -3696,6 +3702,15 @@ fn resolve_expr_root(
             path.push_str(s);
         }
         return Some(SemanticId::name(SmolStr::new(path)));
+    }
+    let mut owner = owner;
+    for (key, offset) in keys.into_iter().rev() {
+        let Some(table) = key.and_then(|key| {
+            nested_table_owner(facts.members_of_owner(&owner), &owner, &key, offset)
+        }) else {
+            break;
+        };
+        owner = table;
     }
     Some(owner)
 }
