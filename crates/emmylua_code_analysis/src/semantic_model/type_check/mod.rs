@@ -210,9 +210,7 @@ fn check_general_type_compact_inner(
     if let LuaType::Union(union) = source {
         // `require` of a `return M` module is `(M|{...})`: `M` is only the export's name
         // identity, naming no type definition, and the table beside it carries the shape.
-        let is_name_identity = |member: &LuaType| {
-            matches!(member, LuaType::Ref(id) if context.type_def_of(id).is_none())
-        };
+        let is_name_identity = |member: &LuaType| matches!(member, LuaType::Ref(id) if context.type_def_of(id).is_none());
         let shaped = union.iter().any(|member| !is_name_identity(member));
         let members: Vec<&LuaType> = union
             .iter()
