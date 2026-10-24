@@ -14,6 +14,7 @@ use crate::semantic_model::type_eval::{expand_alias_branches, expand_alias_gener
 use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
 use super::assign_type_mismatch::signature_matches_key;
+use super::param_count::call_arg_param_index;
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -342,13 +343,16 @@ fn check_call_args(
     let Some(args) = call_expr.get_args_list() else {
         return;
     };
+    let colon_call = call_expr.is_colon_call();
     for candidate in &candidates {
         let params = candidate.get_params();
         for (index, arg) in args.get_args().enumerate() {
             let LuaExpr::TableExpr(table) = arg else {
                 continue;
             };
-            let Some((_, Some(param_ty))) = params.get(index) else {
+            let Some((_, Some(param_ty))) = call_arg_param_index(candidate, index, colon_call)
+                .and_then(|param_index| params.get(param_index))
+            else {
                 continue;
             };
             check_against_type(context, semantic_model, param_ty, &table);

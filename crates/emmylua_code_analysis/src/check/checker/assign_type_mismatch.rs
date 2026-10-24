@@ -12,6 +12,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
 use crate::{Decl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind};
 
+use super::param_count::call_arg_param_index;
 use super::{CheckContext, Checker, check_field::static_member_key};
 use crate::semantic_model::render::humanize_type;
 
@@ -152,7 +153,11 @@ fn check_call_args(
     for candidate in &candidates {
         let params = candidate.get_params();
         for (index, arg) in args.get_args().enumerate() {
-            let Some((_, Some(param_ty))) = params.get(index) else {
+            let Some(param_index) = call_arg_param_index(candidate, index, analysis.colon_call)
+            else {
+                continue;
+            };
+            let Some((_, Some(param_ty))) = params.get(param_index) else {
                 break;
             };
             if !matches!(arg, LuaExpr::TableExpr(_)) {

@@ -4,6 +4,39 @@ mod test {
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
+    fn test_colon_call_table_args_match_params_after_receiver() {
+        // `c:exec(argv, opts)` through a field typed `fun(ctx, argv, opts)`: the receiver fills
+        // `ctx`, so the table literals are checked against `argv` and `opts`.
+        let source = r#"
+            ---@class Opts
+            ---@field stderr? boolean
+
+            ---@alias Exec fun(ctx: Ctx, argv: string[], opts: Opts?): integer
+
+            ---@class Ctx
+            ---@field exec Exec
+            local Ctx = {}
+
+            ---@type Ctx
+            local c
+            local r = c:exec({ 'ls', '-l' }, { stderr = true })
+            local r2 = c:exec { 'ls' }
+        "#;
+        let diagnostics = check_source(source);
+        for code in [
+            DiagnosticCode::InjectField,
+            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::MissingFields,
+        ] {
+            assert_eq!(
+                crate::check::test::count_by_code(&diagnostics, code),
+                0,
+                "{code:?}: {diagnostics:#?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_table_literal_integral_float_keys() {
         let diagnostics = check_source(
             r#"
