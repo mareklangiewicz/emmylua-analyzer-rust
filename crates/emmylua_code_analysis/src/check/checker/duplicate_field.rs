@@ -10,6 +10,8 @@ use emmylua_parser::{
     PathTrait,
 };
 
+use rowan::TextRange;
+
 use crate::DiagnosticCode;
 use crate::FileId;
 use crate::LuaType;
@@ -40,15 +42,14 @@ impl Checker for DuplicateFieldChecker {
             by_owner.entry(&member.owner).or_default().push(member);
         }
         for (owner, members) in by_owner {
-            // Group by key, and by the table the key is set on: a local root's owner drops the
-            // path below it, so `M.A:init` and `M.B:init` share the owner `M`.
-            let mut by_key: HashMap<(String, Option<String>), Vec<&&Member>> = HashMap::new();
+            // Group by key, by the table the key is set on (a local root's owner drops the path
+            // below it, so `M.A:init` and `M.B:init` share the owner `M`), and by the function
+            // body that sets it: sets in different bodies run on different calls.
+            let mut by_key: HashMap<(String, Option<SetSite>), Vec<&&Member>> = HashMap::new();
             for member in &members {
-                let target = root
-                    .as_ref()
-                    .and_then(|root| target_prefix_path(root, member));
+                let site = root.as_ref().and_then(|root| set_site(root, member));
                 by_key
-                    .entry((member.key.to_path(), target))
+                    .entry((member.key.to_path(), site))
                     .or_default()
                     .push(member);
             }
@@ -88,20 +89,32 @@ impl Checker for DuplicateFieldChecker {
     }
 }
 
-/// The access path of the table a member is set on (`M.A` for `function M.A:init()`), or
-/// `None` for a table-constructor field.
-fn target_prefix_path(root: &LuaSyntaxNode, member: &Member) -> Option<String> {
+/// Where a member is set through an index expression: the access path of the table
+/// (`M.A` for `function M.A:init()`) and the function body around the statement.
+#[derive(PartialEq, Eq, Hash)]
+struct SetSite {
+    table_path: String,
+    body: Option<TextRange>,
+}
+
+/// The set site of a member, or `None` for a table-constructor field.
+fn set_site(root: &LuaSyntaxNode, member: &Member) -> Option<SetSite> {
     let key_range = member.id.member_key_range()?;
     let token = root.token_at_offset(key_range.start()).right_biased()?;
     let index_expr = token.parent_ancestors().find_map(LuaIndexExpr::cast)?;
     if index_expr.get_index_key()?.get_range()? != key_range {
         return None;
     }
-    match index_expr.get_prefix_expr()? {
-        LuaExpr::NameExpr(name_expr) => name_expr.get_access_path().map(|path| path.to_string()),
-        LuaExpr::IndexExpr(prefix) => prefix.get_access_path().map(|path| path.to_string()),
-        _ => None,
-    }
+    let table_path = match index_expr.get_prefix_expr()? {
+        LuaExpr::NameExpr(name_expr) => name_expr.get_access_path()?.to_string(),
+        LuaExpr::IndexExpr(prefix) => prefix.get_access_path()?.to_string(),
+        _ => return None,
+    };
+    let body = index_expr
+        .ancestors::<LuaClosureExpr>()
+        .next()
+        .map(|closure| closure.get_range());
+    Some(SetSite { table_path, body })
 }
 
 /// `local A = require("mod"); A.execute = function() end`:
@@ -167,10 +180,7 @@ fn check_cross_file_member_assign(
 }
 
 /// require local variable -> module file (`local A = require("mod")`).
-fn required_module_file(
-    semantic_model: &SemanticModel<'_>,
-    prefix: &LuaExpr,
-) -> Option<FileId> {
+fn required_module_file(semantic_model: &SemanticModel<'_>, prefix: &LuaExpr) -> Option<FileId> {
     let LuaExpr::NameExpr(name_expr) = prefix else {
         return None;
     };
