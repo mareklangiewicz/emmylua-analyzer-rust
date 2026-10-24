@@ -534,6 +534,11 @@ fn check_value_against(
 fn assignment_value_type(semantic_model: &SemanticModel<'_>, value_expr: &LuaExpr) -> LuaType {
     let ty =
         semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
+    // A target takes the call's FIRST value: `local x = f()`.
+    let ty = match (value_expr, ty.is_multi_return()) {
+        (LuaExpr::CallExpr(_), true) => ty.get_result_slot_type(0).unwrap_or(LuaType::Nil),
+        _ => ty,
+    };
     if matches!(ty, LuaType::Function)
         && let LuaExpr::NameExpr(name_expr) = value_expr
         && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
