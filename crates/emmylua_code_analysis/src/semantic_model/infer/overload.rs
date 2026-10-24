@@ -18,8 +18,8 @@ use crate::{
 
 use super::unify::{self, TplBindings};
 use super::vm::{
-    bind_signature_generics, score_param_match, shallow_closure_signature, unify_call_bindings,
-    variadic_base_type, widen_const, widen_variadic_const,
+    bind_signature_generics, is_empty_table_literal, score_param_match, shallow_closure_signature,
+    unify_call_bindings, variadic_base_type, widen_const, widen_variadic_const,
 };
 use crate::semantic_model::type_eval;
 
@@ -79,7 +79,7 @@ fn table_literal_as_array(model: &SemanticModel, ty: &LuaType) -> Option<LuaType
     let LuaType::TableConst(table) = ty else {
         return None;
     };
-    if is_memberless_table(model, ty) {
+    if is_empty_table_literal(model, ty) {
         return Some(LuaType::Array(Rc::new(LuaArrayType::from_base_type(
             LuaType::Any,
         ))));
@@ -121,16 +121,6 @@ fn table_literal_as_array(model: &SemanticModel, ty: &LuaType) -> Option<LuaType
         LuaType::from_vec(base_types)
     };
     Some(LuaType::Array(Rc::new(LuaArrayType::from_base_type(base))))
-}
-
-/// A table literal (or a local still holding one) with no members at all: `{}`.
-fn is_memberless_table(model: &SemanticModel, ty: &LuaType) -> bool {
-    let LuaType::TableConst(table) = ty else {
-        return false;
-    };
-    model
-        .members_of_owner(&SemanticId::member(table.file_id, table.value))
-        .is_empty()
 }
 
 /// Expand a non-generic named alias (`LocalTimer.OnTimer` -> `DocFunction`).
@@ -618,7 +608,7 @@ fn match_call_candidate_impl(
         if let (Some(arg), LuaType::Array(array)) = (arg, &param_ty)
             && let LuaType::TplRef(tpl) = array.get_base()
             && !bindings.contains_key(&tpl.get_tpl_id())
-            && is_memberless_table(model, &arg.ty)
+            && is_empty_table_literal(model, &arg.ty)
         {
             bindings.insert(tpl.get_tpl_id(), LuaType::Any);
         }
