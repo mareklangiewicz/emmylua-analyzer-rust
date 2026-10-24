@@ -297,7 +297,7 @@ mod test {
 
     #[test]
     fn test_metatable_index_takes_declared_type_of_table() {
-        let mut ws = VirtualWorkspace::new();
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
         // `__index = G` where `---@type Api` declares `G = {}`: the proxy reads `Api`'s fields.
         assert!(ws.has_no_diagnostic(
             DiagnosticCode::NeedCheckNil,
