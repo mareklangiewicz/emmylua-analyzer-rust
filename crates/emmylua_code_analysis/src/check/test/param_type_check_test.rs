@@ -2745,4 +2745,50 @@ mod test {
             "#
         ));
     }
+
+    /// A method's class generics are bound by the receiver instance (`Box<integer>`):
+    /// `x: A` takes an integer, a typed `fun(i: integer)` fits `fun(a: A)`, and a string does not.
+    #[test]
+    fn test_method_param_class_generic_from_receiver() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Box<A>
+            local Box = {}
+            ---@param x A
+            function Box:take(x) end
+            ---@param p fun(a: A): any
+            function Box:each(p) end
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param i integer
+            ---@return boolean
+            local function odd(i) return i % 2 == 1 end
+            ---@param s Box<integer>
+            local function f(s)
+                s:take(1)
+                s:each(odd)
+            end
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param s Box<integer>
+            local function f(s) s:take('x') end
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param t string
+            local function str(t) end
+            ---@param s Box<integer>
+            local function f(s) s:each(str) end
+            "#
+        ));
+    }
 }
