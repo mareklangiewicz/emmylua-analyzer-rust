@@ -1331,7 +1331,7 @@ impl<'db> SemanticModel<'db> {
                 decl.doc_type_syntax.is_none() && !matches!(decl.kind, DeclKind::Param)
             });
         if inferred {
-            widen_assignment_type(target)
+            inferred_assignment_contract(target)
         } else {
             target
         }
@@ -1347,7 +1347,7 @@ impl<'db> SemanticModel<'db> {
             member.doc_type_syntax.is_none() && !matches!(member.owner, SemanticId::TypeDef(_))
         });
         if inferred {
-            widen_assignment_type(target)
+            inferred_assignment_contract(target)
         } else {
             target
         }
@@ -1594,6 +1594,15 @@ fn project_base_type(model: &SemanticModel<'_>, def: &TypeDef, doc_type: LuaDocT
         }
     }
     model.doc_type_lua_in(def.file_id, doc_type.get_syntax_id(), &def.generic_params)
+}
+
+/// Contract of an un-annotated target: its widened inferred type. A bare `nil`
+/// (`local x = nil`, like `local x`) says nothing about later values, so it is none.
+fn inferred_assignment_contract(ty: LuaType) -> LuaType {
+    match widen_assignment_type(ty) {
+        LuaType::Nil => LuaType::Unknown,
+        ty => ty,
+    }
 }
 
 fn widen_assignment_type(ty: LuaType) -> LuaType {
