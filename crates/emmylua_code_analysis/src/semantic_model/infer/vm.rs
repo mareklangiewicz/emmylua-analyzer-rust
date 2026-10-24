@@ -2032,8 +2032,14 @@ impl<'a> InferVm<'a> {
         bindings: &mut unify::TplBindings,
     ) {
         match original_callback_ret {
+            // A single-value return (`fun(): V`) takes the first value of the result.
             LuaType::TplRef(tpl) => {
-                bindings.insert(tpl.get_tpl_id(), callback_ret.clone());
+                let first = if callback_ret.contain_multi_return() {
+                    callback_ret.get_result_slot_type(0).unwrap_or(LuaType::Nil)
+                } else {
+                    callback_ret.clone()
+                };
+                bindings.insert(tpl.get_tpl_id(), first);
             }
             LuaType::Variadic(v) => {
                 if let VariadicType::Base(LuaType::TplRef(tpl)) = v.as_ref() {
