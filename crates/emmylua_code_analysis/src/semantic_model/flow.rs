@@ -951,7 +951,20 @@ fn array_index_with_known_len(
     offset: TextSize,
 ) -> Option<LuaType> {
     let prefix = index_expr.get_prefix_expr()?;
-    let LuaExpr::NameExpr(name_expr) = prefix else {
+    let LuaExpr::NameExpr(name_expr) = &prefix else {
+        // `for i = 1, #t.list do t.list[i]`: the same bound on a field path.
+        if let Some(emmylua_parser::LuaIndexKey::Expr(key_expr)) = index_expr.get_index_key()
+            && numeric_for_loop_index(model, &key_expr, &prefix)
+        {
+            return match model.type_of_expr_at(prefix.get_syntax_id(), offset) {
+                LuaType::Array(array) => Some(array.get_base().clone()),
+                LuaType::Union(union) => union.into_vec().into_iter().find_map(|ty| match ty {
+                    LuaType::Array(array) => Some(array.get_base().clone()),
+                    _ => None,
+                }),
+                _ => None,
+            };
+        }
         return None;
     };
     let decl = model.resolve_name(name_expr.get_position())?;
@@ -965,7 +978,7 @@ fn array_index_with_known_len(
     match index_key {
         emmylua_parser::LuaIndexKey::Expr(key_expr) => {
             // Inside a numeric for loop body, `i` is guaranteed to be in `1..#arr`.
-            if numeric_for_loop_index(model, &key_expr, &decl) {
+            if numeric_for_loop_index(model, &key_expr, &prefix) {
                 for component in &components {
                     if let LuaType::Array(array) = component {
                         return Some(array.get_base().clone());
@@ -1005,11 +1018,7 @@ fn array_index_with_known_len(
 }
 
 /// Returns whether a dynamic index expression is a numeric for-loop variable bounded by `#prefix`.
-fn numeric_for_loop_index(
-    model: &SemanticModel,
-    key_expr: &LuaExpr,
-    prefix_decl: &SemanticId,
-) -> bool {
+fn numeric_for_loop_index(model: &SemanticModel, key_expr: &LuaExpr, prefix: &LuaExpr) -> bool {
     let LuaExpr::NameExpr(name_expr) = key_expr else {
         return false;
     };
@@ -1041,14 +1050,32 @@ fn numeric_for_loop_index(
                     .is_some_and(|op| op.get_op() == UnaryOperator::OpLen)
                     && unary
                         .get_expr()
-                        .and_then(|inner| match inner {
-                            LuaExpr::NameExpr(n) => model.resolve_name(n.get_position()),
-                            _ => None,
-                        })
-                        .as_ref()
-                        == Some(prefix_decl)
+                        .is_some_and(|inner| same_access_path(model, &inner, prefix))
             })
     })
+}
+
+/// Whether two expressions read the same place: names resolving to one declaration, or the
+/// same static keys (`t.list`, `t['list']`, `t[1]`) on such places.
+fn same_access_path(model: &SemanticModel, a: &LuaExpr, b: &LuaExpr) -> bool {
+    match (a, b) {
+        (LuaExpr::NameExpr(a), LuaExpr::NameExpr(b)) => model
+            .resolve_name(a.get_position())
+            .is_some_and(|decl| model.resolve_name(b.get_position()) == Some(decl)),
+        (LuaExpr::IndexExpr(a), LuaExpr::IndexExpr(b)) => {
+            let static_part = |index: &emmylua_parser::LuaIndexExpr| match index.get_index_key()? {
+                emmylua_parser::LuaIndexKey::Expr(_) => None,
+                key => Some(key.get_path_part()),
+            };
+            static_part(a).is_some_and(|key| static_part(b) == Some(key))
+                && a.get_prefix_expr().zip(b.get_prefix_expr()).is_some_and(
+                    |(a_prefix, b_prefix)| same_access_path(model, &a_prefix, &b_prefix),
+                )
+        }
+        (LuaExpr::ParenExpr(a), b) => a.get_expr().is_some_and(|a| same_access_path(model, &a, b)),
+        (a, LuaExpr::ParenExpr(b)) => b.get_expr().is_some_and(|b| same_access_path(model, a, &b)),
+        _ => false,
+    }
 }
 
 /// Convert a condition pointer back to an expression (for branch reachability checks).
