@@ -141,7 +141,8 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
 }
 
 /// The innermost closure around `offset` that captures `decl` from an enclosing scope, when
-/// `decl` is a local reassigned somewhere (so the closure can see any of its values).
+/// `decl` is an un-annotated local reassigned somewhere (so the closure can see any of its
+/// values; an annotated one keeps its declared type as the contract).
 fn capturing_closure(
     model: &SemanticModel,
     tree: &FlowTree,
@@ -149,7 +150,10 @@ fn capturing_closure(
     offset: TextSize,
 ) -> Option<rowan::TextRange> {
     let info = model.file_facts()?.decl_by_id(decl)?;
-    if !matches!(info.kind, crate::DeclKind::Local { .. }) || !tree.has_decl_assignment(decl) {
+    if !matches!(info.kind, crate::DeclKind::Local { .. })
+        || info.doc_type_syntax.is_some()
+        || !tree.has_decl_assignment(decl)
+    {
         return None;
     }
     let root = model.syntax_tree()?.get_red_root();
@@ -162,12 +166,21 @@ fn capturing_closure(
 }
 
 /// A captured local's value inside the closure: any value it is assigned anywhere, widened,
-/// or its declaration's.
+/// or its declaration's. A value computed from the local itself (`n = n + 1`) adds nothing.
 fn captured_local_type(
     model: &SemanticModel,
     tree: &FlowTree,
     decl: &SemanticId,
 ) -> Option<LuaType> {
+    let name = model.file_facts()?.decl_by_id(decl)?.name.clone();
+    let root = model.syntax_tree()?.get_red_root();
+    let reads_itself = |value_syntax: &emmylua_parser::LuaSyntaxId| {
+        value_syntax.to_node_from_root(&root).is_some_and(|node| {
+            node.descendants()
+                .filter_map(emmylua_parser::LuaNameExpr::cast)
+                .any(|name_expr| name_expr.get_name_text().as_deref() == Some(name.as_str()))
+        })
+    };
     let mut types = vec![widen_variadic_const(&model.type_of_decl(decl)?)];
     for flow_id in tree.decl_assignment_flows(decl) {
         for effect in tree.get_flow_effects(flow_id) {
@@ -176,6 +189,7 @@ fn captured_local_type(
                 value_syntax,
             } = effect
                 && assigned == decl
+                && !reads_itself(value_syntax)
             {
                 let ty = widen_variadic_const(&model.type_of_expr(*value_syntax));
                 if !matches!(ty, LuaType::Unknown) && !types.contains(&ty) {
