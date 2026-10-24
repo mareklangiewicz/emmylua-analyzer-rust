@@ -66,6 +66,32 @@ mod test {
             );
         }
 
+        // A generic array member binds from the call; its elements are not checked against `V`.
+        let generic = check_source(
+            r#"
+            ---@class Box<T>
+            local Box = {}
+
+            ---@generic V
+            ---@param s Box<V>|V[]|function
+            ---@return Box<V>
+            function Box.from(s) end
+
+            local b = Box.from({ 1, 2, 3 })
+        "#,
+        );
+        for code in [
+            DiagnosticCode::InjectField,
+            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::ParamTypeMismatch,
+        ] {
+            assert_eq!(
+                crate::check::test::count_by_code(&generic, code),
+                0,
+                "{code:?}: {generic:#?}"
+            );
+        }
+
         // Its elements are still checked against the array's, and a keyed literal against `Plain`.
         let bad = check_source(
             r#"
