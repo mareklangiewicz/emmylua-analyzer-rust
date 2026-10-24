@@ -349,4 +349,28 @@ mod test {
         let a_ty = ws.expr_ty("A");
         assert_eq!(ws.humanize_type(a_ty), "integer");
     }
+
+    /// A closure literal for a multi-value callback (`fun(a: A, b: B): X, Y`) binds `X` and
+    /// `Y` from what its body returns, with its params bound from the receiver's generics.
+    #[test]
+    fn test_closure_multi_return_callback_binds_generics() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class P<A, B>
+            local P = {}
+
+            ---@generic X, Y
+            ---@param f fun(a: A, b: B): X, Y
+            ---@return P<X, Y>
+            function P:map(f) end
+
+            ---@type P<string, integer>
+            local p
+            Mapped = p:map(function(a, b) return b, a end)
+            "#,
+        );
+
+        assert_eq!(ws.expr_ty("Mapped"), ws.ty("P<integer, string>"));
+    }
 }
