@@ -3103,4 +3103,27 @@ return t
             "#
         ));
     }
+
+    /// `rawget(_G, 'name')` is `std.RawGet<global, "name">`: the global of that name, or
+    /// unknown when no such global is declared.
+    #[test]
+    fn test_rawget_global_reads_the_global() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@type fun(...: any)
+                local p = rawget(_G, 'print')
+                ---@type { version: string }?
+                local jit = rawget(_G, 'undeclared_global_xyz')
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@type string
+                local s = rawget(_G, 'print')
+            "#
+        ));
+    }
 }
