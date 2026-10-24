@@ -862,7 +862,17 @@ impl<'db> SemanticModel<'db> {
                         flow::ExprCastMode::AsOnly,
                     )
                 } else if matches!(expr, LuaExpr::CallExpr(_)) {
-                    flow::type_of_expr_with_cast(self, value_syntax, flow::ExprCastMode::AsOnly)
+                    // A member holds one value: the call's first (`M.ok = detect()`).
+                    let ty = flow::type_of_expr_with_cast(
+                        self,
+                        value_syntax,
+                        flow::ExprCastMode::AsOnly,
+                    );
+                    if ty.is_multi_return() {
+                        ty.get_result_slot_type(0).unwrap_or(LuaType::Nil)
+                    } else {
+                        ty
+                    }
                 } else {
                     return None;
                 };

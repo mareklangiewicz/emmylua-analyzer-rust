@@ -2401,7 +2401,8 @@ pub(crate) fn member_type(
                 }
             }
             _ => {
-                let shell = expr_type_of(db, file, config, value_syntax);
+                // A member holds one value: a call's first (`M.ok = detect()`).
+                let shell = expr_type_of(db, file, config, value_syntax).first_result();
                 if !shell.is_unknown() {
                     return shell;
                 }

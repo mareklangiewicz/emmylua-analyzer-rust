@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod test {
-    use crate::{DiagnosticCode, VirtualWorkspace};
+    use crate::{DiagnosticCode, LuaType, VirtualWorkspace};
 
     #[test]
     fn test_pcall_return() {
@@ -210,5 +210,44 @@ mod test {
         );
 
         assert_eq!(ws.expr_ty("P"), ws.ty("string"));
+    }
+
+    /// A member assigned a call holds the call's FIRST value (`M.ok = detect()`), as a local does:
+    /// the member's own type, which `t.x = v` checks are made against, is not the whole list.
+    #[test]
+    fn test_member_assigned_call_holds_first_value() {
+        use emmylua_parser::{LuaAstNode, LuaIndexExpr};
+
+        let mut ws = VirtualWorkspace::new();
+        let file_id = ws.def(
+            r#"
+        ---@return boolean ok
+        ---@return string why
+        local function detect() end
+
+        ---@param n number
+        ---@return boolean ok
+        ---@return string why
+        local function probe(n) end
+
+        local M = {}
+        M.ok = detect()
+        M.bad = probe('x')
+        "#,
+        );
+        let model = ws.analysis.semantic_model(file_id);
+        // `M.bad`'s call matches no candidate: the VM gives up and the database types the member.
+        for index_expr in model.chunk().expect("chunk").descendants::<LuaIndexExpr>() {
+            let member_id = model
+                .resolve_member(&index_expr)
+                .and_then(|resolved| resolved.member_id)
+                .expect("member");
+            assert_eq!(
+                model.type_of_member(&member_id),
+                Some(LuaType::Boolean),
+                "{}",
+                index_expr.syntax().text()
+            );
+        }
     }
 }
