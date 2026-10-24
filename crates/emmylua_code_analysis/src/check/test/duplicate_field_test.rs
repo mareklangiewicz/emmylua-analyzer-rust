@@ -236,4 +236,32 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_same_key_set_in_different_function_bodies() {
+        let mut ws = VirtualWorkspace::new();
+        // Each branch body sets its own `o.leaf` when it runs: not a redefinition.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::DuplicateSetField,
+            r#"
+            local function tree(o)
+                function o.a()
+                    function o.leaf() end
+                end
+                function o.b()
+                    function o.leaf() end
+                end
+            end
+        "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::DuplicateSetField,
+            r#"
+            local function tree(o)
+                function o.leaf() end
+                function o.leaf() end
+            end
+        "#
+        ));
+    }
 }
