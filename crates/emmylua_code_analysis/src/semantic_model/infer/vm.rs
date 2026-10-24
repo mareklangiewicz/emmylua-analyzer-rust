@@ -4922,11 +4922,28 @@ fn length_type(model: &SemanticModel, operand: &LuaType) -> Option<LuaType> {
             pending.extend(union.into_vec());
         } else if ty.is_table() || ty.is_object() || ty.is_string() {
             results.push(LuaType::Integer);
+        } else if let Some(len) = model.operator_type("len", &ty) {
+            results.push(len);
+        } else if is_class_instance(model, &ty) {
+            // A class instance is a table: without `__len`, its length is an integer.
+            results.push(LuaType::Integer);
         } else {
-            results.push(model.operator_type("len", &ty)?);
+            return None;
         }
     }
     (!results.is_empty()).then(|| LuaType::from_vec(results))
+}
+
+/// Whether `ty` is an instance of a named class (`Box`, `List<T>`).
+fn is_class_instance(model: &SemanticModel, ty: &LuaType) -> bool {
+    let id = match ty {
+        LuaType::Ref(id) | LuaType::Def(id) => id.clone(),
+        LuaType::Generic(generic) => generic.get_base_type_id(),
+        _ => return false,
+    };
+    model
+        .type_def_of(&id)
+        .is_some_and(|def| def.kind == TypeDefKind::Class)
 }
 
 /// Binary operator -> `@operator` name.
