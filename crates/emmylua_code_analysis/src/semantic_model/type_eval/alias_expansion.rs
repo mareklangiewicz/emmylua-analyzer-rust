@@ -317,7 +317,34 @@ fn evaluate_builtin(model: &SemanticModel, ty: &LuaType) -> Option<LuaType> {
         LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::Merge => {
             return eval_merge_call(model, call);
         }
+        LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::Sub => {
+            return eval_sub_call(model, call);
+        }
         _ => {}
     }
     None
+}
+
+/// `L - R`: the members of `L` that are not members of `R`. An unbound `T` stays `T`.
+fn eval_sub_call(model: &SemanticModel, call: &LuaAliasCallType) -> Option<LuaType> {
+    let [left, right] = call.get_operands().as_slice() else {
+        return None;
+    };
+    let left = expand_alias_branches(model, left)?;
+    let removed = match right {
+        LuaType::Union(union) => union.into_vec(),
+        other => vec![other.clone()],
+    };
+    let kept: Vec<LuaType> = match &left {
+        LuaType::Union(union) => union.into_vec(),
+        other => vec![other.clone()],
+    }
+    .into_iter()
+    .filter(|member| !removed.contains(member))
+    .collect();
+    Some(if kept.is_empty() {
+        LuaType::Never
+    } else {
+        LuaType::from_vec(kept)
+    })
 }
