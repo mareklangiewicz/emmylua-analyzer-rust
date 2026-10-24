@@ -110,4 +110,30 @@ mod test {
         let expected = ws.ty("integer");
         assert_eq!(e_ty, expected);
     }
+
+    /// A single-value callback return (`fun(): V`) binds `V` to the FIRST value the actual
+    /// function returns, not its whole pack: with `string.gmatch`'s `fun(): string?...`,
+    /// `V` is `string?`.
+    #[test]
+    fn test_callback_single_return_binds_first_value() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        ---@return fun(): string?...
+        local function iter() end
+
+        ---@generic V
+        ---@param f fun(): V
+        ---@return V
+        local function first(f) end
+
+        local a, b = first(iter())
+        A = a
+        B = b
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("string?"));
+        assert_eq!(ws.expr_ty("B"), crate::LuaType::Any);
+    }
 }
