@@ -269,8 +269,17 @@ impl<'db> SemanticModel<'db> {
                     return Some(self.attach_generic_constraints(ty, closure_syntax));
                 }
                 // `function a.aaa(x)`: when no call site can be inferred, fill in parameter types from the owner type's field signature.
-                if let Some(mut param_ty) =
-                    self.expected_member_param_for_closure(closure_syntax, param_index)
+                // The param's own `---@param` wins (an override of an inherited field keeps its doc).
+                let has_param_doc = signature.docs.as_ref().is_some_and(|docs| {
+                    signature.param_names.get(param_index).is_some_and(|name| {
+                        docs.param_types
+                            .iter()
+                            .any(|(doc_name, _)| doc_name == name)
+                    })
+                });
+                if !has_param_doc
+                    && let Some(mut param_ty) =
+                        self.expected_member_param_for_closure(closure_syntax, param_index)
                 {
                     // `self` in field types must be concretized to the owner instance during function-body variable inference,
                     // but stays SelfInfer in signature types so call checks remain consistent with the original field signature.
