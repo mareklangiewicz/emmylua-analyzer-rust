@@ -1778,6 +1778,38 @@ mod test {
     }
 
     #[test]
+    fn test_member_class_overload_keeps_optional_params() {
+        let mut ws = VirtualWorkspace::new();
+        // A class `---@overload` reached through a member keeps its `?` params optional.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@class Err3
+            ---@overload fun(msg?: string, loc?: table): Err3
+
+            ---@class Mod
+            ---@field Err Err3
+            local M = {}
+
+            local e = M.Err('x', nil)
+        "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::MissingParameter,
+            r#"
+            ---@class Err4
+            ---@overload fun(msg?: string, loc?: table): Err4
+
+            ---@class Mod4
+            ---@field Err Err4
+            local M = {}
+
+            local e = M.Err()
+        "#
+        ));
+    }
+
+    #[test]
     fn test_self_contain_tpl() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(

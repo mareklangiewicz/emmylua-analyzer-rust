@@ -2978,6 +2978,12 @@ impl<'a> InferVm<'a> {
                 ),
                 None => LuaType::Unknown,
             };
+            // `fun(i?: integer)`: the nullable marker is on the param, not on its type node.
+            let ty = if param.is_nullable() && !ty.is_nullable() {
+                LuaType::from_vec(vec![ty, LuaType::Nil])
+            } else {
+                ty
+            };
             params.push((name, Some(ty)));
         }
 
