@@ -936,6 +936,20 @@ impl<'db> SemanticModel<'db> {
             _ => false,
         }
     }
+    /// The type of a global name (`SemanticId::Name`): its declaration's type, or its named
+    /// type for a class table; unknown when nothing declares it.
+    pub(crate) fn global_type(&self, owner: &SemanticId) -> LuaType {
+        match self.resolve_owner(owner) {
+            Some(SemanticId::Decl(decl)) => self
+                .type_of_decl(&SemanticId::Decl(decl))
+                .unwrap_or(LuaType::Unknown),
+            Some(SemanticId::TypeDef(def)) => {
+                LuaType::Ref(LuaTypeDeclId::global(def.full_name.as_str()))
+            }
+            _ => LuaType::Unknown,
+        }
+    }
+
     /// If the member belongs to an `---@enum` table and its value is an integer literal, return the corresponding IntegerConst.
     pub(crate) fn enum_member_const(
         &self,

@@ -13,7 +13,7 @@ use crate::{
     GenericParam, GenericTpl, GenericTplId, LuaAliasCallKind, LuaAliasCallType, LuaArrayType,
     LuaConditionalType, LuaFunctionType, LuaGenericType, LuaIntersectionType, LuaMappedType,
     LuaMemberKey, LuaObjectType, LuaTupleStatus, LuaTupleType, LuaType, LuaTypeNode, LuaUnionType,
-    TypeDef, TypeDefKind, VariadicType,
+    SemanticId, TypeDef, TypeDefKind, VariadicType,
 };
 
 use super::SemanticModel;
@@ -204,6 +204,10 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
         let ty = match (base, &key) {
             (LuaType::Tuple(tuple), LuaMemberKey::Integer(i)) => {
                 tuple.get_types().get(*i as usize).cloned()
+            }
+            // `rawget(_G, 'name')`: the global of that name.
+            (LuaType::Global, LuaMemberKey::Name(name)) => {
+                Some(model.global_type(&SemanticId::name(name.clone())))
             }
             _ => model.member_type(base, &key),
         };

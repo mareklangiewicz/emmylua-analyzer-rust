@@ -644,7 +644,7 @@ impl<'a> InferVm<'a> {
         }
         // Global name.
         let owner = SemanticId::name(SmolStr::new(name));
-        let ty = self.global_type(&owner);
+        let ty = self.model.global_type(&owner);
         Value {
             ty,
             owner: Some(owner),
@@ -779,21 +779,6 @@ impl<'a> InferVm<'a> {
             return Some(bound);
         }
         None
-    }
-
-    fn global_type(&self, owner: &SemanticId) -> LuaType {
-        match self.model.resolve_owner(owner) {
-            Some(SemanticId::Decl(decl)) => {
-                let decl_id = SemanticId::Decl(decl);
-                self.model
-                    .type_of_decl(&decl_id)
-                    .unwrap_or(LuaType::Unknown)
-            }
-            Some(SemanticId::TypeDef(def)) => {
-                LuaType::Ref(LuaTypeDeclId::global(def.full_name.as_str()))
-            }
-            _ => LuaType::Unknown,
-        }
     }
 
     /// Whether the file belongs to the STD workspace.
