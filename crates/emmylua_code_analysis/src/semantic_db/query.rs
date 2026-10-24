@@ -3098,8 +3098,15 @@ fn expr_type_node(
                 Some(op @ (BinaryOperator::OpOr | BinaryOperator::OpAnd)) => {
                     if let Some((left, right)) = binary.get_exprs() {
                         let left = expr_type(db, facts, file, config, left).first_result();
-                        let mut shell = logical_left_part(left, op == BinaryOperator::OpOr);
-                        shell.merge(&expr_type(db, facts, file, config, right).first_result());
+                        let right = expr_type(db, facts, file, config, right).first_result();
+                        // Unknown is the empty set: an unknown right operand adds nothing, so
+                        // the left cannot be narrowed down to what passes it.
+                        let mut shell = if right.is_unknown() {
+                            left
+                        } else {
+                            logical_left_part(left, op == BinaryOperator::OpOr)
+                        };
+                        shell.merge(&right);
                         return shell;
                     }
                     TypeShell::unknown()
