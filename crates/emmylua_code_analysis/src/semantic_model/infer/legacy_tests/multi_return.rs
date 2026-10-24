@@ -162,4 +162,53 @@ mod test {
 
         assert_eq!(ws.expr_ty("B"), ws.ty("Box<any>"));
     }
+
+    /// A call whose argument mismatches its parameter still assigns its returns slot by slot,
+    /// never the whole return list to every target.
+    #[test]
+    fn test_mismatched_call_assigns_return_slots() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        ---@param y number
+        ---@return string text
+        ---@return number count
+        local function two(y) return 'a', 1 end
+
+        ---@param y number
+        ---@return string text
+        local function one(y) return 'a' end
+
+        local a1, b1 = two('x')
+        local a2, b2 = one('x')
+        A1, B1, A2, B2 = a1, b1, a2, b2
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A1"), ws.ty("string"));
+        assert_eq!(ws.expr_ty("B1"), ws.ty("number"));
+        assert_eq!(ws.expr_ty("A2"), ws.ty("string"));
+        assert_eq!(ws.expr_ty("B2"), ws.ty("any"));
+    }
+
+    /// A field assigned from a multi-return local has that local's slot type, not the whole list.
+    #[test]
+    fn test_field_from_multi_return_local_has_slot_type() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        ---@return any result
+        ---@return string? err
+        ---@return string output
+        local function captured() end
+
+        local result, err, output = captured()
+        local payload = {}
+        payload.output = output
+        P = payload.output
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("P"), ws.ty("string"));
+    }
 }
