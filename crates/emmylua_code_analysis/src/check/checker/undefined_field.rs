@@ -350,8 +350,10 @@ fn table_binding(
         .type_defs_named_case_insensitive(decl.name.as_str())
         .next()
         .or_else(|| {
-            // `---@enum K3` + `local apiAlias = {...}`: when names differ, associate with the nearest preceding type definition by position.
-            facts.nearest_type_def_before(decl.name_range.start())
+            // `---@enum K3` + `local apiAlias = {...}`: when names differ, associate with the type
+            // definition annotating this declaration; any earlier one in the file would bind every
+            // later local table literal to it.
+            facts.type_def_by_owner_syntax(decl.owner_syntax?)
         })?
         .clone();
     Some((decl.clone(), def))

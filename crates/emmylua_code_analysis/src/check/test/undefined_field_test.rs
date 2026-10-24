@@ -316,6 +316,36 @@ mod test {
     }
 
     #[test]
+    fn test_local_table_not_bound_to_earlier_class() {
+        let mut ws = VirtualWorkspace::new();
+        // A `---@class` earlier in the file does not own every later local table literal.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@class Case
+            ---@field raw fun(input: any): any
+
+            ---@type Case
+            local one = {
+                raw = function(t)
+                    local out = {}
+                    out[#out + 1] = t
+                    return out
+                end,
+            }
+
+            local function collect(t)
+                local out = {}
+                for i = 1, #t do
+                    out[#out + 1] = t[i]
+                end
+                return out
+            end
+        "#
+        ));
+    }
+
+    #[test]
     fn test_unknown_type() {
         let mut ws = VirtualWorkspace::new();
         assert!(ws.has_no_diagnostic(
