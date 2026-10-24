@@ -445,4 +445,31 @@ mod test {
             "#,
         ));
     }
+
+    /// `return M` where `local M = f() --[[@as T]]`: the module exports `T` also when no
+    /// `---@class` is attached to `M` (here a blank line detaches it) and `f()` is opaque.
+    #[test]
+    fn test_required_module_export_keeps_as_cast() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "mylog.lua",
+            r#"
+            ---@class Base
+            local Base = {}
+            function Base:i() end
+
+            ---@class MyLog : Base
+
+            local log = Base.new() --[[@as MyLog]]
+            return log
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            local log = require 'mylog'
+            log:i()
+            "#,
+        ));
+    }
 }
