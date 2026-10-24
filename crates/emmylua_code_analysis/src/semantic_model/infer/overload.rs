@@ -429,6 +429,23 @@ fn match_call_candidate_impl(
     } else {
         args
     };
+    // A multi-return call as the last argument passes all its values, one per remaining
+    // param: `id(f())` binds `act: T` to `f()`'s first value only, not the whole tuple.
+    let mut spread_args_storage: Vec<CallArg> = Vec::new();
+    let args: &[CallArg] = match args.split_last() {
+        Some((last, init)) if last.closure_syntax.is_none() => match &last.ty {
+            LuaType::Variadic(variadic) => match variadic.as_ref() {
+                VariadicType::Multi(values) => {
+                    spread_args_storage.extend(init.iter().cloned());
+                    spread_args_storage.extend(values.iter().cloned().map(CallArg::new));
+                    spread_args_storage.as_slice()
+                }
+                _ => args,
+            },
+            _ => args,
+        },
+        _ => args,
+    };
     let arg_start = if has_self_param && colon_call {
         0
     } else if !has_self_param && fun.is_colon_define() && !colon_call {

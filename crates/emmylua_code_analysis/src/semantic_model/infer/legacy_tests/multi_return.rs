@@ -250,4 +250,30 @@ mod test {
             );
         }
     }
+
+    /// A multi-return call as the last argument spreads over the remaining params, so a
+    /// generic `T` param binds to its FIRST value: `id(f())` is `f()`'s first value only.
+    #[test]
+    fn test_generic_param_binds_first_value_of_trailing_call() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        ---@return integer?, string?
+        local function f() end
+
+        ---@generic T
+        ---@param act T
+        ---@param msg? string
+        ---@return T
+        local function id(act, msg) return act end
+
+        local a, b = id(f())
+        A = a
+        B = b
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("integer?"));
+        assert_eq!(ws.expr_ty("B"), LuaType::Any);
+    }
 }
