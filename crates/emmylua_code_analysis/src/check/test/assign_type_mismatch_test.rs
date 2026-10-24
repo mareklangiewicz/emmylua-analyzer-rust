@@ -2820,4 +2820,39 @@ return t
             "{diagnostics:#?}"
         );
     }
+
+    /// A subtype argument (`integer` for `number`, `Dog` for `Animal`) still selects the
+    /// candidate, so the call keeps its declared return.
+    #[test]
+    fn test_subtype_argument_keeps_call_return() {
+        for call in ["fl(m)", "pet(d)"] {
+            let source = format!(
+                r#"
+                ---@class Animal
+                ---@class Dog: Animal
+
+                ---@param x number
+                ---@return integer
+                local function fl(x) return 1 end
+                ---@param a Animal
+                ---@return integer
+                local function pet(a) return 1 end
+
+                ---@param m integer
+                ---@param d Dog
+                local function g(m, d)
+                    ---@type string
+                    local a = {call}
+                    return a
+                end
+                return g
+                "#
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                "{source}"
+            );
+        }
+    }
 }
