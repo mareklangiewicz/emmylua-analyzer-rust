@@ -692,10 +692,11 @@ fn test_member_cycle_converges() {
     let _ = db.analysis().member_type(fid, b_local);
 }
 
-/// An unknown right operand (the empty shell) adds nothing, so the left stays whole:
-/// `c and f()` keeps `boolean` rather than a definite `false`, and `... or nil` stays truthy.
+/// An unknown right operand (the empty shell) leaves the shell unable to tell what a
+/// logical expression yields, so its result is unknown, also through an enclosing one:
+/// not a definite `false` for `c and f()`, nor a definite `nil` for `c and f() or nil`.
 #[test]
-fn test_expr_logic_unknown_right_keeps_left() {
+fn test_expr_logic_unknown_right_is_unknown() {
     let mut db = setup();
     let fid = set_test_file(
         &mut db,
@@ -704,21 +705,13 @@ fn test_expr_logic_unknown_right_keeps_left() {
         "local s = 'a'\nlocal a = s ~= '' and unknown_call()\nlocal b = s ~= '' and unknown_call() or nil",
     );
     let facts = db.analysis().file_facts(fid).expect("facts");
-    let shell_of = |name| {
-        db.analysis()
-            .decl_type(fid, decl_local(&facts, name))
-            .expect(name)
-    };
-    assert!(
-        shell_of("a")
-            .candidates
-            .contains(&TypeCandidate::Primitive(PrimitiveType::Boolean))
-    );
-    assert!(
-        shell_of("b")
-            .candidates
-            .contains(&TypeCandidate::Literal(LiteralShell::Boolean(true)))
-    );
+    for name in ["a", "b"] {
+        let shell = db.analysis().decl_type(fid, decl_local(&facts, name));
+        assert!(
+            shell.as_ref().is_none_or(|shell| shell.is_unknown()),
+            "{name}: {shell:?}"
+        );
+    }
 }
 
 #[test]
