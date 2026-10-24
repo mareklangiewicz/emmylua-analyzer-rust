@@ -492,4 +492,31 @@ mod test {
         assert_eq!(ws.expr_ty("ParamA"), ws.ty("integer"));
         assert_eq!(ws.expr_ty("ParamB"), ws.ty("string"));
     }
+
+    /// A method's own `---@param` wins over the field signature it inherits: `St:init(dir)`
+    /// overriding `---@field init fun(self: Obj, ...: any)` keeps `dir: string`.
+    #[test]
+    fn test_method_param_doc_wins_over_inherited_field() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Obj
+            ---@field init fun(self: Obj, ...: any)
+
+            ---@class St : Obj
+            ---@type St
+            local St
+
+            ---@param dir string
+            ---@param n integer
+            function St:init(dir, n)
+                ParamDir = dir
+                ParamN = n
+            end
+            "#,
+        );
+
+        assert_eq!(ws.expr_ty("ParamDir"), ws.ty("string"));
+        assert_eq!(ws.expr_ty("ParamN"), ws.ty("integer"));
+    }
 }
