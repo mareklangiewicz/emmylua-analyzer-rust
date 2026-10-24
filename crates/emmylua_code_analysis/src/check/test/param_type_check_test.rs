@@ -2529,4 +2529,33 @@ mod test {
             "#
         ));
     }
+
+    /// `_G` is a table: it may be passed where a `table` is expected (`rawset(_G, 'x', 1)`).
+    #[test]
+    fn test_global_table_as_table_argument() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                ---@param t table
+                local function f(t) end
+                f(_G)
+                rawset(_G, 'x', 1)
+            "#
+        ));
+    }
+
+    /// ...but it is still not a string.
+    #[test]
+    fn test_global_table_is_not_a_string() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                ---@param s string
+                local function f(s) end
+                f(_G)
+            "#
+        ));
+    }
 }

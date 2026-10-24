@@ -59,6 +59,12 @@ pub fn check_simple_type_compact(
                 return Ok(());
             }
         }
+        // `_G` is a table.
+        LuaType::Global => {
+            if matches!(compact_type, LuaType::Global | LuaType::Table) {
+                return Ok(());
+            }
+        }
         LuaType::Userdata => {
             if matches!(
                 compact_type,
