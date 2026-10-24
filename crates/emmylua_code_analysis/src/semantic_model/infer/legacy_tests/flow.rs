@@ -4777,4 +4777,42 @@ _ = a[2]
             "#,
         ));
     }
+
+    #[test]
+    fn test_member_read_ignores_later_assignment() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        ---@class MemberLater
+        ---@field n? integer
+        "#,
+        );
+
+        // A read of `t.n` before `t.n = 5` must still see the declared `integer?`, not the later `5`.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+        ---@param t MemberLater
+        local function f(t)
+            ---@type 5
+            local _d = t.n
+            t.n = 5
+        end
+        "#,
+        ));
+
+        // Same through a local alias read after the assignment: `go` was bound before it.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+        ---@param t MemberLater
+        local function f(t)
+            local go = t.n
+            t.n = 5
+            ---@type 5
+            local _d = go
+        end
+        "#,
+        ));
+    }
 }
