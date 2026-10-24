@@ -4,6 +4,62 @@ mod test {
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
+    fn test_sequence_literal_takes_array_member_of_union() {
+        // A sequence literal against `Plain|integer[]` is the array, not a `Plain` missing `v`.
+        let ok = check_source(
+            r#"
+            ---@class Plain
+            ---@field v integer
+            local Plain = {}
+
+            ---@type Plain|integer[]
+            local x = { 1, 2 }
+
+            ---@param s Plain|integer[]
+            local function h(s) end
+            h({ 1, 2 })
+        "#,
+        );
+        for code in [
+            DiagnosticCode::InjectField,
+            DiagnosticCode::MissingFields,
+            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::ParamTypeMismatch,
+        ] {
+            assert_eq!(
+                crate::check::test::count_by_code(&ok, code),
+                0,
+                "{code:?}: {ok:#?}"
+            );
+        }
+
+        // Its elements are still checked against the array's, and a keyed literal against `Plain`.
+        let bad = check_source(
+            r#"
+            ---@class Plain
+            ---@field v integer
+            local Plain = {}
+
+            ---@type Plain|integer[]
+            local x = { 1, 'two' }
+
+            ---@type Plain|integer[]
+            local y = { w = 1 }
+        "#,
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&bad, DiagnosticCode::AssignTypeMismatch),
+            1,
+            "{bad:#?}"
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&bad, DiagnosticCode::InjectField),
+            1,
+            "{bad:#?}"
+        );
+    }
+
+    #[test]
     fn test_table_literal_integral_float_keys() {
         let diagnostics = check_source(
             r#"

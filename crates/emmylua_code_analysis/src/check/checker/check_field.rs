@@ -231,6 +231,28 @@ pub(super) fn static_member_key(
 }
 
 /// Whether an object index-signature key type accepts this member key (`{[number]: ...}` does not accept string keys).
+/// The array-like member of a union that a sequence literal (`{ 1, 2 }`) is checked
+/// against: `Plain|integer[]` takes `{ 1, 2 }` as the array, not as a `Plain` with fields
+/// `[1]`, `[2]` and none of its own.
+pub(super) fn union_array_for_sequence(
+    union: &LuaUnionType,
+    table: &LuaTableExpr,
+) -> Option<LuaType> {
+    if !table.is_array() {
+        return None;
+    }
+    union
+        .into_vec()
+        .into_iter()
+        .find(|component| match component {
+            LuaType::Array(_) | LuaType::Tuple(_) | LuaType::Table => true,
+            LuaType::Generic(generic) => {
+                matches!(generic.get_base_type_id().get_name(), "array" | "table")
+            }
+            _ => false,
+        })
+}
+
 fn index_key_type_accepts(key_ty: &LuaType, member_key: &LuaMemberKey) -> bool {
     match member_key {
         LuaMemberKey::Name(_) => key_type_contains(key_ty, &LuaType::String),
@@ -369,6 +391,10 @@ fn check_against_type(
             return;
         }
         LuaType::Union(union) => {
+            if let Some(array) = union_array_for_sequence(union, table) {
+                check_against_type(context, semantic_model, &array, table);
+                return;
+            }
             // Check the first named-class component; empty tables pass through the array component.
             let fields_count = table.get_fields_with_keys().len();
             for component in union.into_vec() {

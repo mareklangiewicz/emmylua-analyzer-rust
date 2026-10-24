@@ -12,7 +12,10 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
 use crate::{Decl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind};
 
-use super::{CheckContext, Checker, check_field::static_member_key};
+use super::{
+    CheckContext, Checker,
+    check_field::{static_member_key, union_array_for_sequence},
+};
 use crate::semantic_model::render::humanize_type;
 
 pub struct AssignTypeMismatchChecker;
@@ -581,8 +584,13 @@ fn check_table_fields(
     target: &LuaType,
     table: &LuaTableExpr,
 ) {
-    // Union target: use the first structured component to check the table literal (`Callback | Callback[]` scenario).
+    // Union target: use the first structured component to check the table literal (`Callback | Callback[]` scenario),
+    // or the array component for a sequence literal.
     if let LuaType::Union(union) = target {
+        if let Some(array) = union_array_for_sequence(union, table) {
+            check_table_fields(context, semantic_model, &array, table);
+            return;
+        }
         for component in union.into_vec().iter() {
             if is_structured_table_target(semantic_model, component) {
                 check_table_fields(context, semantic_model, component, table);

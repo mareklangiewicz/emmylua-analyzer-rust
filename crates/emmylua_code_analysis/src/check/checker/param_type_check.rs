@@ -22,6 +22,7 @@ use crate::{
     LuaTypeNode, TypeDefKind, VariadicType,
 };
 
+use super::check_field::union_array_for_sequence;
 use super::param_count::first_param_is_self;
 use super::{CheckContext, Checker};
 
@@ -857,6 +858,9 @@ fn generic_table_required_mismatch(
         LuaType::Generic(generic) => generic.get_base_type_id().clone(),
         LuaType::Ref(id) | LuaType::Def(id) => id.clone(),
         LuaType::Union(union) => {
+            if let Some(array) = union_array_for_sequence(union, table) {
+                return generic_table_required_mismatch(semantic_model, &array, table);
+            }
             return union.into_vec().iter().find_map(|component| {
                 generic_table_required_mismatch(semantic_model, component, table)
             });
