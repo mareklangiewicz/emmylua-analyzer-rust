@@ -2490,4 +2490,43 @@ mod test {
         "#
         ));
     }
+
+    /// A field typed `T?` (or `T|nil`, or `any`) may be omitted from a table literal argument, just like
+    /// one declared `field? T`: only fields whose type rejects nil are required.
+    #[test]
+    fn test_table_literal_may_omit_nil_typed_field() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                ---@class Opts
+                ---@field a boolean?
+                ---@field b boolean?
+                ---@field c string|nil
+                ---@field d any
+
+                ---@param o Opts
+                local function f(o) end
+                f({ a = true })
+            "#
+        ));
+    }
+
+    /// A field whose type rejects nil is still required.
+    #[test]
+    fn test_table_literal_missing_required_field_still_reported() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                ---@class Opts
+                ---@field a boolean?
+                ---@field b string
+
+                ---@param o Opts
+                local function f(o) end
+                f({ a = true })
+            "#
+        ));
+    }
 }
