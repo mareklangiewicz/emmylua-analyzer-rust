@@ -294,4 +294,38 @@ mod test {
         "#,
         ));
     }
+
+    #[test]
+    fn test_numeric_for_bound_by_field_path_length() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        // `for i = 1, #t.list` bounds `t.list[i]` as `for i = 1, #list` bounds `list[i]`.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Holder
+            ---@field list string[]
+
+            ---@type Holder
+            local t = { list = {} }
+            for i = 1, #t.list do
+                print(t.list[i]:upper())
+            end
+        "#
+        ));
+        // A different path is not bounded by it.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Holder2
+            ---@field list string[]
+            ---@field other string[]
+
+            ---@type Holder2
+            local t = { list = {}, other = {} }
+            for i = 1, #t.list do
+                print(t.other[i]:upper())
+            end
+        "#
+        ));
+    }
 }
