@@ -692,6 +692,35 @@ fn test_member_cycle_converges() {
     let _ = db.analysis().member_type(fid, b_local);
 }
 
+/// An unknown right operand (the empty shell) adds nothing, so the left stays whole:
+/// `c and f()` keeps `boolean` rather than a definite `false`, and `... or nil` stays truthy.
+#[test]
+fn test_expr_logic_unknown_right_keeps_left() {
+    let mut db = setup();
+    let fid = set_test_file(
+        &mut db,
+        1,
+        "a.lua",
+        "local s = 'a'\nlocal a = s ~= '' and unknown_call()\nlocal b = s ~= '' and unknown_call() or nil",
+    );
+    let facts = db.analysis().file_facts(fid).expect("facts");
+    let shell_of = |name| {
+        db.analysis()
+            .decl_type(fid, decl_local(&facts, name))
+            .expect(name)
+    };
+    assert!(
+        shell_of("a")
+            .candidates
+            .contains(&TypeCandidate::Primitive(PrimitiveType::Boolean))
+    );
+    assert!(
+        shell_of("b")
+            .candidates
+            .contains(&TypeCandidate::Literal(LiteralShell::Boolean(true)))
+    );
+}
+
 #[test]
 fn test_expr_logic_and_comparison() {
     let mut db = setup();
