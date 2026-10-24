@@ -210,4 +210,30 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_same_method_on_different_nested_tables() {
+        let mut ws = VirtualWorkspace::new();
+        // `M.A:init` and `M.B:init` are set on different tables.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::DuplicateSetField,
+            r#"
+            local M = {}
+            M.A = {}
+            function M.A:init() end
+            M.B = {}
+            function M.B:init() end
+        "#
+        ));
+        // The same nested target twice still is a duplicate.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::DuplicateSetField,
+            r#"
+            local M = {}
+            M.A = {}
+            function M.A:init() end
+            function M.A:init() end
+        "#
+        ));
+    }
 }

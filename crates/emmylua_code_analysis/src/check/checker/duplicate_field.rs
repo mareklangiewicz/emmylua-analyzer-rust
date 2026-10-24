@@ -5,7 +5,10 @@
 
 use std::collections::HashMap;
 
-use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaSyntaxNode, LuaVarExpr};
+use emmylua_parser::{
+    LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaExpr, LuaIndexExpr, LuaSyntaxNode, LuaVarExpr,
+    PathTrait,
+};
 
 use crate::DiagnosticCode;
 use crate::FileId;
@@ -28,22 +31,29 @@ impl Checker for DuplicateFieldChecker {
         let Some(facts) = semantic_model.file_facts() else {
             return;
         };
-        if let Some(tree) = semantic_model.syntax_tree() {
-            let root = tree.get_red_root();
-            check_cross_file_member_assign(context, semantic_model, &root);
+        let root = semantic_model.syntax_tree().map(|tree| tree.get_red_root());
+        if let Some(root) = &root {
+            check_cross_file_member_assign(context, semantic_model, root);
         }
         let mut by_owner: HashMap<&SemanticId, Vec<&Member>> = HashMap::new();
         for member in &facts.members {
             by_owner.entry(&member.owner).or_default().push(member);
         }
         for (owner, members) in by_owner {
-            // Group by key.
-            let mut by_key: HashMap<String, Vec<&&Member>> = HashMap::new();
+            // Group by key, and by the table the key is set on: a local root's owner drops the
+            // path below it, so `M.A:init` and `M.B:init` share the owner `M`.
+            let mut by_key: HashMap<(String, Option<String>), Vec<&&Member>> = HashMap::new();
             for member in &members {
-                by_key.entry(member.key.to_path()).or_default().push(member);
+                let target = root
+                    .as_ref()
+                    .and_then(|root| target_prefix_path(root, member));
+                by_key
+                    .entry((member.key.to_path(), target))
+                    .or_default()
+                    .push(member);
             }
             let is_type_def = matches!(owner, SemanticId::TypeDef(_));
-            for (name, dupes) in by_key {
+            for ((name, _), dupes) in by_key {
                 if dupes.len() <= 1 {
                     continue;
                 }
@@ -75,6 +85,22 @@ impl Checker for DuplicateFieldChecker {
                 }
             }
         }
+    }
+}
+
+/// The access path of the table a member is set on (`M.A` for `function M.A:init()`), or
+/// `None` for a table-constructor field.
+fn target_prefix_path(root: &LuaSyntaxNode, member: &Member) -> Option<String> {
+    let key_range = member.id.member_key_range()?;
+    let token = root.token_at_offset(key_range.start()).right_biased()?;
+    let index_expr = token.parent_ancestors().find_map(LuaIndexExpr::cast)?;
+    if index_expr.get_index_key()?.get_range()? != key_range {
+        return None;
+    }
+    match index_expr.get_prefix_expr()? {
+        LuaExpr::NameExpr(name_expr) => name_expr.get_access_path().map(|path| path.to_string()),
+        LuaExpr::IndexExpr(prefix) => prefix.get_access_path().map(|path| path.to_string()),
+        _ => None,
     }
 }
 
@@ -143,9 +169,9 @@ fn check_cross_file_member_assign(
 /// require local variable -> module file (`local A = require("mod")`).
 fn required_module_file(
     semantic_model: &SemanticModel<'_>,
-    prefix: &emmylua_parser::LuaExpr,
+    prefix: &LuaExpr,
 ) -> Option<FileId> {
-    let emmylua_parser::LuaExpr::NameExpr(name_expr) = prefix else {
+    let LuaExpr::NameExpr(name_expr) = prefix else {
         return None;
     };
     let decl = semantic_model.resolve_name(name_expr.get_position())?;
