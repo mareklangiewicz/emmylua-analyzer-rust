@@ -110,4 +110,38 @@ mod test {
         let expected = ws.ty("integer");
         assert_eq!(e_ty, expected);
     }
+
+    /// An empty table literal is an empty array: passing `{}` (or a local still holding `{}`) to a
+    /// `number[]` / `T[]` parameter keeps the call's return types, slot by slot.
+    #[test]
+    fn test_empty_table_to_array_param_keeps_returns() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        ---@param xs number[]
+        ---@return string text
+        ---@return number median
+        local function spread(xs) return 'a', 1 end
+
+        ---@generic T
+        ---@param xs T[]
+        ---@return string text
+        ---@return number count
+        local function count(xs) return 'a', 1 end
+
+        local t = {}
+        local a1, b1 = spread({})
+        local a2, b2 = spread(t)
+        local a3, b3 = count({})
+        A1, B1, A2, B2, A3, B3 = a1, b1, a2, b2, a3, b3
+        "#,
+        );
+
+        let string = ws.ty("string");
+        let number = ws.ty("number");
+        for (a, b) in [("A1", "B1"), ("A2", "B2"), ("A3", "B3")] {
+            assert_eq!(ws.expr_ty(a), string, "{a}");
+            assert_eq!(ws.expr_ty(b), number, "{b}");
+        }
+    }
 }
