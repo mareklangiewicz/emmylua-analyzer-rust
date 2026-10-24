@@ -891,6 +891,10 @@ fn generic_table_required_mismatch(
             let expected = semantic_model
                 .type_of_member(&member_ref.id)
                 .unwrap_or(LuaType::Unknown);
+            // `---@field x T?` may be omitted just like `---@field x? T`.
+            if expected.is_optional() {
+                continue;
+            }
             return Some(Mismatch {
                 range: table.get_range(),
                 message: mismatch_message(
