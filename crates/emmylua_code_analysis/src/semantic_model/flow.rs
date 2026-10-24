@@ -280,6 +280,32 @@ fn flow_member_value_type(model: &SemanticModel, member: &SemanticId) -> Option<
     }
 }
 
+/// The member's type where backtracking found none of its writes. A runtime member's own value
+/// is a write that has not happened yet: the read's flow-insensitive type (the declared field,
+/// or that same value for an undeclared table) is what the path holds there.
+fn member_entry_type(
+    model: &SemanticModel,
+    member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
+) -> Option<LuaType> {
+    let member_file = match member {
+        SemanticId::Member(key) => key.file_id,
+        _ => model.file_id(),
+    };
+    if let Some(access) = access
+        && model
+            .file_facts_of(member_file)
+            .and_then(|facts| facts.member_by_id(member))
+            .is_some_and(|def| matches!(def.owner, SemanticId::Decl(_)))
+    {
+        let ty = model.type_of_expr(access.get_syntax_id());
+        if !matches!(ty, LuaType::Unknown) {
+            return Some(ty);
+        }
+    }
+    flow_member_value_type(model, member)
+}
+
 /// Nullable members declared with `---@field x? T` should also carry nil in flow queries.
 fn apply_field_nullable(model: &SemanticModel, member: &SemanticId, ty: LuaType) -> LuaType {
     let member_file = match member {
@@ -299,7 +325,18 @@ fn apply_field_nullable(model: &SemanticModel, member: &SemanticId, ty: LuaType)
 /// Flow-sensitive type of the member at `offset` (member assignment flow + `---@cast t.x +T` widening).
 /// Same as `type_of_decl_at`: exclude this assignment when `offset` lies on `t.x = value`.
 pub fn type_of_member_at(model: &SemanticModel, member: &SemanticId, offset: TextSize) -> LuaType {
-    let fallback = || flow_member_value_type(model, member).unwrap_or(LuaType::Unknown);
+    type_of_member_access_at(model, member, None, offset)
+}
+
+/// `type_of_member_at` for the read `access`, which gives the base where none of the member's
+/// writes precede `offset` (see `member_entry_type`).
+fn type_of_member_access_at(
+    model: &SemanticModel,
+    member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
+    offset: TextSize,
+) -> LuaType {
+    let fallback = || member_entry_type(model, member, access).unwrap_or(LuaType::Unknown);
     let Some(tree) = model.flow_tree() else {
         return fallback();
     };
@@ -320,7 +357,7 @@ pub fn type_of_member_at(model: &SemanticModel, member: &SemanticId, offset: Tex
             if let Some(ty) = trace_member(
                 model,
                 member,
-                None,
+                access,
                 &tree,
                 assign_flow,
                 &mut visited,
@@ -336,7 +373,7 @@ pub fn type_of_member_at(model: &SemanticModel, member: &SemanticId, offset: Tex
     }
     let mut visited = HashSet::new();
     let mut path = PathState::default();
-    trace_member(model, member, None, &tree, start, &mut visited, &mut path)
+    trace_member(model, member, access, &tree, start, &mut visited, &mut path)
         .unwrap_or_else(fallback)
 }
 
@@ -483,9 +520,11 @@ pub(crate) fn type_of_expr_at_node(
                         &mut HashSet::new(),
                         &mut PathState::default(),
                     )
-                    .unwrap_or_else(|| type_of_member_at(model, &member_id, offset))
+                    .unwrap_or_else(|| {
+                        type_of_member_access_at(model, &member_id, Some(index_expr), offset)
+                    })
                 } else {
-                    type_of_member_at(model, &member_id, offset)
+                    type_of_member_access_at(model, &member_id, Some(index_expr), offset)
                 }
                 .get_result_slot_type(0)
                 .unwrap_or(LuaType::Nil);
@@ -2206,14 +2245,16 @@ fn trace_member(
                 }
             }
             FlowNodeKind::Start | FlowNodeKind::Unreachable => {
-                return flow_member_value_type(model, member).map(|ty| finalize(model, ty, path));
+                return member_entry_type(model, member, access)
+                    .map(|ty| finalize(model, ty, path));
             }
             _ => {}
         }
 
         match &node.antecedent {
             None => {
-                return flow_member_value_type(model, member).map(|ty| finalize(model, ty, path));
+                return member_entry_type(model, member, access)
+                    .map(|ty| finalize(model, ty, path));
             }
             Some(FlowAntecedent::Single(next)) => {
                 current = *next;
@@ -5450,7 +5491,7 @@ fn walk_member(
 ) -> Option<LuaType> {
     match antecedent {
         // Backtracked to the start: use the member's declaration type as the base and apply cast widening collected on the path.
-        None => flow_member_value_type(model, member).map(|ty| finalize(model, ty, path)),
+        None => member_entry_type(model, member, access).map(|ty| finalize(model, ty, path)),
         Some(FlowAntecedent::Single(next)) => {
             trace_member(model, member, access, tree, *next, visited, path)
         }
