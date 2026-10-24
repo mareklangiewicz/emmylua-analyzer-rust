@@ -294,4 +294,38 @@ mod test {
         "#,
         ));
     }
+
+    /// An optional function field may be nil: an unguarded call is flagged.
+    #[test]
+    fn test_optional_function_field_call_needs_check() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class OptFunCall
+            ---@field f? fun()
+
+            ---@param t OptFunCall
+            local function a(t)
+                t.f()
+            end
+            "#
+        ));
+        // A guard still narrows it.
+        for body in [
+            "if not t.f then return end\nt.f()",
+            "if _flag or not t.f then return end\nt.f()",
+            "if t.f then t.f() end",
+        ] {
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::NeedCheckNil,
+                    &format!(
+                        "---@param t OptFunCall\n---@param _flag boolean\nlocal function a(t, _flag)\n{body}\nend"
+                    ),
+                ),
+                "{body}"
+            );
+        }
+    }
 }

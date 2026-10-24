@@ -4579,7 +4579,10 @@ pub(crate) fn binary_type(
 /// In short-circuit logical expressions, if the left/right side is a nullable field
 /// (`@field x? T`), add nil back. This logic only applies on the short-circuit evaluation
 /// path, avoiding breaking existing narrowing tests after globally changing member base types.
-fn logical_left_nullable_extra(model: &SemanticModel, syntax: LuaSyntaxId) -> Option<LuaType> {
+pub(crate) fn logical_left_nullable_extra(
+    model: &SemanticModel,
+    syntax: LuaSyntaxId,
+) -> Option<LuaType> {
     let tree = model.syntax_tree()?;
     let node = syntax.to_node_from_root(&tree.get_red_root())?;
     let LuaExpr::IndexExpr(index_expr) = LuaExpr::cast(node)? else {

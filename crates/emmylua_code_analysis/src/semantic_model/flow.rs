@@ -642,16 +642,36 @@ pub(crate) fn type_of_expr_at_node(
                 }
                 // If the prefix was narrowed to a more specific instance/object type on the same flow path,
                 // prefer the member type projected from that type (e.g. after `a = make()`, `a.a` uses the object field).
+                let mut member_ty = member_ty;
                 if let Some(key) = member_key_from_index_expr(model, index_expr)
                     && let Some(prefix) = index_expr.get_prefix_expr()
                 {
                     let prefix_ty = model.type_of_expr_at(prefix.get_syntax_id(), offset);
-                    if let Some(prefix_member_ty) = model.member_type(&prefix_ty, &key)
-                        && !matches!(prefix_member_ty, LuaType::Unknown | LuaType::Any)
-                        && (member_type_more_specific(model, &prefix_member_ty, &member_ty)
-                            || matches!(&prefix_ty, LuaType::Generic(_)))
+                    let is_generic = matches!(&prefix_ty, LuaType::Generic(_));
+                    if let Some(info) = model.member_info(&prefix_ty, &key)
+                        && !matches!(info.typ, LuaType::Unknown | LuaType::Any)
                     {
-                        return apply_casts(prefix_member_ty, All);
+                        if info.id.as_ref() != Some(&member_id) {
+                            if is_generic || member_type_more_specific(model, &info.typ, &member_ty)
+                            {
+                                return apply_casts(info.typ, All);
+                            }
+                        } else {
+                            // Through the same declaration the projection can only refine the value
+                            // (a generic default, say): nil stays flow's call, and `type_of_member`
+                            // drops an optional function/class field's nil. Guards still apply below.
+                            let flow_value = remove_type(member_ty.clone(), &LuaType::Nil);
+                            if !matches!(member_ty, LuaType::Nil | LuaType::Never)
+                                && (is_generic
+                                    || member_type_more_specific(model, &info.typ, &flow_value))
+                            {
+                                member_ty = if member_ty.is_nullable() {
+                                    merge_types(info.typ, LuaType::Nil)
+                                } else {
+                                    info.typ
+                                };
+                            }
+                        }
                     }
                 }
                 let member_ty =

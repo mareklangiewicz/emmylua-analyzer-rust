@@ -77,4 +77,22 @@ mod test {
         "#
         ));
     }
+
+    /// An optional function field (`---@field f? fun()`) keeps its `nil`: `if t.f` can be false.
+    #[test]
+    fn test_optional_function_field_can_be_nil() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@class OptFunField
+                ---@field f? fun()
+
+                ---@param t OptFunField
+                local function a(t)
+                    if t.f then t.f() end
+                end
+            "#
+        ));
+    }
 }
