@@ -294,4 +294,32 @@ mod test {
         "#,
         ));
     }
+
+    /// A generic `T -?` return drops `nil` also when the function is a member of a
+    /// `---@class` table defined in another file.
+    #[test]
+    fn test_required_class_module_not_null_return() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "chk.lua",
+            r#"
+            ---@class Chk
+            local chk = {}
+            ---@generic T
+            ---@param act T
+            ---@return T -?
+            function chk.truthy(act) return act end
+            return chk
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            local chk = require 'chk'
+            ---@type string?
+            local q
+            print(chk.truthy(q):len())
+            "#,
+        ));
+    }
 }

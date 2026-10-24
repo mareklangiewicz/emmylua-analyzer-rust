@@ -298,14 +298,19 @@ impl<'db> SemanticModel<'db> {
         } else {
             LuaType::Unknown
         };
-        // Conditional types cannot be expressed by TypeShell; whenever the return type contains `Conditional`, prefer
-        // rich projection to avoid `Test<T extends ...>` being downgraded to `Test<unknown>` by shell.
+        // Conditional types and `L - R` cannot be expressed by TypeShell; whenever the return type contains one,
+        // prefer rich projection to avoid `Test<T extends ...>` being downgraded to `Test<unknown>`, or
+        // `T -?` to `T`, by shell.
         if let Some(docs) = signature.docs.as_ref()
             && docs.returns.len() == 1
         {
             let rich = self.doc_type_lua_rich_in(file_id, docs.returns[0]);
             if !matches!(rich, LuaType::Unknown)
-                && rich.any_type(|ty| matches!(ty, LuaType::Conditional(_)))
+                && rich.any_type(|ty| match ty {
+                    LuaType::Conditional(_) => true,
+                    LuaType::Call(call) => call.get_call_kind() == LuaAliasCallKind::Sub,
+                    _ => false,
+                })
             {
                 ret = rich;
             }
@@ -468,6 +473,8 @@ impl<'db> SemanticModel<'db> {
             signature,
             &generic_names,
         );
+        // Bind the generic names first: an unbound `Ref("T")` is evaluated as a type, so `T -?` would become `T`.
+        ret = infer::vm::bind_signature_generics(&ret, &generic_params);
         ret = type_eval::expand_alias_generic(self, &ret);
         // Without an explicit `---@return`, keep the return type declared by the member on the owner type.
         // This keeps member docs like class field `---@field f fun(): never` effective on the implementation function's return.
@@ -910,6 +917,8 @@ impl<'db> SemanticModel<'db> {
         }
         let mut ret =
             self.signature_return_type(file_id, closure_syntax, signature, &generic_names);
+        // Bind the generic names first: an unbound `Ref("T")` is evaluated as a type, so `T -?` would become `T`.
+        ret = infer::vm::bind_signature_generics(&ret, &generic_params);
         ret = type_eval::expand_alias_generic(self, &ret);
         if matches!(ret, LuaType::Unknown)
             && signature.docs.is_none()

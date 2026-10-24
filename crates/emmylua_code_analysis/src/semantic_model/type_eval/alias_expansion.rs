@@ -325,12 +325,17 @@ fn evaluate_builtin(model: &SemanticModel, ty: &LuaType) -> Option<LuaType> {
     None
 }
 
-/// `L - R`: the members of `L` that are not members of `R`. An unbound `T` stays `T`.
+/// `L - R`: the members of `L` that are not members of `R`. While `L` still holds an unbound
+/// `T` the call stays as it is: evaluated early (a signature projected for another file), `T -?`
+/// would collapse to `T` and lose the subtraction before `T` is bound.
 fn eval_sub_call(model: &SemanticModel, call: &LuaAliasCallType) -> Option<LuaType> {
     let [left, right] = call.get_operands().as_slice() else {
         return None;
     };
     let left = expand_alias_branches(model, left)?;
+    if left.contain_tpl() {
+        return None;
+    }
     let removed = match right {
         LuaType::Union(union) => union.into_vec(),
         other => vec![other.clone()],
