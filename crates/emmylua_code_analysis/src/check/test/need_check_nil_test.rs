@@ -419,4 +419,30 @@ mod test {
             "#,
         ));
     }
+
+    /// An `--[[@as T]]` inside parentheses casts the parenthesized value: `(ctx --[[@as Sub]]).f`
+    /// reads `Sub`'s field, not the declared type's (where a missing field reads nil).
+    #[test]
+    fn test_paren_inner_cast_types_index_prefix() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Api
+            ---@field dispatch fun(d: any)
+
+            ---@class Base
+            ---@field log any
+
+            ---@class Sub : Base
+            ---@field hl Api
+
+            ---@param ctx Base
+            local function f(ctx)
+                local hl = (ctx --[[@as Sub]]).hl
+                hl.dispatch(1)
+            end
+            "#,
+        ));
+    }
 }
