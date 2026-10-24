@@ -114,8 +114,29 @@ impl<'db> SemanticModel<'db> {
     }
     /// Type of the module's exported value.
     pub fn type_of_module_export(&self) -> Option<LuaType> {
+        if let Some(ty) = self.module_export_as_cast(self.view.file_id()) {
+            return Some(ty);
+        }
         let shell = self.analysis().module_export_type(self.view.file_id())?;
         Some(self.analysis().type_shell_lua(self.view.file_id(), &shell))
+    }
+    /// `local M = f() --[[@as T]]; return M` exports `T`. The TypeShell export cannot see the
+    /// cast (it only knows a `---@class` attached to `M`), so the module would export `M`'s name.
+    fn module_export_as_cast(&self, module_file: FileId) -> Option<LuaType> {
+        let ModuleExport::Decl { decl, .. } = self.analysis().module_export(module_file)? else {
+            return None;
+        };
+        let value_syntax = self
+            .file_facts_of(module_file)?
+            .decl_by_id(decl)?
+            .value_expr_syntax?;
+        let ty = flow::apply_expr_casts(
+            &self.model_for(module_file),
+            value_syntax,
+            LuaType::Unknown,
+            flow::ExprCastMode::AsOnly,
+        );
+        (!matches!(ty, LuaType::Unknown)).then_some(ty)
     }
     /// require module name -> module export type (cross-file, projected as `LuaType`).
     pub fn require_module_type(&self, module_name: &str) -> LuaType {
@@ -125,6 +146,9 @@ impl<'db> SemanticModel<'db> {
         else {
             return LuaType::Unknown;
         };
+        if let Some(ty) = self.module_export_as_cast(module_file) {
+            return ty;
+        }
         let Some(shell) = self.analysis().module_export_type(module_file) else {
             return LuaType::Unknown;
         };
