@@ -3097,15 +3097,16 @@ fn expr_type_node(
             match op {
                 Some(op @ (BinaryOperator::OpOr | BinaryOperator::OpAnd)) => {
                     if let Some((left, right)) = binary.get_exprs() {
+                        let left_is_logical = is_logical_expr(&left);
                         let left = expr_type(db, facts, file, config, left).first_result();
                         let right = expr_type(db, facts, file, config, right).first_result();
-                        // Unknown is the empty set: an unknown right operand adds nothing, so
-                        // the left cannot be narrowed down to what passes it.
-                        let mut shell = if right.is_unknown() {
-                            left
-                        } else {
-                            logical_left_part(left, op == BinaryOperator::OpOr)
-                        };
+                        // Unknown is the empty set, the identity that lets `a = a or 1` converge.
+                        // An unknown right operand (or an unknown inner logical result) instead
+                        // means the shell cannot tell what passes, so the result is unknown.
+                        if right.is_unknown() || (left_is_logical && left.is_unknown()) {
+                            return TypeShell::unknown();
+                        }
+                        let mut shell = logical_left_part(left, op == BinaryOperator::OpOr);
                         shell.merge(&right);
                         return shell;
                     }
@@ -3150,6 +3151,19 @@ fn expr_type_node(
             .map(|expr| expr_type(db, facts, file, config, expr).first_result())
             .unwrap_or_else(TypeShell::unknown),
         _ => TypeShell::unknown(),
+    }
+}
+
+fn is_logical_expr(expr: &LuaExpr) -> bool {
+    match expr {
+        LuaExpr::BinaryExpr(binary) => matches!(
+            binary.get_op_token().map(|token| token.get_op()),
+            Some(BinaryOperator::OpAnd | BinaryOperator::OpOr)
+        ),
+        LuaExpr::ParenExpr(paren) => paren
+            .get_expr()
+            .is_some_and(|inner| is_logical_expr(&inner)),
+        _ => false,
     }
 }
 
