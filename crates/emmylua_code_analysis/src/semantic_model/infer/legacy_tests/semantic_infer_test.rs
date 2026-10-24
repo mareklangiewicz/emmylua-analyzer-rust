@@ -215,4 +215,27 @@ mod test {
 
         assert!(ws.expr_ty("a").is_nullable());
     }
+
+    /// A class instance is a table: `#x` of one without `__len` is an `integer`, alone or
+    /// in a union with other valid operands.
+    #[test]
+    fn test_length_of_class_union_is_integer() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Box
+            ---@field n integer
+
+            ---@param b Box
+            ---@param u Box|string[]
+            local function f(b, u)
+                LenBox = #b
+                LenUnion = #u
+            end
+            "#,
+        );
+
+        assert_eq!(ws.expr_ty("LenBox"), ws.ty("integer"));
+        assert_eq!(ws.expr_ty("LenUnion"), ws.ty("integer"));
+    }
 }
