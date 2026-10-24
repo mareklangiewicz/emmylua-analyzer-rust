@@ -1823,6 +1823,33 @@ fn trace_decl(
     if tree.is_loop_reachable(flow_id) {
         return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
     }
+    // The memo holds the state for an empty incoming path. Guards collected between the query
+    // and this node (`prev and prev.sig`, past the merge of an earlier `if prev and ...`)
+    // narrow that state instead of its base: they apply in program order and distribute over
+    // branch merges. (One difference: they also narrow what a `---@cast` below added, which
+    // the base order applies last.) Incoming casts and correlated narrowings (dropped at some
+    // assignments below) do not commute that way, so they keep the uncached walk.
+    if !path.narrowings.is_empty() || !path.casts.is_empty() {
+        if !path.casts.is_empty()
+            || path
+                .narrowings
+                .iter()
+                .any(|narrowing| matches!(narrowing, Narrowing::Correlated { .. }))
+        {
+            return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
+        }
+        let state = trace_decl(
+            model,
+            decl,
+            tree,
+            flow_id,
+            options,
+            mode,
+            visited,
+            &mut PathState::default(),
+        )?;
+        return Some(finalize(model, state, path));
+    }
     let key = cache::TraceStateKey {
         file_id: model.file_id(),
         decl: decl.clone(),
