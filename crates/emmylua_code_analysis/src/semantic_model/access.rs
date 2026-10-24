@@ -513,7 +513,8 @@ impl<'db> SemanticModel<'db> {
     /// Whether the union member is missing from some components: when `A|C` has `handle` only on A,
     /// `target.handle` should report a missing member in parameter checks rather than silently taking A's field type.
     /// A component naming no type definition is not counted: `require` of a `return M` module is
-    /// `(M|{...})`, where `M` is only the export's name identity.
+    /// `(M|{...})`, where `M` is only the export's name identity. Nor is `nil`: indexing a
+    /// possibly-nil prefix is need-check-nil's concern, not a missing member.
     pub fn member_missing_in_union(&self, index_expr: &LuaIndexExpr) -> bool {
         let Some(index_key) = index_expr.get_index_key() else {
             return false;
@@ -527,6 +528,9 @@ impl<'db> SemanticModel<'db> {
         };
         let key = LuaMemberKey::Name(SmolStr::new(index_key.get_path_part()));
         union.into_vec().iter().any(|component| {
+            if matches!(component, LuaType::Nil) {
+                return false;
+            }
             if let LuaType::Ref(id) | LuaType::Def(id) = component
                 && self.type_def_of(id).is_none()
             {

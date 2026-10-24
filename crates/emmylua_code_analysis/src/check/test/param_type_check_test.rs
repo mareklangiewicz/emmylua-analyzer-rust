@@ -1845,6 +1845,31 @@ mod test {
     }
 
     #[test]
+    fn test_nullable_prefix_member_is_not_missing() {
+        let mut ws = VirtualWorkspace::new();
+        // `St?` is `St|nil`; `nil` lacking `sig` is need-check-nil's concern, and `prev and`
+        // narrows it away here.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@class St
+            ---@field sig string
+
+            ---@return St?
+            local function decode() end
+
+            ---@param s string
+            ---@return boolean
+            local function settled(s) return true end
+
+            local prev = decode()
+            if prev and settled(prev.sig) then
+            end
+        "#
+        ));
+    }
+
+    #[test]
     fn test_self_contain_tpl() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(
