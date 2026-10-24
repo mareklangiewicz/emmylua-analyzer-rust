@@ -4030,30 +4030,18 @@ pub(crate) fn unify_call_bindings(
                 }
             } else {
                 let pv = param_union.into_vec();
-                // A generic union like `` `T`|T `` allows T to be bound through any generic
-                // component; ordinary unions still require all non-nil components to be
-                // compatible (caller may pass any member).
-                if matches!(arg, Function | DocFunction(_) | Signature(_)) {
-                    pv.iter()
-                        .any(|p| unify_call_bindings(model, p, arg, bindings))
-                } else if let Some(str_tpl) = pv.iter().find(|p| matches!(p, StrTplRef(_))) {
+                // A single (non-union) arg is one member of the union: it binds through the
+                // first component it matches (`string|number` accepts a `string`).
+                if !matches!(arg, Function | DocFunction(_) | Signature(_))
+                    && let Some(str_tpl) = pv.iter().find(|p| matches!(p, StrTplRef(_)))
+                    && unify_call_bindings(model, str_tpl, arg, bindings)
+                {
                     // `` `T`|T ``: string literals prefer the template component, resolving "A"
                     // to a named type instead of widening through the ordinary TplRef to string.
-                    if !unify_call_bindings(model, str_tpl, arg, bindings) {
-                        pv.iter()
-                            .any(|p| unify_call_bindings(model, p, arg, bindings))
-                    } else {
-                        true
-                    }
-                } else if pv.iter().any(|p| matches!(p, TplRef(_))) {
+                    true
+                } else {
                     pv.iter()
                         .any(|p| unify_call_bindings(model, p, arg, bindings))
-                } else if pv.contains(&Nil) {
-                    pv.iter()
-                        .filter(|t| !matches!(t, Nil))
-                        .all(|p| unify_call_bindings(model, p, arg, bindings))
-                } else {
-                    false
                 }
             }
         }
