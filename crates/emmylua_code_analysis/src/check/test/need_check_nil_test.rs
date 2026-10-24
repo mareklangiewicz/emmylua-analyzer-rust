@@ -294,4 +294,31 @@ mod test {
         "#,
         ));
     }
+
+    #[test]
+    fn test_metatable_index_takes_declared_type_of_table() {
+        let mut ws = VirtualWorkspace::new();
+        // `__index = G` where `---@type Api` declares `G = {}`: the proxy reads `Api`'s fields.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Dsp
+            ---@field exec fun(s: string): integer
+
+            ---@class Api
+            ---@field dsp Dsp
+
+            ---@type Api
+            G = {}
+
+            ---@type Api
+            local L = {}
+
+            local hl = setmetatable({ bind = 1 }, { __index = G })
+            local n = hl.dsp.exec('x')
+            local hl2 = setmetatable({}, { __index = L })
+            local m = hl2.dsp.exec('y')
+        "#
+        ));
+    }
 }
