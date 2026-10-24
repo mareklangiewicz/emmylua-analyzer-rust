@@ -733,6 +733,11 @@ fn check_arg_pairs(
             continue;
         };
         let arg_ty = cached_arg_type(semantic_model, args, arg_types, index);
+        // A fixed parameter takes the call argument's FIRST value: `g(f(), 1)`.
+        let arg_ty = match (arg, arg_ty.is_multi_return()) {
+            (LuaExpr::CallExpr(_), true) => arg_ty.get_result_slot_type(0).unwrap_or(LuaType::Nil),
+            _ => arg_ty,
+        };
         let arg_ty = normalize_arg_for_check(semantic_model, &arg_ty);
         let call_arg_ty = call_argument_type(semantic_model, arg, &arg_ty);
         let call_arg_ty = normalize_arg_for_check(semantic_model, &call_arg_ty);

@@ -2606,4 +2606,30 @@ mod test {
         "#
         ));
     }
+
+    /// A call argument filling a fixed parameter is checked by (and named as) its FIRST value.
+    #[test]
+    fn test_call_argument_reports_first_return_value() {
+        let source = r#"
+            ---@return string? r
+            ---@return integer? n
+            local function m() end
+
+            ---@param s string
+            ---@param k integer
+            local function g(s, k) end
+            g(m(), 1)
+            "#;
+        let diagnostics = check_source(source);
+        let messages = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 1, "{diagnostics:#?}");
+        assert!(
+            messages[0].starts_with("expected `string` but found `string?`"),
+            "{messages:?}"
+        );
+    }
 }
