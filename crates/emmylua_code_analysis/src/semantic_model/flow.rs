@@ -50,9 +50,10 @@ struct TraceOptions {
     guards: bool,
     casts: bool,
     assignments: bool,
-    /// A read of a reassigned local inside a closure that captures it: that closure's range.
-    /// The closure may run after any assignment outside it, so those are skipped and the
-    /// declaration contributes `captured_local_type` instead of its initializer.
+    /// A read of a reassigned local that can see any of its values: inside a closure that
+    /// captures it, or after a closure that writes it may have run (see `capturing_closure`).
+    /// Code outside this range may run after any assignment outside it, so those are skipped
+    /// and the declaration contributes `captured_local_type` instead of its initializer.
     capture: Option<rowan::TextRange>,
 }
 
@@ -140,9 +141,10 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     .unwrap_or_else(fallback)
 }
 
-/// The innermost closure around `offset` that captures `decl` from an enclosing scope, when
-/// `decl` is an un-annotated local reassigned somewhere (so the closure can see any of its
-/// values; an annotated one keeps its declared type as the contract).
+/// The range of reads of `decl` that can see any of its values, when `decl` is an un-annotated
+/// local reassigned somewhere (an annotated one keeps its declared type as the contract): the
+/// innermost closure around `offset` when it captures `decl` from an enclosing scope, or the
+/// scope of a read that a closure writing `decl` may have run before.
 fn capturing_closure(
     model: &SemanticModel,
     tree: &FlowTree,
@@ -157,12 +159,20 @@ fn capturing_closure(
         return None;
     }
     let root = model.syntax_tree()?.get_red_root();
-    let token = root.token_at_offset(offset).right_biased()?;
-    let closure = token
-        .parent_ancestors()
-        .find(|node| node.kind() == emmylua_parser::LuaSyntaxKind::ClosureExpr.into())?;
-    let range = closure.text_range();
-    (!range.contains(info.name_range.start())).then_some(range)
+    let closure_at = |pos: TextSize| {
+        let token = root.token_at_offset(pos).right_biased()?;
+        token
+            .parent_ancestors()
+            .find(|node| node.kind() == emmylua_parser::LuaSyntaxKind::ClosureExpr.into())
+            .map(|closure| closure.text_range())
+    };
+    let range = closure_at(offset);
+    if range.is_some_and(|range| !range.contains(info.name_range.start())) {
+        return range;
+    }
+    tree.decl_assignments_of(decl)
+        .any(|(pos, _)| closure_at(pos) != range)
+        .then(|| range.unwrap_or_else(|| root.text_range()))
 }
 
 /// A captured local's value inside the closure: any value it is assigned anywhere, widened,
@@ -183,7 +193,7 @@ fn captured_local_type(
         })
     };
     let mut types = vec![widen_variadic_const(&model.type_of_decl(decl)?)];
-    for flow_id in tree.decl_assignment_flows(decl) {
+    for (_, flow_id) in tree.decl_assignments_of(decl) {
         for effect in tree.get_flow_effects(flow_id) {
             if let FlowEffect::AssignDecl {
                 decl: assigned,

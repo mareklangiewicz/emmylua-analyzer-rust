@@ -352,13 +352,16 @@ impl FlowTree {
             || has_node_between(&self.branch_nodes, start, end, include_start)
     }
 
-    /// Flow ids of every assignment to `decl`, in source order.
-    pub fn decl_assignment_flows(&self, decl: &SemanticId) -> impl Iterator<Item = FlowId> + '_ {
+    /// `(statement start, flow id)` of every assignment to `decl`, in source order.
+    pub fn decl_assignments_of(
+        &self,
+        decl: &SemanticId,
+    ) -> impl Iterator<Item = (TextSize, FlowId)> + '_ {
         self.decl_assignments
             .get(decl)
             .into_iter()
             .flatten()
-            .map(|(_, flow_id)| *flow_id)
+            .copied()
     }
 
     /// Whether any assignment to `decl` occurs in the flow tree.

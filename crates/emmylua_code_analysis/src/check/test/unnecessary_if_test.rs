@@ -210,4 +210,39 @@ mod test {
             "#
         ));
     }
+
+    /// A local written inside a closure is read after a call that may run it: the read is
+    /// not just its initializer.
+    #[test]
+    fn test_local_written_by_closure_is_not_its_initializer() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@param f fun()
+                local function run(f) f() end
+                local function mk()
+                    local ran = false
+                    run(function() ran = true end)
+                    if ran then return 1 end
+                end
+            "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@param f fun(): string?
+                local function run(f) f() end
+                local function mk()
+                    local cancelled = false
+                    run(function()
+                        local text = nil ---@type string?
+                        cancelled = cancelled or text == nil
+                        return text
+                    end)
+                    if cancelled then return nil end
+                end
+            "#
+        ));
+    }
 }
