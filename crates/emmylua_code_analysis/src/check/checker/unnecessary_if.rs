@@ -2,8 +2,9 @@
 
 use emmylua_parser::{LuaAstNode, LuaIfStat};
 
-use crate::DiagnosticCode;
 use crate::semantic_model::SemanticModel;
+use crate::semantic_model::infer::vm::logical_left_nullable_extra;
+use crate::{DiagnosticCode, LuaType};
 
 use super::{CheckContext, Checker};
 
@@ -35,7 +36,12 @@ fn check_condition(
     semantic_model: &SemanticModel<'_>,
     condition: &emmylua_parser::LuaExpr,
 ) {
-    let expr_type = semantic_model.type_of_expr(condition.get_syntax_id());
+    let mut expr_type = semantic_model.type_of_expr(condition.get_syntax_id());
+    // A condition tests truthiness like an `and`/`or` operand: add back the nil an optional
+    // function/class field's projection omits.
+    if let Some(nil) = logical_left_nullable_extra(semantic_model, condition.get_syntax_id()) {
+        expr_type = LuaType::from_vec(vec![expr_type, nil]);
+    }
     if expr_type.is_always_truthy() {
         context.add_diagnostic(
             DiagnosticCode::UnnecessaryIf,

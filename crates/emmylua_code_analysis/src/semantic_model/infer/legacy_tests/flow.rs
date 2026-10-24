@@ -4815,4 +4815,33 @@ _ = a[2]
         "#,
         ));
     }
+
+    #[test]
+    fn test_runtime_member_read_before_its_write_keeps_declared_field() {
+        let mut ws = VirtualWorkspace::new();
+        let mut emmyrc = ws.get_emmyrc();
+        emmyrc.strict.array_index = true;
+        ws.update_emmyrc(emmyrc);
+        ws.def(
+            r#"
+        ---@class EntryContainer
+        ---@field items string[]
+        "#,
+        );
+        // `t.items[1] = nil` comes later: before it, the element is the declared `string?`.
+        for body in [
+            "---@type nil\nlocal _n = t.items[1]\nt.items[1] = nil",
+            "if _flag then return end\n---@type nil\nlocal _n = t.items[1]\nt.items[1] = nil",
+        ] {
+            assert!(
+                !ws.has_no_diagnostic(
+                    DiagnosticCode::AssignTypeMismatch,
+                    &format!(
+                        "---@param t EntryContainer\n---@param _flag boolean\nlocal function f(t, _flag)\n{body}\nend"
+                    ),
+                ),
+                "{body}"
+            );
+        }
+    }
 }
