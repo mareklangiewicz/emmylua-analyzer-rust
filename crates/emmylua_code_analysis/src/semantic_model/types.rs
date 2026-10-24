@@ -950,6 +950,36 @@ impl<'db> SemanticModel<'db> {
         }
     }
     /// If the member belongs to an `---@enum` table and its value is an integer literal, return the corresponding IntegerConst.
+    /// The runtime table an `---@enum` comment annotates, on which the enum's values hang: the
+    /// table literal of the statement owning the comment (`local Op = {..}`, `Op = {..}` or
+    /// `M.Op = {..}`; every literal's fields have its synthetic member identity), else a
+    /// declaration named like the enum.
+    pub(crate) fn enum_runtime_owner(&self, def: &TypeDef) -> Option<SemanticId> {
+        let facts = self.file_facts_of(def.file_id)?;
+        if let Some(owner_syntax) = def.owner_syntax {
+            let tree = self.syntax_tree_of(def.file_id)?;
+            let first_value = owner_syntax
+                .to_node_from_root(&tree.get_red_root())
+                .and_then(|node| match node.kind().into() {
+                    LuaSyntaxKind::LocalStat => emmylua_parser::LuaLocalStat::cast(node)?
+                        .get_value_exprs()
+                        .next(),
+                    LuaSyntaxKind::AssignStat => LuaAssignStat::cast(node)?
+                        .get_var_and_expr_list()
+                        .1
+                        .into_iter()
+                        .next(),
+                    _ => None,
+                });
+            if let Some(LuaExpr::TableExpr(table)) = first_value {
+                return Some(SemanticId::member(def.file_id, table.get_range()));
+            }
+        }
+        facts
+            .decl_named(def.name.as_str())
+            .map(|decl| decl.id.clone())
+    }
+
     pub(crate) fn enum_member_const(
         &self,
         member_file: FileId,

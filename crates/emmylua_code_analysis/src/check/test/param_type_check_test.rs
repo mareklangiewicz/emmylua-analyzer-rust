@@ -2632,4 +2632,47 @@ mod test {
             "{messages:?}"
         );
     }
+
+    /// `---@enum` on a member assignment (`M.Level = {..}`) takes its values from that table
+    /// literal, like a local `---@enum` does: `M.Level.DEBUG` (a `3`) is accepted as `M.Level`.
+    #[test]
+    fn test_member_enum_field_is_enum() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                local M = {}
+                ---@enum M.Level
+                M.Level = { NONE = 0, DEBUG = 3 }
+
+                ---@param l M.Level
+                local function take(l) end
+                take(M.Level.DEBUG)
+                local L = M.Level
+                take(L.NONE)
+            "#
+        ));
+    }
+
+    /// The enum's values come from the table its comment annotates, whatever that table's name:
+    /// a member assignment or a local both work when the names differ from the enum's.
+    #[test]
+    fn test_enum_table_named_unlike_enum() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                local M = {}
+                ---@enum Lvl
+                M.Level = { NONE = 0, DEBUG = 3 }
+                ---@enum Kind
+                local K = { A = 1, B = 2 }
+
+                ---@param l Lvl
+                ---@param k Kind
+                local function take(l, k) end
+                take(M.Level.DEBUG, K.B)
+            "#
+        ));
+    }
 }

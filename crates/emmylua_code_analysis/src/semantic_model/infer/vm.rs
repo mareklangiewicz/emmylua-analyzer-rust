@@ -894,7 +894,7 @@ impl<'a> InferVm<'a> {
                     }) else {
                         return Value::plain(LuaType::Unknown);
                     };
-                    let Some(enum_owner) = enum_runtime_owner(self.model, &def) else {
+                    let Some(enum_owner) = self.model.enum_runtime_owner(&def) else {
                         return Value::plain(LuaType::Unknown);
                     };
                     let mut types = Vec::new();
@@ -4941,16 +4941,6 @@ fn is_enum_like_dynamic_key(model: &SemanticModel, ty: &LuaType) -> bool {
         return false;
     };
     matches!(def.kind, TypeDefKind::Enum)
-}
-
-/// `---@enum T` usually decorates a runtime table (`local Op = {...}`); use
-/// `def.owner_syntax` to find the corresponding declaration, on which enum members hang.
-fn enum_runtime_owner(model: &SemanticModel, def: &TypeDef) -> Option<SemanticId> {
-    let facts = model.file_facts_of(def.file_id)?;
-    let decl = facts.decl_by_owner_syntax(def.owner_syntax?)?;
-    // A global enum table `Op = { ... }`'s fields hang on the synthetic table identity.
-    let value_syntax = decl.value_expr_syntax?;
-    Some(SemanticId::member(def.file_id, value_syntax.get_range()))
 }
 
 /// Unary operation (including operator overloads unm/len).
