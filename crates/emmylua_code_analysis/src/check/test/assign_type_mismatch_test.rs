@@ -2820,4 +2820,58 @@ return t
             "{diagnostics:#?}"
         );
     }
+
+    /// An alias of `T -?` (like the builtin `std.NotNull<T>`) drops `nil` from `T`, also as
+    /// an array element and in a generic return.
+    #[test]
+    fn test_not_null_drops_nil() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Acc
+                ---@field n integer
+
+                ---@alias NN<T> T -?
+                ---@type NN<Acc?>
+                local own
+                ---@type Acc
+                local ok_own = own
+
+                ---@type std.NotNull<Acc?>
+                local one
+                ---@type Acc
+                local ok_one = one
+
+                ---@type std.NotNull<Acc?>[]
+                local arr
+                ---@type Acc[]
+                local ok_arr = arr
+
+                ---@generic T
+                ---@param x T
+                ---@return std.NotNull<T>[]
+                local function wrap(x) return { x } end
+                ---@type Acc?
+                local maybe
+                ---@type Acc[]
+                local ok_call = wrap(maybe)
+            "#
+        ));
+    }
+
+    /// Dropping `nil` keeps every other member: `std.NotNull<string?>` is not a `nil`.
+    #[test]
+    fn test_not_null_keeps_other_members() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@type std.NotNull<string?>
+                local s
+                ---@type nil
+                local bad = s
+            "#
+        ));
+    }
 }
