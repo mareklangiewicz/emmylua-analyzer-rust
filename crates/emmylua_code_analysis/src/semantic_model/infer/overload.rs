@@ -73,14 +73,21 @@ pub fn structural_table_type(model: &SemanticModel, ty: &LuaType) -> LuaType {
 
 /// Table literal -> Array (for structural unification with `T[]` params).
 /// Only positive integer-keyed members are collected and widened to the array element
-/// base type (`{1,2,3}` -> `integer[]`).
+/// base type (`{1,2,3}` -> `integer[]`). A table with no members at all is an empty array
+/// of any element (`{}` -> `unknown[]`).
 fn table_literal_as_array(model: &SemanticModel, ty: &LuaType) -> Option<LuaType> {
     let LuaType::TableConst(table) = ty else {
         return None;
     };
     let owner = SemanticId::member(table.file_id, table.value);
+    let members = model.members_of_owner(&owner);
+    if members.is_empty() {
+        return Some(LuaType::Array(Rc::new(LuaArrayType::from_base_type(
+            LuaType::Unknown,
+        ))));
+    }
     let mut base_types = Vec::new();
-    for member_ref in model.members_of_owner(&owner).iter() {
+    for member_ref in members.iter() {
         let Some(facts) = model.file_facts_of(member_ref.file_id) else {
             continue;
         };
