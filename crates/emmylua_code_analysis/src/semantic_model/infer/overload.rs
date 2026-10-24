@@ -406,7 +406,7 @@ fn normalize_missing_generic_arg(
 
 /// Whether the type contains an unbound generic parameter (used to avoid binding `T`
 /// to `unknown` when an argument is missing).
-fn type_contains_tpl_ref(ty: &LuaType) -> bool {
+pub(crate) fn type_contains_tpl_ref(ty: &LuaType) -> bool {
     use LuaType::*;
     match ty {
         TplRef(_) => true,

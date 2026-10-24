@@ -42,7 +42,7 @@ use crate::{
 use super::callable::CallableCandidateSet;
 use super::overload::{
     CallArg, call_operator_self_type, match_call_candidate, pcall_callback_ret, pcall_return_type,
-    select_callable, select_callable_partial,
+    select_callable, select_callable_partial, type_contains_tpl_ref,
 };
 use super::unify;
 use crate::semantic_model::SemanticModel;
@@ -4178,6 +4178,9 @@ pub(crate) fn unify_call_bindings(
                 || (matches!(param, Function) && matches!(arg, DocFunction(_) | Signature(_)))
             {
                 true
+            } else if !type_contains_tpl_ref(param) {
+                // Nothing to bind: the arg only has to fit (`integer` for `number`, `Dog` for `Animal`).
+                model.type_check_subtype(arg, param)
             } else {
                 unify::unify_bindings(param, arg, bindings)
             }
