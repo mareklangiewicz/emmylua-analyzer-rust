@@ -2698,4 +2698,24 @@ mod test {
             "#,
         ));
     }
+
+    #[test]
+    fn test_and_or_with_union_param_call_keeps_string() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        // `string.sub(s: string|number, ...)`: its call must stay `string`, so the
+        // `cond and src:sub(2) or src` idiom is `string`, not `boolean|string`.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param s string
+            local function take(s) end
+            ---@param src string
+            ---@param b boolean
+            local function f(src, b)
+                local p = b and src:sub(2) or src
+                take(p)
+            end
+            "#
+        ));
+    }
 }
