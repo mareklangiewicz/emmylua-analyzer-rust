@@ -2366,4 +2366,27 @@ mod test {
             diagnostics
         );
     }
+
+    /// A `V -?` return whose `V` the call left unbound (the callback returned an `any` local)
+    /// settles to `V`, as a bare unbound `V` does, rather than staying `V - nil`.
+    #[test]
+    fn test_unbound_generic_not_null_return_settles() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@class Sq<T>
+            ---@overload fun<V>(f: (fun(): V)): Sq<std.NotNull<V>>
+            local Sq = {}
+            ---@param f fun(v: T)
+            function Sq:each(f) end
+            ---@param s integer
+            local function use(s) end
+            ---@return any
+            local function read() end
+            local a = Sq(function() local line = read(); return line end)
+            a:each(function(x) use(x) end)
+            "#,
+        ));
+    }
 }

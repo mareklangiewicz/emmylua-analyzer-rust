@@ -27,7 +27,8 @@ use crate::semantic_model::flow::{ExprCastMode, type_of_expr_with_cast};
 use crate::semantic_model::member::{MemberInfo, table_const_class_type, table_metatable_type};
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
-    sanitize_unresolved_generics, sanitize_unresolved_generics_with_model, substitute_named_refs,
+    sanitize_unresolved_generics, sanitize_unresolved_generics_with_model,
+    settle_unbound_sub_calls, substitute_named_refs,
 };
 use crate::{
     AsyncState, FileId, GenericTpl, GenericTplId, InFiled, LuaAliasCallKind, LuaArrayType,
@@ -1973,6 +1974,7 @@ impl<'a> InferVm<'a> {
         // Unbound generic params in the call result must not leak as bare TplRefs; degrade
         // them all to Unknown.
         let allowed_tpls: HashSet<GenericTplId> = HashSet::new();
+        let ret = settle_unbound_sub_calls(&ret);
         let ret = sanitize_unresolved_generics_with_model(self.model, &ret, &allowed_tpls);
         let ret = self.expand_unpack_return(ret);
         let ret = self.expand_returned_variadic_function(ret, args, &callee_fun);
