@@ -3161,4 +3161,18 @@ return t
             );
         }
     }
+
+    /// An inferred `nil` is no contract: `local x = nil` is `local x`.
+    #[test]
+    fn test_inferred_nil_local_accepts_any_assignment() {
+        let source = r#"
+            local bare
+            bare = 1
+            local thing = nil
+            thing = 1
+            return bare, thing
+        "#;
+        let diagnostics = check_source(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
 }
