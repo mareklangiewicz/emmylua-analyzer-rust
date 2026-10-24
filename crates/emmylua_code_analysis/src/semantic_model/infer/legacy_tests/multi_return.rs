@@ -144,4 +144,22 @@ mod test {
             assert_eq!(ws.expr_ty(b), number, "{b}");
         }
     }
+
+    /// `{}` says nothing about an element type: a `V[]` parameter given it binds `V` to `any`,
+    /// not `unknown` (which would type every later callback parameter `unknown`).
+    #[test]
+    fn test_empty_table_binds_array_element_to_any() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        ---@class Box<T>
+        ---@overload fun<V>(src: V[]): Box<V>
+        local Box = {}
+
+        B = Box({})
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("B"), ws.ty("Box<any>"));
+    }
 }
