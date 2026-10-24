@@ -492,4 +492,26 @@ mod test {
         assert_eq!(ws.expr_ty("ParamA"), ws.ty("integer"));
         assert_eq!(ws.expr_ty("ParamB"), ws.ty("string"));
     }
+
+    /// A method's callback parameter typed with the class generic takes the receiver's argument
+    /// (`Box<string>:sort(function(a) ... end)` → `a: string`), as the method's return does.
+    #[test]
+    fn test_method_callback_param_takes_receiver_class_generic() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+        ---@class Box<T>
+        local Box = {}
+
+        ---@param cmp? fun(a: T, b: T): boolean
+        function Box:sort(cmp) end
+
+        ---@type Box<string>
+        local r
+        r:sort(function(a, b) A = a return true end)
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), ws.ty("string"));
+    }
 }

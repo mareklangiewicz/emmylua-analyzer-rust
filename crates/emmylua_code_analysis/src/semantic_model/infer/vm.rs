@@ -1753,6 +1753,8 @@ impl<'a> InferVm<'a> {
                 for (param_idx, callback_param) in callback_fun.get_params().iter().enumerate() {
                     if let Some(param_ty) = &callback_param.1 {
                         let mut substituted = unify::substitute(param_ty, &bindings);
+                        // Class generics (`T` of `Box<T>`) come from the receiver, as on returns.
+                        substituted = substitute_named_refs(&substituted, &class_map);
                         if let Some(self_ty) = &receiver_ty {
                             substituted = replace_self_type(&substituted, self_ty);
                         }
