@@ -272,21 +272,6 @@ fn check_call(
     let colon_call = analysis.colon_call;
     let receiver_ty = analysis.receiver_ty;
     let explicit_generics = &analysis.explicit_generics;
-    // Class generics referenced by name in a method (`x: T`) are bound by the receiver
-    // instance (`Box<integer>`), as the VM does for the call's result.
-    if let Some(class_map) = type_eval::class_generic_map(semantic_model, &receiver_ty) {
-        for candidate in &mut candidates {
-            // The temporary input is dropped by the time the result is unwrapped, so an
-            // unchanged candidate comes back without a second copy.
-            let substituted = type_eval::substitute_named_refs(
-                &LuaType::DocFunction(Rc::new(candidate.clone())),
-                &class_map,
-            );
-            if let LuaType::DocFunction(func) = substituted {
-                *candidate = Rc::unwrap_or_clone(func);
-            }
-        }
-    }
 
     // Cheap candidate ordering: check likely overloads first so the common
     // “one candidate matches” case returns before running the expensive

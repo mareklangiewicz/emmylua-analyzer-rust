@@ -3350,4 +3350,43 @@ return t
             "#
         ));
     }
+
+    /// A table literal argument meets the receiver-bound parameter: on `Box<Item>`, `v: T` is
+    /// `v: Item`, so its fields are checked as for a method declared with `Item`.
+    #[test]
+    fn test_table_arg_checks_against_receiver_bound_class_generic() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Item
+                ---@field name string
+
+                ---@class Box<T>
+                local Box = {}
+                ---@param v T
+                function Box:put(v) end
+
+                ---@type Box<Item>
+                local b
+                b:put({ name = 1 })
+            "#
+        ));
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Item2
+                ---@field name string
+
+                ---@class Box2<T>
+                local Box2 = {}
+                ---@param v T
+                function Box2:put(v) end
+
+                ---@type Box2<Item2>
+                local b
+                b:put({ name = 'x' })
+            "#
+        ));
+    }
 }
