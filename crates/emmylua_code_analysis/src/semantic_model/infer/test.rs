@@ -1874,3 +1874,27 @@ fn expression_casts_use_the_current_file() {
         }
     }
 }
+
+#[test]
+fn test_intersection_member_is_the_narrower_component() {
+    // `P & { m: string }` reads `m` as `string`: an intersection value is both, so a member both
+    // components declare has the narrower type, not the first component's `string?`.
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class P
+        ---@field m string?
+
+        ---@type P & { m: string }
+        local q
+        ---@type { m: number } & { m: string }
+        local clash
+
+        got = q.m
+        none = clash.m
+    "#,
+    );
+    assert_eq!(ws.expr_ty("got"), LuaType::String);
+    // disjoint member types still meet in nothing
+    assert_eq!(ws.expr_ty("none"), LuaType::Never);
+}

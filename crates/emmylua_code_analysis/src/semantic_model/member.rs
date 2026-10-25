@@ -309,7 +309,8 @@ pub(crate) fn member_info_impl(
     if let Some(info) = direct_member_info(model, prefix_type, key) {
         return Some(info);
     }
-    // Intersection members: same-key members from all components are merged; conflicting types (`number & string`) collapse to `never`.
+    // Intersection members: same-key members from all components are merged into the narrowest
+    // (`string? & string` is `string`); conflicting types (`number & string`) collapse to `never`.
     if let LuaType::Intersection(intersection) = prefix_type {
         let mut types = Vec::new();
         let mut first = None;
@@ -326,11 +327,21 @@ pub(crate) fn member_info_impl(
         if types.is_empty() {
             return None;
         }
-        let typ = if types.len() == 1 {
-            types.pop()?
-        } else {
-            LuaType::Never
-        };
+        let mut typ = types.remove(0);
+        for other in types {
+            // An unknown component says nothing about the member; it never narrows.
+            if matches!(other, LuaType::Unknown | LuaType::Any) {
+                continue;
+            }
+            if matches!(typ, LuaType::Unknown | LuaType::Any)
+                || model.type_check_subtype(&other, &typ)
+            {
+                typ = other;
+            } else if !model.type_check_subtype(&typ, &other) {
+                typ = LuaType::Never;
+                break;
+            }
+        }
         return Some(MemberInfo {
             key: key.clone(),
             typ,
