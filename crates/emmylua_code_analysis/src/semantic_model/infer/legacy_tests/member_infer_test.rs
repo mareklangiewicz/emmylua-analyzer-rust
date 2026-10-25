@@ -596,4 +596,30 @@ mod test {
         );
         assert_eq!(ws.expr_ty("M.state.waiting"), ws.ty("integer"));
     }
+
+    /// A `---@field`'s structural type keeps its fields, in an array and an optional field too:
+    /// the shell lowers `{ pos: integer }` to a bare `table`.
+    #[test]
+    fn test_field_object_type_keeps_fields() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Fake
+            ---@field o { pos: integer }
+            ---@field fds { pos: integer }[]
+            ---@field opt? { pos: integer }
+
+            ---@type Fake
+            local w
+            d1 = w.o.pos
+            local fd = w.fds[1]
+            d2 = fd.pos
+            local opt = w.opt
+            if opt then d4 = opt.pos end
+            "#,
+        );
+        assert_eq!(ws.expr_ty("d1"), ws.ty("integer"));
+        assert_eq!(ws.expr_ty("d2"), ws.ty("integer"));
+        assert_eq!(ws.expr_ty("d4"), ws.ty("integer"));
+    }
 }
