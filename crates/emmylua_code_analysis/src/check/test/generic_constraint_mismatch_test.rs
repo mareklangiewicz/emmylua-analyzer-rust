@@ -919,4 +919,34 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_method_keyof_owner_class_generic_on_cast_class_table() {
+        // The class table comes from a constructor call cast to the class: no `---@class` is attached to it.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Box<T>
+
+            ---@class Root
+            ---@field root string
+
+            ---@return table
+            local function cls() return {} end
+            local Box = cls() --[[@as Box<any>]]
+
+            ---@generic K: keyof T
+            ---@param k K
+            ---@return std.RawGet<T, K>
+            function Box:get(k) end
+        "#,
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::GenericConstraintMismatch,
+            r#"
+            local b = {} ---@type Box<Root>
+            local typo = b:get('roott')
+        "#
+        ));
+    }
 }
