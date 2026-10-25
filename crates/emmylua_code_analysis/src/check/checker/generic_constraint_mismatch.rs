@@ -238,7 +238,7 @@ fn check_call(
                 }
             }
             // A method's `K: keyof T` may name the owner class's `T`: bind it from the receiver (`Box<Root>`).
-            for (name, ty) in receiver_class_args(semantic_model, &callee) {
+            for (name, ty) in receiver_class_args(semantic_model, &analysis.receiver_ty) {
                 substitutions.entry(name).or_insert(ty);
             }
             for (index, param) in docs.generic_params.iter().enumerate() {
@@ -399,14 +399,9 @@ pub(crate) fn resolved_call_signatures(
 /// `local Box = cls('Box') --[[@as Box<any>]]` has no `---@class` attached to its declaration.
 fn receiver_class_args(
     semantic_model: &SemanticModel<'_>,
-    callee: &LuaExpr,
+    receiver_ty: &LuaType,
 ) -> Vec<(String, LuaType)> {
-    let Some(prefix) =
-        LuaIndexExpr::cast(callee.syntax().clone()).and_then(|e| e.get_prefix_expr())
-    else {
-        return Vec::new();
-    };
-    let LuaType::Generic(generic) = semantic_model.type_of_expr(prefix.get_syntax_id()) else {
+    let LuaType::Generic(generic) = receiver_ty else {
         return Vec::new();
     };
     let Some(def) = semantic_model.type_def_of(&generic.get_base_type_id()) else {
