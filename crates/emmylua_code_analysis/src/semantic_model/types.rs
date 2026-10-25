@@ -600,9 +600,11 @@ impl<'db> SemanticModel<'db> {
         let signature = facts.signature_by_closure(closure_syntax)?;
         let docs = signature.docs.as_ref()?;
         let generic_params = &docs.generic_params;
+        // `pairs`/`next` are generic over K, V; `ipairs` only over V (its key is `int`).
         let (key_id, value_id) = match generic_params.len() {
-            n if n >= 2 => (GenericTplId::Type(0), GenericTplId::Type(1)),
-            _ => return None,
+            0 => return None,
+            1 => (None, GenericTplId::Type(0)),
+            _ => (Some(GenericTplId::Type(0)), GenericTplId::Type(1)),
         };
         // alias expansion (`MatchersObject` -> object).
         let mut iter_arg = arg_ty.clone();
@@ -761,7 +763,9 @@ impl<'db> SemanticModel<'db> {
             _ => return None,
         };
         let mut bindings = infer::unify::TplBindings::new();
-        bindings.insert(key_id, key_ty);
+        if let Some(key_id) = key_id {
+            bindings.insert(key_id, key_ty);
+        }
         bindings.insert(value_id, value_ty);
         // Resolves the inner return slots of `---@return fun(tbl:any):K, V`.
         let return_syntax = docs.returns.first()?;
