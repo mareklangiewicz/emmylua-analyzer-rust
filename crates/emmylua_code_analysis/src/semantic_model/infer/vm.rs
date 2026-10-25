@@ -2040,6 +2040,11 @@ impl<'a> InferVm<'a> {
         let allowed_tpls: HashSet<GenericTplId> = HashSet::new();
         let ret = settle_unbound_sub_calls(&ret);
         let ret = sanitize_unresolved_generics_with_model(self.model, &ret, &allowed_tpls);
+        // Degrading can make union members equal (`Box<V1>|Box<V2>` -> `Box<unknown>` twice).
+        let ret = match ret {
+            LuaType::Union(union) => LuaType::from_vec(union.iter().cloned().collect()),
+            ret => ret,
+        };
         let ret = self.expand_unpack_return(ret);
         let ret = self.expand_returned_variadic_function(ret, args, &callee_fun);
         Value::plain(ret)

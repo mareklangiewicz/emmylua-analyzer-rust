@@ -1896,3 +1896,23 @@ fn test_unbound_generic_in_call_result_type_argument_degrades_to_unknown() {
     );
     assert_eq!(ws.expr_ty("boxed"), ws.ty("Box<unknown>"));
 }
+
+#[test]
+fn test_unbound_generics_of_two_candidates_merge_into_one_result() {
+    // A union callee takes the union of its matching candidates' results. Each leaves its own
+    // generic unbound; once degraded, the two `Box<unknown>` results are one type.
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class Box<T>
+
+        ---@type (fun<V>(s: V[]): Box<V>) | (fun<W>(s: W[]): Box<W>)
+        local from
+
+        local function f(t)
+            boxed = from(t)
+        end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("boxed"), ws.ty("Box<unknown>"));
+}
