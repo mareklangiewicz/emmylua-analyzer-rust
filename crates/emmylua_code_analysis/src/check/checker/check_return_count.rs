@@ -21,7 +21,7 @@ use crate::semantic_db::def::{SemanticId, Signature};
 use crate::semantic_model::SemanticModel;
 use crate::{FileId, LuaType, VariadicType};
 
-use super::{CheckContext, Checker};
+use super::{CheckContext, Checker, own_return_stats};
 
 pub struct CheckReturnCountChecker;
 
@@ -247,18 +247,6 @@ fn project_return_annotation_in(
         }
     }
     semantic_model.doc_type_lua_rich_in(file_id, syntax)
-}
-
-/// Only check return statements belonging to this closure itself.
-fn own_return_stats(closure: &LuaClosureExpr) -> Vec<LuaReturnStat> {
-    closure
-        .descendants::<LuaReturnStat>()
-        .filter(|stat| {
-            stat.ancestors::<LuaClosureExpr>()
-                .next()
-                .is_some_and(|expr| &expr == closure)
-        })
-        .collect()
 }
 
 fn check_return_stats(

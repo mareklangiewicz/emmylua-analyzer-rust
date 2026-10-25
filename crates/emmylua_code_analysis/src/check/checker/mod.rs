@@ -45,6 +45,7 @@ pub mod unused;
 
 use std::sync::Arc;
 
+use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaReturnStat};
 use lsp_types::{DiagnosticSeverity, DiagnosticTag};
 use rowan::TextRange;
 
@@ -289,4 +290,16 @@ fn default_tags(code: &DiagnosticCode) -> Option<Vec<DiagnosticTag>> {
         DiagnosticCode::Deprecated => Some(vec![DiagnosticTag::DEPRECATED]),
         _ => None,
     }
+}
+
+/// The return statements belonging to this closure itself, not to a closure nested inside it.
+pub(crate) fn own_return_stats(closure: &LuaClosureExpr) -> Vec<LuaReturnStat> {
+    closure
+        .descendants::<LuaReturnStat>()
+        .filter(|stat| {
+            stat.ancestors::<LuaClosureExpr>()
+                .next()
+                .is_some_and(|expr| &expr == closure)
+        })
+        .collect()
 }

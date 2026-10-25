@@ -3,14 +3,14 @@
 //! Uses only semantic facts: `Signature.docs` is `None` = no comment (global functions report `MissingGlobalDoc`,
 //! others report `IncompleteSignatureDoc`); additionally report missing `@param` and return values exceeding the documented count.
 
-use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaReturnStat, LuaStat, LuaSyntaxKind};
+use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaStat, LuaSyntaxKind};
 
 use crate::DiagnosticCode;
 use crate::LuaType;
 use crate::semantic_db::def::{DeclKind, Signature};
 use crate::semantic_model::SemanticModel;
 
-use super::{CheckContext, Checker};
+use super::{CheckContext, Checker, own_return_stats};
 
 pub struct IncompleteSignatureDocChecker;
 
@@ -69,8 +69,8 @@ fn check_signature(
             params
                 .get_params()
                 .any(|param| param.get_name_token().is_some())
-        }) || closure
-            .descendants::<LuaReturnStat>()
+        }) || own_return_stats(&closure)
+            .iter()
             .any(|stat| stat.get_expr_list().count() > 0);
         // A leading pure `---` comment on a global function counts as documentation (no report when there are no parameters/return values).
         if is_global && !has_signature_content && has_comment_before(&closure) {
@@ -130,7 +130,7 @@ fn check_signature(
     if variadic_overload {
         return;
     }
-    for return_stat in closure.descendants::<LuaReturnStat>() {
+    for return_stat in own_return_stats(&closure) {
         if return_stat.get_expr_list().count() > doc_return_len {
             for (index, expr) in return_stat.get_expr_list().enumerate() {
                 if index >= doc_return_len {
