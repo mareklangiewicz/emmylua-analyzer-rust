@@ -4625,6 +4625,10 @@ pub(crate) fn binary_type(
                 };
                 return LuaType::BooleanConst(result);
             }
+            // `why == 'typo'` where `why` is a literal union: no member can be equal.
+            if matches!(op, OpEq | OpNe) && literals_never_equal(model, left, &right) {
+                return LuaType::BooleanConst(matches!(op, OpNe));
+            }
             LuaType::Boolean
         }
         OpAdd | OpSub | OpMul => {
@@ -4950,6 +4954,52 @@ pub(crate) fn bind_signature_generics(ty: &LuaType, generics: &[GenericTpl]) -> 
         }
         _ => ty.clone(),
     }
+}
+
+/// A literal value, for equality folding (Lua compares numbers by value: `1 == 1.0`).
+#[derive(PartialEq)]
+enum LiteralValue {
+    Str(SmolStr),
+    Num(f64),
+    Bool(bool),
+}
+
+/// The literals a type can hold, when it holds nothing else: a literal, or a union or alias of them.
+fn literal_values(model: &SemanticModel, ty: &LuaType, out: &mut Vec<LiteralValue>) -> bool {
+    match ty {
+        LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
+            out.push(LiteralValue::Str(s.as_ref().clone()))
+        }
+        LuaType::IntegerConst(i) | LuaType::DocIntegerConst(i) => {
+            out.push(LiteralValue::Num(*i as f64))
+        }
+        LuaType::FloatConst(f) => out.push(LiteralValue::Num(*f)),
+        LuaType::BooleanConst(b) | LuaType::DocBooleanConst(b) => out.push(LiteralValue::Bool(*b)),
+        LuaType::Union(union) => {
+            return union
+                .iter()
+                .all(|member| literal_values(model, member, out));
+        }
+        LuaType::Ref(_) => match expand_alias_head(model, ty) {
+            Some(target) if target != *ty => return literal_values(model, &target, out),
+            _ => return false,
+        },
+        _ => return false,
+    }
+    true
+}
+
+/// `a == b` that can never hold: both sides only literals, no value shared, and at least one side a union
+/// of them (`why == 'typo'` against `'target'|'probe'`). Two single literals are left alone: a local
+/// narrowed to its initial literal keeps it inside a loop that reassigns it (loop bodies have no back edge).
+fn literals_never_equal(model: &SemanticModel, left: &LuaType, right: &LuaType) -> bool {
+    let (mut lefts, mut rights) = (Vec::new(), Vec::new());
+    literal_values(model, left, &mut lefts)
+        && literal_values(model, right, &mut rights)
+        && !lefts.is_empty()
+        && !rights.is_empty()
+        && (lefts.len() > 1 || rights.len() > 1)
+        && !lefts.iter().any(|l| rights.contains(l))
 }
 
 fn integer_const_value(ty: &LuaType) -> Option<i64> {
