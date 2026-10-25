@@ -4026,7 +4026,12 @@ pub(crate) fn unify_call_bindings(
                     av.iter()
                         .any(|a| unify_call_bindings(model, &pv[0], a, bindings))
                 } else {
-                    false
+                    // Unequal shapes (`List<string>?` against `Box<U>|List<U>|U[]|nil`): each arg
+                    // member binds through some param member.
+                    av.iter().all(|a| {
+                        pv.iter()
+                            .any(|p| unify_call_bindings(model, p, a, bindings))
+                    })
                 }
             } else {
                 let pv = param_union.into_vec();

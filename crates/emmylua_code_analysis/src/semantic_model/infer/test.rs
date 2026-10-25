@@ -1874,3 +1874,27 @@ fn expression_casts_use_the_current_file() {
         }
     }
 }
+
+#[test]
+fn test_callback_returning_optional_binds_through_union_return_pattern() {
+    // A callback returning `List<string>?` is a two-member union against a four-member one: each
+    // of its members binds through some member of the pattern.
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@class Box<T>
+        ---@class List<T>
+
+        ---@type fun(s: string): List<string>
+        local List
+
+        ---@generic U
+        ---@param f fun(v: integer): (Box<U>|List<U>|U[]|nil)
+        ---@return Box<U>
+        local function flatmap(f) end
+
+        flat = flatmap(function(v) return v > 1 and List(tostring(v)) or nil end)
+    "#,
+    );
+    assert_eq!(ws.expr_ty("flat"), ws.ty("Box<string>"));
+}
