@@ -77,4 +77,47 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_equality_against_a_literal_outside_the_union_is_impossible() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            ---@alias Why 'target'|'ledger-light'
+            ---@param why Why
+            local function f(why)
+                if why == 'ledger-ligth' then return 1 end
+            end
+            "#
+        ));
+        // A literal that is in the union, and a non-literal side, keep the branch.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            ---@alias Why2 'target'|'ledger-light'
+            ---@param why Why2
+            ---@param s string
+            local function g(why, s)
+                if why == 'ledger-light' then return 1 end
+                if why == s then return 2 end
+                if why ~= 'ledger-light' then return 3 end
+            end
+            "#
+        ));
+        // A local reassigned in a loop: it holds more than its initial literal on later passes.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            ---@param pats string[]
+            local function h(pats)
+                local num = ''
+                for _, p in ipairs(pats) do
+                    if num == '' then num = p end
+                end
+                return num
+            end
+            "#
+        ));
+    }
 }
