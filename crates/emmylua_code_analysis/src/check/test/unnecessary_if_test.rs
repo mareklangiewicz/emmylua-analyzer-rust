@@ -286,4 +286,23 @@ mod test {
             "#
         ));
     }
+
+    /// A table built from `{}` by dynamic-key writes (`seen[k] = true`, which record no member)
+    /// has no known shape: `seen[k2]` may hold a value.
+    #[test]
+    fn test_dynamic_key_read_of_empty_table_is_not_nil() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@param k string
+                ---@param k2 string
+                local function a(k, k2)
+                    local seen = {}
+                    seen[k] = true
+                    if seen[k2] then return 1 end
+                end
+            "#
+        ));
+    }
 }
