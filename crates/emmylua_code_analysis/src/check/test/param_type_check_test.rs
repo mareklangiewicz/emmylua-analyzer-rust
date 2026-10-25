@@ -1875,6 +1875,25 @@ mod test {
     }
 
     #[test]
+    fn test_union_member_integer_key() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        // `m` is a union of the two row literals; `m[1]` is integer key 1 of each, not a
+        // field named "1" missing from both.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param n integer
+            local function need(n) end
+
+            local ROWS = { { 1, 'S' }, { 4, 'C' } }
+            for _, m in ipairs(ROWS) do
+                need(m[1])
+            end
+        "#
+        ));
+    }
+
+    #[test]
     fn test_self_contain_tpl() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(

@@ -526,7 +526,9 @@ impl<'db> SemanticModel<'db> {
         let LuaType::Union(union) = &prefix_ty else {
             return false;
         };
-        let key = LuaMemberKey::Name(SmolStr::new(index_key.get_path_part()));
+        let Some(key) = infer::vm::index_key_to_member_key(&index_key) else {
+            return false;
+        };
         union.into_vec().iter().any(|component| {
             if matches!(component, LuaType::Nil) {
                 return false;
