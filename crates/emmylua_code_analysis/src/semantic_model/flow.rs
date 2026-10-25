@@ -1003,6 +1003,21 @@ fn narrow_index_condition(
         {
             return Some(Narrowing::NotNil);
         }
+        // `type(t.x) == 'function'` (any name but `'nil'`) / `type(t.x) ~= 'nil'`.
+        if let LuaExpr::CallExpr(call) = &value
+            && let Some(LuaExpr::NameExpr(callee)) = call.get_prefix_expr()
+            && callee.get_name_text().as_deref() == Some("type")
+            && let Some(arg) = call.get_args_list()?.get_args().next()
+            && let LuaType::StringConst(name) | LuaType::DocStringConst(name) = &literal
+            && matches!(op, BinaryOperator::OpEq | BinaryOperator::OpNe)
+            && branch_is_true == ((op == BinaryOperator::OpEq) != (name.as_str() == "nil"))
+            && stable_access_path_at(model, &arg, access)
+                .or_else(|| index_access_path(model, &arg))
+                .as_ref()
+                == Some(target)
+        {
+            return Some(Narrowing::NotNil);
+        }
         return None;
     }
     (branch_is_true
@@ -4084,20 +4099,35 @@ fn direct_narrow_member_condition(
         return None;
     }
     let (left, right) = binary.get_exprs()?;
-    let (index_expr, lit_expr) = match (left, right) {
-        (LuaExpr::IndexExpr(index), LuaExpr::LiteralExpr(lit)) => (index, lit),
-        (LuaExpr::LiteralExpr(lit), LuaExpr::IndexExpr(index)) => (index, lit),
-        _ => return None,
-    };
-    if !member_access_matches(model, member, access, &index_expr) {
-        return None;
-    }
-    let lit_ty = literal_type(&lit_expr)?;
     let keep_matching = if branch_is_true {
         op == BinaryOperator::OpEq
     } else {
         op != BinaryOperator::OpEq
     };
+    let (subject, lit_expr) = match (left, right) {
+        (subject, LuaExpr::LiteralExpr(lit)) | (LuaExpr::LiteralExpr(lit), subject) => (subject, lit),
+        _ => return None,
+    };
+    // `type(t.x) == 'name'`: the type guard on the member, as on a local.
+    if let LuaExpr::CallExpr(call) = &subject
+        && let Some(LuaExpr::NameExpr(callee)) = call.get_prefix_expr()
+        && callee.get_name_text().as_deref() == Some("type")
+        && let Some(LuaExpr::IndexExpr(index_expr)) = call.get_args_list()?.get_args().next()
+        && member_access_matches(model, member, access, &index_expr)
+        && let Some(LuaLiteralToken::String(str)) = lit_expr.get_literal()
+    {
+        return Some(Narrowing::FilterPrimitive {
+            primitive: primitive_type_from_name(&str.get_value())?,
+            keep_matching,
+        });
+    }
+    let LuaExpr::IndexExpr(index_expr) = subject else {
+        return None;
+    };
+    if !member_access_matches(model, member, access, &index_expr) {
+        return None;
+    }
+    let lit_ty = literal_type(&lit_expr)?;
     Some(if keep_matching {
         Narrowing::Replace(lit_ty)
     } else {

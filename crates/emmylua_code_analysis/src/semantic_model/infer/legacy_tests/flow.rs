@@ -388,6 +388,57 @@ mod test {
         ));
     }
 
+    /// `type(t.x) == 'name'` narrows the member `t.x` as `type(x) == 'name'` narrows a local:
+    /// both branches, `==` and `~=`.
+    #[test]
+    fn test_type_guard_narrows_a_member() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class P
+            ---@field bar? fun(): string
+            ---@field s string|integer
+            ---@type P
+            local p
+            if type(p.bar) == 'function' then fn = p.bar end
+            if type(p.s) ~= 'string' then not_str = p.s else str = p.s end
+        "#,
+        );
+        assert_eq!(ws.expr_ty("fn"), ws.ty("fun(): string"));
+        assert_eq!(ws.expr_ty("not_str"), LuaType::Integer);
+        assert_eq!(ws.expr_ty("str"), LuaType::String);
+    }
+
+    /// A field without a member declaration (an object type's) is guarded by its access path:
+    /// `type(o.bar) == 'function'` proves it non-nil there, as `o.bar ~= nil` does.
+    #[test]
+    fn test_type_guard_proves_an_access_path_non_nil() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@type { bar: (fun(): string)? }
+            local o
+            if type(o.bar) == 'function' then
+                local s = o.bar()
+            end
+            if type(o.bar) ~= 'nil' then
+                local s = o.bar()
+            end
+        "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@type { bar: (fun(): string)? }
+            local o
+            if type(o.bar) ~= 'function' then
+                local s = o.bar()
+            end
+        "#
+        ));
+    }
+
     #[test]
     fn test_stacked_same_var_truthiness_guards_build_semantic_model() {
         let mut ws = VirtualWorkspace::new();
