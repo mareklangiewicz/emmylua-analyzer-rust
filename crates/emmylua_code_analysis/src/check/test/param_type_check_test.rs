@@ -2937,4 +2937,66 @@ mod test {
             "{diagnostics:#?}"
         );
     }
+
+    /// A class with the object's fields is that object: `W` (`address: string`, and more)
+    /// passes where `{ address: string }` is expected, alone or as an array element.
+    #[test]
+    fn test_class_argument_satisfies_structural_object_param() {
+        let diagnostics = check_source(
+            r#"
+                ---@class W
+                ---@field address string
+                ---@field class string
+
+                ---@param x { address: string }
+                local function one(x) end
+                ---@param xs { address: string }[]
+                local function many(xs) end
+
+                ---@type W
+                local w
+                one(w)
+                ---@type W[]
+                local ws
+                many(ws)
+            "#,
+        );
+        let mismatches: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .collect();
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+    }
+
+    /// The structural check still rejects: a class whose field has another type, or that lacks
+    /// a required field, is not the object.
+    #[test]
+    fn test_class_argument_without_the_object_fields_mismatches() {
+        let diagnostics = check_source(
+            r#"
+                ---@class Wrong
+                ---@field address integer
+                ---@class Bare
+                ---@field other string
+
+                ---@param x { address: string }
+                local function one(x) end
+                ---@param y { address: string? }
+                local function opt(y) end
+
+                ---@type Wrong
+                local wrong
+                one(wrong)
+                ---@type Bare
+                local bare
+                one(bare)
+                opt(bare)
+            "#,
+        );
+        let mismatches = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .count();
+        assert_eq!(mismatches, 2, "{diagnostics:#?}");
+    }
 }
