@@ -204,7 +204,7 @@ pub fn compile(expr: LuaExpr, file_id: FileId, out: &mut Vec<Instr>) {
     }
 }
 
-fn index_key_to_member_key(key: &LuaIndexKey) -> Option<LuaMemberKey> {
+pub(crate) fn index_key_to_member_key(key: &LuaIndexKey) -> Option<LuaMemberKey> {
     match key {
         LuaIndexKey::Name(name) => Some(LuaMemberKey::Name(SmolStr::new(name.get_name_text()))),
         LuaIndexKey::String(s) => Some(LuaMemberKey::Name(SmolStr::new(s.get_value()))),
