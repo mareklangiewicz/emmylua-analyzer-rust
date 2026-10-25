@@ -76,6 +76,15 @@ pub fn structural_table_type(model: &SemanticModel, ty: &LuaType) -> LuaType {
 /// base type (`{1,2,3}` -> `integer[]`). A table with no members at all is an empty array
 /// of any element (`{}` -> `any[]`).
 fn table_literal_as_array(model: &SemanticModel, ty: &LuaType) -> Option<LuaType> {
+    table_literal_as_array_by(model, ty, |syntax| model.type_of_expr(syntax))
+}
+
+/// `table_literal_as_array`, typing each member's value expression with `type_of_value`.
+pub(crate) fn table_literal_as_array_by(
+    model: &SemanticModel,
+    ty: &LuaType,
+    type_of_value: impl Fn(LuaSyntaxId) -> LuaType,
+) -> Option<LuaType> {
     let LuaType::TableConst(table) = ty else {
         return None;
     };
@@ -100,7 +109,7 @@ fn table_literal_as_array(model: &SemanticModel, ty: &LuaType) -> Option<LuaType
             continue;
         }
         let member_ty = if let Some(value_syntax) = member.value_syntax {
-            model.type_of_expr(value_syntax)
+            type_of_value(value_syntax)
         } else {
             model
                 .type_of_member(&member_ref.id)
