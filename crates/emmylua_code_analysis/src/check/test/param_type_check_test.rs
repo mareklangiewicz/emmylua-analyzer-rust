@@ -2888,4 +2888,27 @@ mod test {
             "#
         ));
     }
+
+    #[test]
+    fn test_class_call_overload_from_another_file_is_checked() {
+        // The overload's doc syntax lives in the class's file, not the caller's.
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "logger.lua",
+            r#"
+            ---@class Logger
+            ---@overload fun(level: integer, data: any)
+            local Logger = {}
+            return Logger
+            "#,
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@type Logger
+            local log
+            log('INFOX', 'x')
+            "#
+        ));
+    }
 }
