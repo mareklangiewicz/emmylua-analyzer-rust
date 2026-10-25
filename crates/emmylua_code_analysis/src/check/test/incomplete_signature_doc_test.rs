@@ -193,4 +193,40 @@ mod tests {
             "#
         ));
     }
+
+    #[test]
+    fn test_nested_closure_returns_do_not_count_for_outer() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        // `outer` has no params and returns nothing itself: the documented inner function's return is not its own.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                local function outer()
+                    ---@return integer
+                    local function inner()
+                        return 1
+                    end
+                    inner()
+                end
+            "#
+        ));
+
+        // `outer` documents its one return; the inner function's two returns are not checked against it.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@return integer
+                local function outer()
+                    ---@return integer
+                    ---@return integer
+                    local function inner()
+                        return 1, 2
+                    end
+                    return (inner())
+                end
+            "#
+        ));
+    }
 }

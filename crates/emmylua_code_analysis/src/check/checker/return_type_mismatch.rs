@@ -11,7 +11,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::is_compatible;
 use crate::{DiagnosticCode, SemanticId, SignatureDoc, TypeDef};
 
-use super::{CheckContext, Checker};
+use super::{CheckContext, Checker, own_return_stats};
 use crate::semantic_model::render::humanize_type;
 
 pub struct ReturnTypeMismatchChecker;
@@ -58,18 +58,6 @@ impl Checker for ReturnTypeMismatchChecker {
             }
         }
     }
-}
-
-/// Only check return statements belonging to this closure itself.
-fn own_return_stats(closure: &LuaClosureExpr) -> Vec<LuaReturnStat> {
-    closure
-        .descendants::<LuaReturnStat>()
-        .filter(|stat| {
-            stat.ancestors::<LuaClosureExpr>()
-                .next()
-                .is_some_and(|expr| &expr == closure)
-        })
-        .collect()
 }
 
 fn check_return_stat(
