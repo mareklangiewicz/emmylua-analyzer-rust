@@ -2,11 +2,13 @@
 //!
 //! Parts still missing from semantic fall back: alias origin, enum field unions, call operator.
 
-use crate::{LuaGenericType, LuaType, LuaTypeDeclId, TypeDefKind};
+use crate::{LuaGenericType, LuaObjectType, LuaType, LuaTypeDeclId, TypeDefKind};
 
 use super::context::TypeCheckContext;
 use super::sub_type::{get_base_type_id, is_sub_type_of};
-use super::{TypeCheckResult, check_general_type_compact, table_associated_type_def};
+use super::{
+    RequiredChecks, TypeCheckResult, check_general_type_compact, table_associated_type_def,
+};
 
 /// Generic inheritance matching: whether sub's inheritance chain contains a generic parent matching the target generic instance arguments.
 fn is_sub_type_of_generic(
@@ -169,6 +171,11 @@ fn check_ref_class(
             {
                 return Ok(());
             }
+            if let LuaType::Object(object) = compact_type
+                && object.get_index_access().is_empty()
+            {
+                return check_class_fields(context, source_id, object);
+            }
             Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
         }
         _ => {
@@ -186,4 +193,26 @@ fn check_ref_class(
             }
         }
     }
+}
+
+/// A class is an object whose fields it has: `---@class W` with `address: string` (and more)
+/// passes where `{ address: string }` is expected. A field the class lacks is checked as nil,
+/// so it satisfies only an optional one.
+fn check_class_fields(
+    context: &mut TypeCheckContext,
+    source_id: &LuaTypeDeclId,
+    object: &LuaObjectType,
+) -> TypeCheckResult {
+    let source = LuaType::Ref(source_id.clone());
+    let members = context.require_complete(|| context.model.member_infos(&source))?;
+    let mut checks = RequiredChecks::default();
+    for (key, expected) in object.get_fields() {
+        let actual = members
+            .iter()
+            .find(|info| &info.key == key)
+            .map(|info| info.typ.clone())
+            .unwrap_or(LuaType::Nil);
+        checks.require(check_general_type_compact(context, &actual, expected))?;
+    }
+    checks.finish()
 }
