@@ -245,4 +245,23 @@ mod test {
             "#
         ));
     }
+
+    /// The field resolves through a nullable prefix too (`t: T?`, narrowed): `if t.f` can be false.
+    #[test]
+    fn test_optional_function_field_of_nullable_prefix_can_be_nil() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@class OptFunField
+                ---@field f? fun()
+
+                ---@param t OptFunField?
+                local function a(t)
+                    if not t then return end
+                    if t.f then t.f() end
+                end
+            "#
+        ));
+    }
 }

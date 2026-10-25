@@ -828,9 +828,19 @@ impl<'db> SemanticModel<'db> {
 
         // Compute the prefix type once for the remaining slow-path stages. `resolve_member`
         // must not repeatedly infer the same prefix expression (3 / 3.5 / inherited fallback).
-        let prefix_ty = index_expr
-            .get_prefix_expr()
-            .map(|prefix| self.prefix_type_for_member_resolution(&prefix));
+        // A member of a nullable prefix (`t: T?`) can only be read on its non-nil part.
+        let prefix_ty = index_expr.get_prefix_expr().map(|prefix| {
+            match self.prefix_type_for_member_resolution(&prefix) {
+                LuaType::Union(union) => LuaType::from_vec(
+                    union
+                        .into_vec()
+                        .into_iter()
+                        .filter(|t| !t.is_nil())
+                        .collect(),
+                ),
+                ty => ty,
+            }
+        });
 
         // 3. Prefix type is a named type -> its `@field` members (cross-file, e.g. `c.secret` where c: C).
         //    Also look up the runtime value declaration for that type (`---@class Game` + `local Game = {}`),
