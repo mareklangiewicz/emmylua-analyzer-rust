@@ -344,4 +344,39 @@ mod test {
             "#
         ));
     }
+
+    /// A param documented with an object type keeps its fields in the body; the shell lowers
+    /// `{ since: integer? }` to a bare `table`, so the field read the body's own later write.
+    #[test]
+    fn test_param_object_doc_type_field() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@param t { since: integer? }
+                local function f(t)
+                    if t.since then t.since = nil end
+                end
+            "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@param t { since: integer? }
+                local function g(t)
+                    if t.since then t.since = 1 end
+                end
+            "#
+        ));
+        // An optional param keeps its nil.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@param t? { since: integer }
+                local function h(t)
+                    if t then return t.since end
+                end
+            "#
+        ));
+    }
 }
