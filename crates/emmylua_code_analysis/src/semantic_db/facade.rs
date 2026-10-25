@@ -10,7 +10,7 @@ use emmylua_parser::{LuaChunk, LuaParseError, LuaSyntaxId, LuaSyntaxTree};
 use rowan::{TextRange, TextSize};
 use smol_str::SmolStr;
 
-use crate::LuaObjectType;
+use crate::{LuaMemberKey, LuaObjectType};
 use crate::semantic_db::types::LiteralShell;
 use crate::{
     GenericTpl, GenericTplId, LuaAliasCallKind, LuaAliasCallType, LuaArrayType, LuaStringTplType,
@@ -30,7 +30,7 @@ use super::query::{
     member_keys_of_type, member_type, module_export_type, resolve_name, resolve_type_def,
     signature_return,
 };
-use super::types::{PrimitiveType, TypeCandidate, TypeShell};
+use super::types::{ObjectFieldKey, PrimitiveType, TypeCandidate, TypeShell};
 use crate::{
     AsyncState, FileId, InFiled, LuaFunctionType, LuaGenericType, LuaType, LuaTypeDeclId,
     LuaUnionType,
@@ -722,6 +722,33 @@ impl<'db> AnalysisView<'db> {
                         .collect(),
                     LuaTupleStatus::DocResolve,
                 ))),
+                TypeCandidate::Object(object) => {
+                    let fields = object
+                        .fields
+                        .iter()
+                        .map(|(key, ty)| {
+                            let key = match key {
+                                ObjectFieldKey::Name(name) => LuaMemberKey::Name(name.clone()),
+                                ObjectFieldKey::Integer(i) => LuaMemberKey::Integer(*i),
+                            };
+                            (key, self.project_shell_in(file_id, ty, generic_names))
+                        })
+                        .collect();
+                    let index_access = object
+                        .index_access
+                        .iter()
+                        .map(|(key, value)| {
+                            (
+                                self.project_shell_in(file_id, key, generic_names),
+                                self.project_shell_in(file_id, value, generic_names),
+                            )
+                        })
+                        .collect();
+                    LuaType::Object(Rc::new(LuaObjectType::new_with_fields(
+                        fields,
+                        index_access,
+                    )))
+                }
                 TypeCandidate::Literal(literal) => match literal {
                     LiteralShell::String(value) => LuaType::StringConst(value.clone().into()),
                     LiteralShell::Integer(value) => LuaType::IntegerConst(*value),

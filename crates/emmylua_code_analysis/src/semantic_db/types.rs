@@ -4,6 +4,7 @@
 //! **convergence must happen on a bounded value domain**. The candidate set (sorted/deduped) is from a finite set,
 //! so it converges and cannot grow unboundedly like structural types.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use emmylua_parser::BinaryOperator;
@@ -102,6 +103,20 @@ pub struct GenericInstanceRef {
     pub args: Vec<TypeShell>,
 }
 
+/// A field key of a doc object type: `{ x: T }` / `{ ["x"]: T }` name `x`, `{ [1]: T }` integer `1`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ObjectFieldKey {
+    Name(SmolStr),
+    Integer(i64),
+}
+
+/// Doc object type (`{ x: T, [K]: V }`): fields by key, plus key-type → value-type index pairs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ObjectShell {
+    pub fields: BTreeMap<ObjectFieldKey, TypeShell>,
+    pub index_access: Vec<(TypeShell, TypeShell)>,
+}
+
 /// Type candidates. Bounded: primitives / name strings / generic names / synthetic table ids / generic instances (sets appearing in the program).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TypeCandidate {
@@ -125,6 +140,8 @@ pub enum TypeCandidate {
     Repeat(Arc<TypeShell>),
     /// Tuple: `[number, string]` → per-slot types.
     Tuple(Vec<TypeShell>),
+    /// Doc object type: `{ x: T }` → its fields and index pairs.
+    Object(Arc<ObjectShell>),
     Function(Arc<FunctionShell>),
     /// String template type (`` `T` `` / `` `prefix.T` ``): string arguments replace placeholder names.
     StrTpl(Arc<StrTplRef>),
@@ -227,6 +244,13 @@ impl TypeShell {
                     args,
                 },
             ))],
+        }
+    }
+
+    /// Doc object candidate: `{ x: T }`.
+    pub fn from_object(object: ObjectShell) -> Self {
+        Self {
+            candidates: vec![TypeCandidate::Object(Arc::new(object))],
         }
     }
 

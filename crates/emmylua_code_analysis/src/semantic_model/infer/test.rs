@@ -2045,3 +2045,45 @@ fn test_intersection_member_is_the_narrower_component() {
     // disjoint member types still meet in nothing
     assert_eq!(ws.expr_ty("none"), LuaType::Never);
 }
+
+#[test]
+fn test_nullable_object_annotation_keeps_its_fields() {
+    // `{ a: integer }?` is `{ a: integer } | nil`, as the spelled-out union is: not `table?`, so
+    // `o.a` behind a nil guard reads `integer`, for a `---@type` and a `---@param` alike.
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@type { a: integer }?
+        local o
+        if o then got = o.a end
+
+        ---@param p { a: integer }?
+        local function f(p)
+            if p then param_got = p.a end
+        end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("got"), LuaType::Integer);
+    assert_eq!(ws.expr_ty("param_got"), LuaType::Integer);
+    assert_eq!(ws.ty("{ a: integer }?"), ws.ty("{ a: integer } | nil"));
+}
+
+#[test]
+fn test_optional_object_field_is_nullable() {
+    // `{ r?: boolean }`'s `r` may be absent: it reads `boolean?`, as `---@field r? boolean` does,
+    // also behind the object's own `?`.
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@type { r?: boolean }
+        local o
+        got = o.r
+
+        ---@type { r?: boolean }?
+        local n
+        if n then nullable_got = n.r end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("got"), ws.ty("boolean?"));
+    assert_eq!(ws.expr_ty("nullable_got"), ws.ty("boolean?"));
+}

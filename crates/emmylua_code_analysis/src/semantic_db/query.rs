@@ -20,12 +20,12 @@ use super::exports::{
 use super::facts::{FactsBuilder, FileFacts, member_key_from_index_key, nested_table_owner};
 use super::inputs::WorkspaceRoot;
 use super::types::{
-    LiteralShell, PrimitiveType, TableId, TypeCandidate, TypeShell, checked_integer_arithmetic,
+    LiteralShell, ObjectFieldKey, ObjectShell, PrimitiveType, TableId, TypeCandidate, TypeShell, checked_integer_arithmetic,
 };
 use crate::Emmyrc;
 use crate::FileId;
 use emmylua_parser::{
-    BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocType, LuaExpr, LuaIndexExpr,
+    BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocObjectFieldKey, LuaDocType, LuaExpr, LuaIndexExpr,
     LuaLiteralExpr, LuaLiteralToken, LuaReturnStat, LuaSyntaxId, LuaSyntaxTree,
     LuaTypeBinaryOperator, LuaVersionCondition, UnaryOperator,
 };
@@ -2192,10 +2192,43 @@ fn lower_doc_type_node(
             // An empty object literal `{}` is a structural type and must not be lowered to broad `table`;
             // otherwise flow analysis would narrow `myenum|{}`'s table branch to `Table` and lose `{}`.
             if object.get_fields().next().is_none() {
-                TypeShell::from_primitive(PrimitiveType::EmptyObject)
-            } else {
-                TypeShell::from_primitive(PrimitiveType::Table)
+                return TypeShell::from_primitive(PrimitiveType::EmptyObject);
             }
+            // A field type the shell cannot lower (`T['k']`, `A & B`, ...) would read as unknown, or
+            // vanish from a union: keep the bare `table`, which callers re-lower richly.
+            if !lowers_exactly(doc_type) {
+                return TypeShell::from_primitive(PrimitiveType::Table);
+            }
+            let mut shell = ObjectShell::default();
+            for field in object.get_fields() {
+                let (Some(key), Some(value)) = (field.get_field_key(), field.get_type()) else {
+                    continue;
+                };
+                let mut value = lower_doc_type_node(db, file, generics, &value);
+                // `{ a?: T }`: the field may be absent, so it reads `T | nil`.
+                if field.is_nullable() {
+                    value.merge(&TypeShell::from_primitive(PrimitiveType::Nil));
+                }
+                let key = match key {
+                    LuaDocObjectFieldKey::Name(name) => {
+                        ObjectFieldKey::Name(SmolStr::new(name.get_name_text()))
+                    }
+                    LuaDocObjectFieldKey::String(str) => {
+                        ObjectFieldKey::Name(SmolStr::new(str.get_value()))
+                    }
+                    LuaDocObjectFieldKey::Integer(num) => match num.get_number_value() {
+                        emmylua_parser::NumberResult::Int(i) => ObjectFieldKey::Integer(i),
+                        _ => continue,
+                    },
+                    LuaDocObjectFieldKey::Type(key_ty) => {
+                        let key = lower_doc_type_node(db, file, generics, &key_ty);
+                        shell.index_access.push((key, value));
+                        continue;
+                    }
+                };
+                shell.fields.insert(key, value);
+            }
+            TypeShell::from_object(shell)
         }
         LuaDocType::Generic(generic_type) => {
             // `Box<number>`: base type name + arguments (generic instantiation).
@@ -2330,6 +2363,32 @@ fn lower_doc_type_node(
         }
         _ => TypeShell::unknown(),
     }
+}
+
+/// Whether `lower_doc_type_node` represents every type node in `doc_type` exactly. Conservative:
+/// a form missing here only costs the rich re-lowering that a bare `table` gets.
+fn lowers_exactly(doc_type: &LuaDocType) -> bool {
+    doc_type
+        .syntax()
+        .descendants()
+        .filter_map(LuaDocType::cast)
+        .all(|node| match node {
+            LuaDocType::Name(_)
+            | LuaDocType::Literal(_)
+            | LuaDocType::Array(_)
+            | LuaDocType::Variadic(_)
+            | LuaDocType::Tuple(_)
+            | LuaDocType::Object(_)
+            | LuaDocType::Generic(_)
+            | LuaDocType::StrTpl(_)
+            | LuaDocType::Func(_)
+            | LuaDocType::Nullable(_)
+            | LuaDocType::MultiLineUnion(_) => true,
+            LuaDocType::Binary(binary) => binary
+                .get_op_token()
+                .is_some_and(|token| token.get_op() == LuaTypeBinaryOperator::Union),
+            _ => false,
+        })
 }
 
 /// Base type name -> `PrimitiveType`.
@@ -3221,6 +3280,7 @@ fn logical_left_part(left: TypeShell, truthy: bool) -> TypeShell {
                 | TypeCandidate::Table(_)
                 | TypeCandidate::Array(_)
                 | TypeCandidate::Tuple(_)
+                | TypeCandidate::Object(_)
                 | TypeCandidate::Function(_)
                 | TypeCandidate::StrTpl(_) => true,
                 _ => return Some(candidate),
@@ -3634,6 +3694,25 @@ fn substitute_generics(
                         .map(|ty| substitute_generics(ty, params, args))
                         .collect(),
                 ));
+            }
+            TypeCandidate::Object(object) => {
+                out.merge(&TypeShell::from_object(ObjectShell {
+                    fields: object
+                        .fields
+                        .iter()
+                        .map(|(key, ty)| (key.clone(), substitute_generics(ty, params, args)))
+                        .collect(),
+                    index_access: object
+                        .index_access
+                        .iter()
+                        .map(|(key, value)| {
+                            (
+                                substitute_generics(key, params, args),
+                                substitute_generics(value, params, args),
+                            )
+                        })
+                        .collect(),
+                }));
             }
             TypeCandidate::Function(fun) => {
                 let new_params = fun

@@ -263,31 +263,36 @@ impl<'db> SemanticModel<'db> {
                     let Some(value_ty) = field.get_type() else {
                         continue;
                     };
+                    // `{ a?: T }`: the field may be absent, so it reads `T | nil`.
+                    let mut value = self.doc_type_lua_rich_in(file_id, value_ty.get_syntax_id());
+                    if field.is_nullable() && !value.is_nullable() {
+                        value = LuaType::from_vec(vec![value, LuaType::Nil]);
+                    }
                     match key {
                         LuaDocObjectFieldKey::Name(name) => {
                             fields.insert(
                                 LuaMemberKey::Name(SmolStr::new(name.get_name_text())),
-                                self.doc_type_lua_rich_in(file_id, value_ty.get_syntax_id()),
+                                value,
                             );
                         }
                         LuaDocObjectFieldKey::String(str) => {
                             fields.insert(
                                 LuaMemberKey::Name(SmolStr::new(str.get_value())),
-                                self.doc_type_lua_rich_in(file_id, value_ty.get_syntax_id()),
+                                value,
                             );
                         }
                         LuaDocObjectFieldKey::Integer(num) => {
                             if let NumberResult::Int(i) = num.get_number_value() {
                                 fields.insert(
                                     LuaMemberKey::Integer(i),
-                                    self.doc_type_lua_rich_in(file_id, value_ty.get_syntax_id()),
+                                    value,
                                 );
                             }
                         }
                         LuaDocObjectFieldKey::Type(key_ty) => {
                             index_access.push((
                                 self.doc_type_lua_rich_in(file_id, key_ty.get_syntax_id()),
-                                self.doc_type_lua_rich_in(file_id, value_ty.get_syntax_id()),
+                                value,
                             ));
                         }
                     };
