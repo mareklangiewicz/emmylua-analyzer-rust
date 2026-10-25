@@ -2820,4 +2820,32 @@ return t
             "{diagnostics:#?}"
         );
     }
+
+    /// A local born `{}` is a table to fill in, so a later array (of strings or of objects) is
+    /// a table assigned to it; a value that is no table still mismatches.
+    #[test]
+    fn test_empty_table_local_takes_a_later_array() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@type string[]
+                local strs
+                ---@type { pid: integer? }[]
+                local objs
+
+                local a = {}
+                a = strs
+                local b = {}
+                b = objs
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                local c = {}
+                c = 1
+            "#
+        ));
+    }
 }
