@@ -264,4 +264,26 @@ mod test {
             "#
         ));
     }
+
+    /// `self` in `function M.E:m()` is the value at `M.E`, not the root local `M`: `self.cause`
+    /// reads `E`'s optional field.
+    #[test]
+    fn test_nested_path_method_self_is_its_prefix() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@class NestedSelf
+                ---@field cause NestedSelf?
+
+                local function mk() return {} end
+                local M = {}
+                M.E = mk() --[[@as NestedSelf]]
+
+                function M.E:str()
+                    if self.cause then return 1 end
+                end
+            "#
+        ));
+    }
 }

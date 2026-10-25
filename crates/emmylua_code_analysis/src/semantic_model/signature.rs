@@ -551,6 +551,14 @@ impl<'db> SemanticModel<'db> {
         }
     }
     pub(crate) fn method_owner_type(&self, closure_syntax: LuaSyntaxId) -> Option<LuaType> {
+        // `function M.E:m()`: a nested runtime path is owned by its root local (`M`), but the
+        // method belongs to the value at its prefix (`M.E`).
+        if let Some(prefix) = self.nested_method_prefix(closure_syntax) {
+            let ty = self.type_of_expr(prefix.get_syntax_id());
+            if !ty.is_unknown() {
+                return Some(ty);
+            }
+        }
         let facts = self.file_facts()?;
         let member = facts.member_by_value_syntax(closure_syntax)?;
         let owner = member.owner.clone();
@@ -609,6 +617,19 @@ impl<'db> SemanticModel<'db> {
             owner_ty
         };
         Some(owner_ty)
+    }
+    /// The prefix `a.b` of a method closure named by a nested path (`function a.b:m()`).
+    fn nested_method_prefix(&self, closure_syntax: LuaSyntaxId) -> Option<LuaIndexExpr> {
+        let root = self.syntax_tree()?.get_red_root();
+        let func_stat =
+            emmylua_parser::LuaFuncStat::cast(closure_syntax.to_node_from_root(&root)?.parent()?)?;
+        let Some(emmylua_parser::LuaVarExpr::IndexExpr(name)) = func_stat.get_func_name() else {
+            return None;
+        };
+        match name.get_prefix_expr()? {
+            LuaExpr::IndexExpr(prefix) => Some(prefix),
+            _ => None,
+        }
     }
     /// If the closure is a member implementation like `function a.aaa(...)`, return the function signature of the same-named field on the owner type.
     /// Used to fill in parameter types from field declarations when `---@param` is absent.
