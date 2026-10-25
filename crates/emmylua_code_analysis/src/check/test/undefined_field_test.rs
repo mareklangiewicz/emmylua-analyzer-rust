@@ -599,6 +599,54 @@ mod test {
         ));
     }
 
+    /// A param's generic is its own signature's, also nested (`T[]`): a same-named `T` declared
+    /// earlier in the file with another constraint does not apply.
+    #[test]
+    fn test_nested_generic_param_uses_own_constraint() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@class HasAddr
+            ---@field addr string
+            ---@class HasAt
+            ---@field at integer
+
+            ---@generic T: HasAddr
+            ---@param wins T[]
+            local function first_addr(wins)
+                local w = wins[1]
+                if w then print(w.addr) end
+            end
+
+            ---@generic T: HasAt
+            ---@param wins T[]
+            local function first_at(wins)
+                local w = wins[1]
+                if w then print(w.at) end
+            end
+
+            ---@generic T: { pos?: { x: number } }
+            ---@param wins T[]
+            local function first_pos(wins)
+                local w = wins[1]
+                if w then print(w.pos) end
+            end
+        "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@generic T: { pos?: { x: number } }
+            ---@param wins T[]
+            local function first_pos(wins)
+                local w = wins[1]
+                if w then print(w.nope) end
+            end
+        "#
+        ));
+    }
+
     #[test]
     fn test_generic_constraint_unknown_field() {
         let mut ws = VirtualWorkspace::new();
