@@ -1885,16 +1885,22 @@ fn test_intersection_member_is_the_narrower_component() {
         ---@class P
         ---@field m string?
 
+        ---@alias Q P & { m: string }
+
         ---@type P & { m: string }
         local q
+        ---@type Q
+        local aliased
         ---@type { m: number } & { m: string }
         local clash
 
         got = q.m
+        via_alias = aliased.m
         none = clash.m
     "#,
     );
     assert_eq!(ws.expr_ty("got"), LuaType::String);
+    assert_eq!(ws.expr_ty("via_alias"), LuaType::String);
     // disjoint member types still meet in nothing
     assert_eq!(ws.expr_ty("none"), LuaType::Never);
 }

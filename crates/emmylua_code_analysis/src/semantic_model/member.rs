@@ -188,7 +188,13 @@ fn direct_member_info(
             let def = model.type_def_of(id)?;
             if def.kind == TypeDefKind::Alias {
                 return with_expanded_alias(model, prefix_type, |expanded| {
-                    direct_member_info(model, expanded, key)
+                    // An intersection's components merge into one member (see `member_info`),
+                    // which a direct lookup doesn't do.
+                    if matches!(expanded, LuaType::Intersection(_)) {
+                        member_info(model, expanded, key)
+                    } else {
+                        direct_member_info(model, expanded, key)
+                    }
                 })
                 .flatten();
             }
