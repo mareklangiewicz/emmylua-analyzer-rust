@@ -237,6 +237,10 @@ fn check_call(
                     substitutions.insert(param.name.to_string(), bound);
                 }
             }
+            // A method's `K: keyof T` may name the owner class's `T`: bind it from the receiver (`Box<Root>`).
+            for (name, ty) in receiver_class_args(semantic_model, &callee) {
+                substitutions.entry(name).or_insert(ty);
+            }
             for (index, param) in docs.generic_params.iter().enumerate() {
                 if let Some(constraint) = param.constraint {
                     constraints.push((
@@ -368,14 +372,18 @@ pub(crate) fn resolved_call_signatures(
         let fun = apply_owner_generics(fun.clone(), &owner_constraints);
         let params = fun.get_params();
         let self_param = first_param_is_self(&fun);
-        let param_start = usize::from(colon_call && self_param);
+        // Same receiver rules as param_type_check: `obj:f(x)` on `function M.f(a, x)` binds `a` to
+        // the receiver; on `function M:f(x)` self is implicit; `M.f(obj, x)` on `function M:f(x)` skips `obj`.
+        let colon_receiver = colon_call && !self_param && !fun.is_colon_define();
+        let dot_method_receiver = !colon_call && !self_param && fun.is_colon_define();
+        let param_start = usize::from((colon_call && self_param) || colon_receiver);
+        let arg_start = usize::from(dot_method_receiver).min(arg_types.len());
         let mut bindings = unify::TplBindings::new();
-        if colon_call && !self_param {
-            if let Some((_, Some(param_ty))) = params.first() {
-                let _ = unify::unify_bindings(param_ty, receiver_ty, &mut bindings);
-            }
+        if colon_receiver && let Some((_, Some(param_ty))) = params.first() {
+            let _ = unify::unify_bindings(param_ty, receiver_ty, &mut bindings);
         }
-        for ((_, param_ty), arg_ty) in params[param_start..].iter().zip(arg_types.iter()) {
+        let params = &params[param_start.min(params.len())..];
+        for ((_, param_ty), arg_ty) in params.iter().zip(arg_types[arg_start..].iter()) {
             let Some(param_ty) = param_ty else {
                 continue;
             };
@@ -386,47 +394,69 @@ pub(crate) fn resolved_call_signatures(
     out
 }
 
+/// The owner `---@class` of a member-method callee: `SemanticId::Member -> owner TypeDef`.
+fn owner_type_def<'db>(
+    semantic_model: &SemanticModel<'db>,
+    callee: &LuaExpr,
+) -> Option<&'db TypeDef> {
+    let index_expr = LuaIndexExpr::cast(callee.syntax().clone())?;
+    let resolved = semantic_model.resolve_member(&index_expr)?;
+    let member_id = resolved.member_id?;
+    let member_file = resolved.file_id?;
+    let facts = semantic_model.file_facts_of(member_file)?;
+    let member = facts.member_by_id(&member_id)?;
+    let type_def_id = match &member.owner {
+        SemanticId::TypeDef(type_def_id) => type_def_id.clone(),
+        SemanticId::Decl(_) => {
+            let owner_decl = facts.decl_by_id(&member.owner)?;
+            let owner_syntax = owner_decl.owner_syntax?;
+            let def = facts.type_def_by_owner_syntax(owner_syntax)?;
+            match &def.id {
+                SemanticId::TypeDef(type_def_id) => type_def_id.clone(),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    facts.type_def_by_id(&SemanticId::TypeDef(type_def_id))
+}
+
+/// `b:get(k)` with `b: Box<Root>`: the owner class's generic params bound to the receiver's type arguments.
+fn receiver_class_args(
+    semantic_model: &SemanticModel<'_>,
+    callee: &LuaExpr,
+) -> Vec<(String, LuaType)> {
+    let Some(def) = owner_type_def(semantic_model, callee) else {
+        return Vec::new();
+    };
+    let Some(prefix) =
+        LuaIndexExpr::cast(callee.syntax().clone()).and_then(|e| e.get_prefix_expr())
+    else {
+        return Vec::new();
+    };
+    let LuaType::Generic(generic) = semantic_model.type_of_expr(prefix.get_syntax_id()) else {
+        return Vec::new();
+    };
+    if semantic_model
+        .type_def_of(&generic.get_base_type_id())
+        .is_none_or(|base| base.id != def.id)
+    {
+        return Vec::new();
+    }
+    def.generic_params
+        .iter()
+        .zip(generic.get_params())
+        .map(|(param, ty)| (param.name.to_string(), ty.clone()))
+        .collect()
+}
+
 /// Generic constraints referenced by class member methods: `SemanticId::Member -> owner TypeDef.generic_params`.
 fn owner_generic_constraints(
     semantic_model: &SemanticModel<'_>,
     callee: &LuaExpr,
 ) -> HashMap<smol_str::SmolStr, (usize, LuaType)> {
     let mut out = HashMap::new();
-    let Some(index_expr) = LuaIndexExpr::cast(callee.syntax().clone()) else {
-        return out;
-    };
-    let Some(resolved) = semantic_model.resolve_member(&index_expr) else {
-        return out;
-    };
-    let (Some(member_id), Some(member_file)) = (resolved.member_id, resolved.file_id) else {
-        return out;
-    };
-    let Some(facts) = semantic_model.file_facts_of(member_file) else {
-        return out;
-    };
-    let Some(member) = facts.member_by_id(&member_id) else {
-        return out;
-    };
-    let type_def_id = match &member.owner {
-        SemanticId::TypeDef(type_def_id) => type_def_id.clone(),
-        SemanticId::Decl(_) => {
-            let Some(owner_decl) = facts.decl_by_id(&member.owner) else {
-                return out;
-            };
-            let Some(owner_syntax) = owner_decl.owner_syntax else {
-                return out;
-            };
-            let Some(def) = facts.type_def_by_owner_syntax(owner_syntax) else {
-                return out;
-            };
-            match &def.id {
-                SemanticId::TypeDef(type_def_id) => type_def_id.clone(),
-                _ => return out,
-            }
-        }
-        _ => return out,
-    };
-    let Some(def) = facts.type_def_by_id(&SemanticId::TypeDef(type_def_id)) else {
+    let Some(def) = owner_type_def(semantic_model, callee) else {
         return out;
     };
     for (index, param) in def.generic_params.iter().enumerate() {
