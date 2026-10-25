@@ -312,14 +312,8 @@ pub(super) fn union_array_for_sequence(
 
 /// The key type `K` of `table<K, V>`.
 fn table_generic_key_type(ty: &LuaType) -> Option<&LuaType> {
-    match ty {
-        LuaType::TableGeneric(params) if params.len() == 2 => params.first(),
-        LuaType::Generic(generic)
-            if generic.get_base_type_id().get_name() == "table"
-                && generic.get_params().len() == 2 =>
-        {
-            generic.get_params().first()
-        }
+    match ty.table_generic_params()? {
+        [key, _] => Some(key),
         _ => None,
     }
 }

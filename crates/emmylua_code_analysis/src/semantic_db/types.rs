@@ -143,6 +143,16 @@ pub struct TypeShell {
 }
 
 impl TypeShell {
+    /// Whether some candidate is a list of values (a variadic or multi-return), not one value.
+    pub fn is_value_list(&self) -> bool {
+        self.candidates.iter().any(|candidate| {
+            matches!(
+                candidate,
+                TypeCandidate::Variadic(_) | TypeCandidate::Repeat(_) | TypeCandidate::Multi(_)
+            )
+        })
+    }
+
     /// Unknown = empty set (union identity element; never pollutes results).
     pub fn unknown() -> Self {
         Self {
@@ -307,15 +317,7 @@ impl TypeShell {
                         continue;
                     }
                     let tail = &slots[last];
-                    let expands = tail.candidates.iter().any(|candidate| {
-                        matches!(
-                            candidate,
-                            TypeCandidate::Variadic(_)
-                                | TypeCandidate::Repeat(_)
-                                | TypeCandidate::Multi(_)
-                        )
-                    });
-                    if expands {
+                    if tail.is_value_list() {
                         out.merge(&tail.result_slot(index - last));
                     } else if index == last {
                         out.merge(tail);

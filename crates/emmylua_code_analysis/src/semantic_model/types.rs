@@ -271,14 +271,17 @@ impl<'db> SemanticModel<'db> {
                 }
                 // `function a.aaa(x)`: when no call site can be inferred, fill in parameter types from the owner type's field signature.
                 // The param's own `---@param` wins (an override of an inherited field keeps its doc).
-                let has_param_doc = signature.docs.as_ref().is_some_and(|docs| {
-                    signature.param_names.get(param_index).is_some_and(|name| {
+                let param_doc_syntax = signature
+                    .docs
+                    .as_ref()
+                    .zip(signature.param_names.get(param_index))
+                    .and_then(|(docs, name)| {
                         docs.param_types
                             .iter()
-                            .any(|(doc_name, _)| doc_name == name)
-                    })
-                });
-                if !has_param_doc
+                            .find(|(doc_name, _)| doc_name == name)
+                            .map(|(_, syntax)| *syntax)
+                    });
+                if param_doc_syntax.is_none()
                     && let Some(mut param_ty) =
                         self.expected_member_param_for_closure(closure_syntax, param_index)
                 {
@@ -291,18 +294,13 @@ impl<'db> SemanticModel<'db> {
                 }
                 // The shell lowers a structural `---@param` type (`{ x: T }`) to a bare `table`;
                 // the rich projection keeps it, as the signature's params do.
-                if let Some(docs) = signature.docs.as_ref()
-                    && let Some(name) = signature.param_names.get(param_index)
-                    && let Some((_, doc_syntax)) = docs
-                        .param_types
-                        .iter()
-                        .find(|(doc_name, _)| doc_name == name)
+                if let Some(doc_syntax) = param_doc_syntax
                     && let Some(ty) = self
                         .analysis()
                         .decl_type_lua(self.file_id(), decl.id.clone())
                     && needs_rich_doc_type(&ty)
                 {
-                    let rich = self.doc_type_lua_rich(*doc_syntax);
+                    let rich = self.doc_type_lua_rich(doc_syntax);
                     if !rich.is_unknown() {
                         let rich = if ty.is_nullable() && !rich.is_nullable() {
                             LuaType::from_vec(vec![rich, LuaType::Nil])
@@ -869,16 +867,8 @@ impl<'db> SemanticModel<'db> {
                     )
                 } else if matches!(expr, LuaExpr::CallExpr(_)) {
                     // A member holds one value: the call's first (`M.ok = detect()`).
-                    let ty = flow::type_of_expr_with_cast(
-                        self,
-                        value_syntax,
-                        flow::ExprCastMode::AsOnly,
-                    );
-                    if ty.is_multi_return() {
-                        ty.get_result_slot_type(0).unwrap_or(LuaType::Nil)
-                    } else {
-                        ty
-                    }
+                    flow::type_of_expr_with_cast(self, value_syntax, flow::ExprCastMode::AsOnly)
+                        .into_first_value()
                 } else {
                     return None;
                 };
@@ -902,18 +892,11 @@ impl<'db> SemanticModel<'db> {
         };
         // The shell lowers a structural doc type (`{ x: T }`, `{ x: T }[]`) to a bare `table`;
         // the rich projection keeps it, as for a declaration's `---@type`.
-        let rich_doc_type = |doc_syntax: LuaSyntaxId, ty: LuaType| {
-            if !needs_rich_doc_type(&ty) {
-                return ty;
-            }
-            let rich = self.doc_type_lua_rich_in(member_file, doc_syntax);
-            if rich.is_unknown() { ty } else { rich }
-        };
         let ty = match (member_def.doc_type_syntax, member_def.value_syntax) {
-            (Some(doc_syntax), _) => rich_doc_type(doc_syntax, ty),
+            (Some(doc_syntax), _) => self.rich_doc_type_or(member_file, doc_syntax, ty),
             // A `---@field`'s type syntax is its value.
             (None, Some(field_syntax)) if matches!(member_def.owner, SemanticId::TypeDef(_)) => {
-                rich_doc_type(field_syntax, ty)
+                self.rich_doc_type_or(member_file, field_syntax, ty)
             }
             (None, Some(value_syntax)) => {
                 flow::apply_expr_casts(self, value_syntax, ty, flow::ExprCastMode::AsOnly)
@@ -1090,6 +1073,31 @@ impl<'db> SemanticModel<'db> {
             cache.member_infos.insert(key, value.clone());
         });
         value
+    }
+    /// Whether a type is an instance of a `---@class` (`Foo`, `Box<T>`).
+    pub(crate) fn is_class_instance(&self, ty: &LuaType) -> bool {
+        let id = match ty {
+            LuaType::Ref(id) | LuaType::Def(id) => id,
+            LuaType::Generic(generic) => generic.get_base_type_id_ref(),
+            _ => return false,
+        };
+        self.type_def_of(id)
+            .is_some_and(|def| def.kind == TypeDefKind::Class)
+    }
+    /// The index-signature members (`---@field [K] V`) of a prefix type. A cache hit clones
+    /// only those, not the owner's whole member list.
+    pub(crate) fn index_member_infos(&self, prefix_type: &LuaType) -> Vec<member::MemberInfo> {
+        let key = (self.file_id(), prefix_type.clone());
+        if let Some(cached) = self.cache.borrow().member_infos.get(&key) {
+            return cached
+                .iter()
+                .filter(|info| info.index_key_type.is_some())
+                .cloned()
+                .collect();
+        }
+        let mut infos = self.member_infos(prefix_type);
+        infos.retain(|info| info.index_key_type.is_some());
+        infos
     }
     /// The specified-key member of a prefix type (first match).
     pub fn member_info(

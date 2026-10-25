@@ -553,8 +553,8 @@ fn assignment_value_type(semantic_model: &SemanticModel<'_>, value_expr: &LuaExp
     let ty =
         semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
     // A target takes the call's FIRST value: `local x = f()`.
-    let ty = match (value_expr, ty.is_multi_return()) {
-        (LuaExpr::CallExpr(_), true) => ty.get_result_slot_type(0).unwrap_or(LuaType::Nil),
+    let ty = match value_expr {
+        LuaExpr::CallExpr(_) => ty.into_first_value(),
         _ => ty,
     };
     if matches!(ty, LuaType::Function)

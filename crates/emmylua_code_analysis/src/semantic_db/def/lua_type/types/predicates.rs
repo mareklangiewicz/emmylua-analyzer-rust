@@ -176,6 +176,17 @@ impl LuaType {
         matches!(self, LuaType::TableGeneric(_))
     }
 
+    /// The type arguments of `table<...>`, in either spelling (`TableGeneric` or `Generic("table")`).
+    pub fn table_generic_params(&self) -> Option<&[LuaType]> {
+        match self {
+            LuaType::TableGeneric(params) => Some(params),
+            LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
+                Some(generic.get_params())
+            }
+            _ => None,
+        }
+    }
+
     pub fn is_class_tpl(&self) -> bool {
         matches!(self, LuaType::TplRef(_))
     }
@@ -218,6 +229,16 @@ impl LuaType {
             LuaType::Variadic(_) => true,
             LuaType::Union(union) => union_contains_multi_return(union),
             _ => false,
+        }
+    }
+
+    /// The one value a multi-return yields where a single value is expected (`local x = f()`):
+    /// its first slot, `nil` when it has none. Any other type is already a single value.
+    pub fn into_first_value(self) -> LuaType {
+        if self.is_multi_return() {
+            self.get_result_slot_type(0).unwrap_or(LuaType::Nil)
+        } else {
+            self
         }
     }
 

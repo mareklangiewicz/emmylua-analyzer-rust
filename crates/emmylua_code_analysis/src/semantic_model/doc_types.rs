@@ -154,6 +154,21 @@ impl<'db> SemanticModel<'db> {
     pub fn doc_type_lua_rich(&self, type_syntax: LuaSyntaxId) -> LuaType {
         self.doc_type_lua_rich_in(self.view.file_id(), type_syntax)
     }
+    /// A declared type from the shell lowering, unless that lowering lost a structural type
+    /// (`{ x: T }` to a bare `table`, see `needs_rich_doc_type`): then the rich projection of the
+    /// same syntax, when it resolves.
+    pub(crate) fn rich_doc_type_or(
+        &self,
+        file_id: FileId,
+        type_syntax: LuaSyntaxId,
+        shell_ty: LuaType,
+    ) -> LuaType {
+        if !super::signature::needs_rich_doc_type(&shell_ty) {
+            return shell_ty;
+        }
+        let rich = self.doc_type_lua_rich_in(file_id, type_syntax);
+        if rich.is_unknown() { shell_ty } else { rich }
+    }
     /// Rich projection for any file (used by cross-file signature doc parameters).
     pub fn doc_type_lua_rich_in(&self, file_id: FileId, type_syntax: LuaSyntaxId) -> LuaType {
         let Some(tree) = self.syntax_tree_of(file_id) else {

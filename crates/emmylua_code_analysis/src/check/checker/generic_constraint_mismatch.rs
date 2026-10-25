@@ -14,15 +14,15 @@ use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaDocType, LuaExpr, LuaIndexExpr}
 
 use crate::DiagnosticCode;
 use crate::semantic_db::def::{DocGenericParam, SemanticId, TypeDef};
-use crate::semantic_model::SemanticModel;
 use crate::semantic_model::infer::unify;
 use crate::semantic_model::type_check::is_compatible;
+use crate::semantic_model::{SemanticModel, type_eval};
 use crate::{
     FileId, GenericTpl, GenericTplId, LuaFunctionType, LuaIntersectionType, LuaStringTplType,
     LuaType, LuaUnionType,
 };
 
-use super::param_count::first_param_is_self;
+use super::param_count::{call_arg_param_index, first_param_is_self};
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
@@ -238,7 +238,9 @@ fn check_call(
                 }
             }
             // A method's `K: keyof T` may name the owner class's `T`: bind it from the receiver (`Box<Root>`).
-            for (name, ty) in receiver_class_args(semantic_model, &analysis.receiver_ty) {
+            for (name, ty) in type_eval::class_generic_map(semantic_model, &analysis.receiver_ty)
+                .unwrap_or_default()
+            {
                 substitutions.entry(name).or_insert(ty);
             }
             for (index, param) in docs.generic_params.iter().enumerate() {
@@ -371,20 +373,17 @@ pub(crate) fn resolved_call_signatures(
     for fun in candidates {
         let fun = apply_owner_generics(fun.clone(), &owner_constraints);
         let params = fun.get_params();
-        let self_param = first_param_is_self(&fun);
-        // Same receiver rules as param_type_check: `obj:f(x)` on `function M.f(a, x)` binds `a` to
-        // the receiver; on `function M:f(x)` self is implicit; `M.f(obj, x)` on `function M:f(x)` skips `obj`.
-        let colon_receiver = colon_call && !self_param && !fun.is_colon_define();
-        let dot_method_receiver = !colon_call && !self_param && fun.is_colon_define();
-        let param_start = usize::from((colon_call && self_param) || colon_receiver);
-        let arg_start = usize::from(dot_method_receiver).min(arg_types.len());
+        // `obj:f(x)` on `function M.f(a, x)` binds `a` to the receiver; the arguments map
+        // through the shared receiver rules (`call_arg_param_index`).
+        let colon_receiver = colon_call && !first_param_is_self(&fun) && !fun.is_colon_define();
         let mut bindings = unify::TplBindings::new();
         if colon_receiver && let Some((_, Some(param_ty))) = params.first() {
             let _ = unify::unify_bindings(param_ty, receiver_ty, &mut bindings);
         }
-        let params = &params[param_start.min(params.len())..];
-        for ((_, param_ty), arg_ty) in params.iter().zip(arg_types[arg_start..].iter()) {
-            let Some(param_ty) = param_ty else {
+        for (index, arg_ty) in arg_types.iter().enumerate() {
+            let Some((_, Some(param_ty))) =
+                call_arg_param_index(&fun, index, colon_call).and_then(|i| params.get(i))
+            else {
                 continue;
             };
             let _ = unify::unify_bindings(param_ty, arg_ty, &mut bindings);
@@ -392,26 +391,6 @@ pub(crate) fn resolved_call_signatures(
         out.push((fun, bindings));
     }
     out
-}
-
-/// `b:get(k)` with `b: Box<Root>`: the receiver class's generic params bound to its type arguments.
-/// Taken from the receiver's type rather than the member's owner: a class table built as
-/// `local Box = cls('Box') --[[@as Box<any>]]` has no `---@class` attached to its declaration.
-fn receiver_class_args(
-    semantic_model: &SemanticModel<'_>,
-    receiver_ty: &LuaType,
-) -> Vec<(String, LuaType)> {
-    let LuaType::Generic(generic) = receiver_ty else {
-        return Vec::new();
-    };
-    let Some(def) = semantic_model.type_def_of(&generic.get_base_type_id()) else {
-        return Vec::new();
-    };
-    def.generic_params
-        .iter()
-        .zip(generic.get_params())
-        .map(|(param, ty)| (param.name.to_string(), ty.clone()))
-        .collect()
 }
 
 /// Generic constraints referenced by class member methods: `SemanticId::Member -> owner TypeDef.generic_params`.

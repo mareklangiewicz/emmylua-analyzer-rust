@@ -177,8 +177,26 @@ fn capturing_closure(
 
 /// A captured local's value inside the closure: any value it is assigned anywhere, widened,
 /// or its declaration's; unknown when one of those values is. A value computed from the local
-/// itself (`n = n + 1`) adds nothing.
+/// itself (`n = n + 1`) adds nothing. It depends on the declaration alone, while every read
+/// of the local inside a closure asks for it, so it is memoized per declaration.
 fn captured_local_type(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    decl: &SemanticId,
+) -> Option<LuaType> {
+    let key = (model.file_id(), decl.clone());
+    if let Some(ty) = model.cache.borrow().captured_local.get(&key) {
+        return ty.clone();
+    }
+    let revision = model.cache.borrow().revision();
+    let ty = captured_local_type_uncached(model, tree, decl);
+    model.cache.publish_if_complete(revision, |cache| {
+        cache.captured_local.insert(key, ty.clone());
+    });
+    ty
+}
+
+fn captured_local_type_uncached(
     model: &SemanticModel,
     tree: &FlowTree,
     decl: &SemanticId,
@@ -770,10 +788,13 @@ pub(crate) fn type_of_expr_at_node(
                             // Through the same declaration the projection can only refine the value
                             // (a generic default, say): nil stays flow's call, and `type_of_member`
                             // drops an optional function/class field's nil. Guards still apply below.
-                            let flow_value = remove_type(member_ty.clone(), &LuaType::Nil);
                             if !matches!(member_ty, LuaType::Nil | LuaType::Never)
                                 && (is_generic
-                                    || member_type_more_specific(model, &info.typ, &flow_value))
+                                    || member_type_more_specific(
+                                        model,
+                                        &info.typ,
+                                        &remove_type(member_ty.clone(), &LuaType::Nil),
+                                    ))
                             {
                                 member_ty = if member_ty.is_nullable() {
                                     merge_types(info.typ, LuaType::Nil)
@@ -2014,15 +2035,15 @@ fn trace_decl(
     // branch merges. (One difference: they also narrow what a `---@cast` below added, which
     // the base order applies last.) Incoming casts and correlated narrowings (dropped at some
     // assignments below) do not commute that way, so they keep the uncached walk.
-    if !path.narrowings.is_empty() || !path.casts.is_empty() {
-        if !path.casts.is_empty()
-            || path
-                .narrowings
-                .iter()
-                .any(|narrowing| matches!(narrowing, Narrowing::Correlated { .. }))
-        {
-            return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
-        }
+    if !path.casts.is_empty()
+        || path
+            .narrowings
+            .iter()
+            .any(|narrowing| matches!(narrowing, Narrowing::Correlated { .. }))
+    {
+        return trace_decl_uncached(model, decl, tree, flow_id, options, mode, visited, path);
+    }
+    if !path.narrowings.is_empty() {
         let state = trace_decl(
             model,
             decl,

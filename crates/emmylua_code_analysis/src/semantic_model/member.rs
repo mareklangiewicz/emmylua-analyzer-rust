@@ -243,10 +243,9 @@ fn direct_member_info(
                 })
                 .flatten()?;
                 if info.id.is_none()
-                    && let Some(source) = mapped_alias_source_member(model, &def, generic, key)
+                    && let Some(source) = mapped_alias_source(model, &def, generic)
                 {
-                    info.id = source.id;
-                    info.file_id = source.file_id;
+                    adopt_source_declaration(model, &source, &mut info);
                 }
                 return Some(info);
             }
@@ -315,15 +314,13 @@ fn direct_member_info(
     }
 }
 
-/// For a mapped alias over `keyof X` (`Partial<T>` is `{ [P in keyof T]?: T[P] }`), the member of
-/// `X` that a produced field comes from. The field keeps its own (mapped) type, but takes the
-/// source declaration, so hover and completion show `X`'s field docs.
-fn mapped_alias_source_member(
+/// For a mapped alias over `keyof X` (`Partial<T>` is `{ [P in keyof T]?: T[P] }`), the type `X`
+/// its fields come from.
+fn mapped_alias_source(
     model: &SemanticModel,
     def: &TypeDef,
     generic: &LuaGenericType,
-    key: &LuaMemberKey,
-) -> Option<MemberInfo> {
+) -> Option<LuaType> {
     let LuaType::Mapped(mapped) = model.alias_target(def)? else {
         return None;
     };
@@ -334,12 +331,23 @@ fn mapped_alias_source_member(
         return None;
     }
     let names: Vec<SmolStr> = def.generic_params.iter().map(|p| p.name.clone()).collect();
-    let source = model.substitute_generic_params_named(
+    Some(model.substitute_generic_params_named(
         call.get_operands().first()?,
         generic.get_params(),
         &names,
-    );
-    member_info(model, &source, key).filter(|info| info.id.is_some())
+    ))
+}
+
+/// A mapped field keeps its own (mapped) type, but takes the declaration of the `source` member
+/// it comes from, so hover and completion show that field's docs.
+fn adopt_source_declaration(model: &SemanticModel, source: &LuaType, info: &mut MemberInfo) {
+    if info.id.is_none()
+        && let Some(declared) = member_info(model, source, &info.key)
+        && declared.id.is_some()
+    {
+        info.id = declared.id;
+        info.file_id = declared.file_id;
+    }
 }
 
 pub(crate) fn member_info_impl(
@@ -473,26 +481,20 @@ pub(crate) fn index_signature_type(
     prefix_type: &LuaType,
     key_type: &LuaType,
 ) -> Option<LuaType> {
+    if let Some(params) = prefix_type.table_generic_params() {
+        let [index_key, value] = params else {
+            return None;
+        };
+        return model.type_check(key_type, index_key).then(|| value.clone());
+    }
     match prefix_type {
-        LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
-            let [index_key, value] = generic.get_params().as_slice() else {
-                return None;
-            };
-            model.type_check(key_type, index_key).then(|| value.clone())
-        }
-        LuaType::TableGeneric(params) => {
-            let [index_key, value] = params.as_slice() else {
-                return None;
-            };
-            model.type_check(key_type, index_key).then(|| value.clone())
-        }
         LuaType::Object(object) => object
             .get_index_access()
             .iter()
             .find(|(index_key, _)| model.type_check(key_type, index_key))
             .map(|(_, value)| value.clone()),
         LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) => model
-            .member_infos(prefix_type)
+            .index_member_infos(prefix_type)
             .into_iter()
             .find(|info| {
                 info.index_key_type
@@ -755,13 +757,11 @@ fn collect_members(
                 with_expanded_alias(model, prefix_type, |expanded| {
                     collect_members(model, expanded, None, None, visited, out, filter);
                 });
-                for info in &mut out[start..] {
-                    if info.id.is_none()
-                        && let Some(source) =
-                            mapped_alias_source_member(model, &def, generic, &info.key)
-                    {
-                        info.id = source.id;
-                        info.file_id = source.file_id;
+                if out[start..].iter().any(|info| info.id.is_none())
+                    && let Some(source) = mapped_alias_source(model, &def, generic)
+                {
+                    for info in &mut out[start..] {
+                        adopt_source_declaration(model, &source, info);
                     }
                 }
                 return;

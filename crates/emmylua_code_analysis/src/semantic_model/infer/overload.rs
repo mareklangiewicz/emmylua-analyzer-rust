@@ -85,41 +85,20 @@ pub(crate) fn table_literal_as_array_by(
     ty: &LuaType,
     type_of_value: impl Fn(LuaSyntaxId) -> LuaType,
 ) -> Option<LuaType> {
-    let LuaType::TableConst(table) = ty else {
-        return None;
-    };
     if is_empty_table_literal(model, ty) {
         return Some(LuaType::Array(Rc::new(LuaArrayType::from_base_type(
             LuaType::Any,
         ))));
     }
-    let owner = SemanticId::member(table.file_id, table.value);
+    let members = table_literal_members(
+        model,
+        ty,
+        |key| matches!(key, LuaMemberKey::Integer(key) if *key > 0),
+        type_of_value,
+    )?;
     let mut base_types = Vec::new();
-    for member_ref in model.members_of_owner(&owner).iter() {
-        let Some(facts) = model.file_facts_of(member_ref.file_id) else {
-            continue;
-        };
-        let Some(member) = facts.member_by_id(&member_ref.id) else {
-            continue;
-        };
-        let LuaMemberKey::Integer(key) = member.key else {
-            continue;
-        };
-        if key <= 0 {
-            continue;
-        }
-        let member_ty = if let Some(value_syntax) = member.value_syntax {
-            type_of_value(value_syntax)
-        } else {
-            model
-                .type_of_member(&member_ref.id)
-                .unwrap_or(LuaType::Unknown)
-        };
-        let member_ty = widen_const(&member_ty);
-        if !matches!(member_ty, LuaType::Unknown | LuaType::Any) && !base_types.contains(&member_ty)
-        {
-            base_types.push(member_ty);
-        }
+    for (_, member_ty) in members {
+        push_known_type(&mut base_types, member_ty);
     }
     if base_types.is_empty() {
         return None;
@@ -139,39 +118,23 @@ fn table_literal_as_map(
     ty: &LuaType,
     map: &LuaGenericType,
 ) -> Option<LuaType> {
-    let LuaType::TableConst(table) = ty else {
-        return None;
-    };
-    let owner = SemanticId::member(table.file_id, table.value);
+    let members = table_literal_members(
+        model,
+        ty,
+        |key| matches!(key, LuaMemberKey::Name(_) | LuaMemberKey::Integer(_)),
+        |syntax| model.type_of_expr(syntax),
+    )?;
     let mut key_types = Vec::new();
     let mut value_types = Vec::new();
-    for member_ref in model.members_of_owner(&owner).iter() {
-        let Some(facts) = model.file_facts_of(member_ref.file_id) else {
-            continue;
-        };
-        let Some(member) = facts.member_by_id(&member_ref.id) else {
-            continue;
-        };
-        let key_ty = match member.key {
+    for (key, value_ty) in members {
+        let key_ty = match key {
             LuaMemberKey::Name(_) => LuaType::String,
-            LuaMemberKey::Integer(_) => LuaType::Integer,
-            _ => continue,
+            _ => LuaType::Integer,
         };
-        let value_ty = if let Some(value_syntax) = member.value_syntax {
-            model.type_of_expr(value_syntax)
-        } else {
-            model
-                .type_of_member(&member_ref.id)
-                .unwrap_or(LuaType::Unknown)
-        };
-        let value_ty = widen_const(&value_ty);
         if !key_types.contains(&key_ty) {
             key_types.push(key_ty);
         }
-        if !matches!(value_ty, LuaType::Unknown | LuaType::Any) && !value_types.contains(&value_ty)
-        {
-            value_types.push(value_ty);
-        }
+        push_known_type(&mut value_types, value_ty);
     }
     if key_types.is_empty() || value_types.is_empty() {
         return None;
@@ -180,6 +143,48 @@ fn table_literal_as_map(
         map.get_base_type_id(),
         vec![LuaType::from_vec(key_types), LuaType::from_vec(value_types)],
     ))))
+}
+
+/// The members of a table literal type whose key passes `keep_key`, each with its widened
+/// value type: `type_of_value` on the value expression, else the member's own type.
+fn table_literal_members(
+    model: &SemanticModel,
+    ty: &LuaType,
+    keep_key: impl Fn(&LuaMemberKey) -> bool,
+    type_of_value: impl Fn(LuaSyntaxId) -> LuaType,
+) -> Option<Vec<(LuaMemberKey, LuaType)>> {
+    let LuaType::TableConst(table) = ty else {
+        return None;
+    };
+    let owner = SemanticId::member(table.file_id, table.value);
+    let mut out = Vec::new();
+    for member_ref in model.members_of_owner(&owner).iter() {
+        let Some(facts) = model.file_facts_of(member_ref.file_id) else {
+            continue;
+        };
+        let Some(member) = facts.member_by_id(&member_ref.id) else {
+            continue;
+        };
+        if !keep_key(&member.key) {
+            continue;
+        }
+        let member_ty = if let Some(value_syntax) = member.value_syntax {
+            type_of_value(value_syntax)
+        } else {
+            model
+                .type_of_member(&member_ref.id)
+                .unwrap_or(LuaType::Unknown)
+        };
+        out.push((member.key.clone(), widen_const(&member_ty)));
+    }
+    Some(out)
+}
+
+/// Collect a type into a deduplicated union list, skipping `unknown` / `any`.
+fn push_known_type(types: &mut Vec<LuaType>, ty: LuaType) {
+    if !matches!(ty, LuaType::Unknown | LuaType::Any) && !types.contains(&ty) {
+        types.push(ty);
+    }
 }
 
 /// Expand a non-generic named alias (`LocalTimer.OnTimer` -> `DocFunction`).
@@ -491,19 +496,16 @@ fn match_call_candidate_impl(
     // A multi-return call as the last argument passes all its values, one per remaining
     // param: `id(f())` binds `act: T` to `f()`'s first value only, not the whole tuple.
     let mut spread_args_storage: Vec<CallArg> = Vec::new();
-    let args: &[CallArg] = match args.split_last() {
-        Some((last, init)) if last.closure_syntax.is_none() => match &last.ty {
-            LuaType::Variadic(variadic) => match variadic.as_ref() {
-                VariadicType::Multi(values) => {
-                    spread_args_storage.extend(init.iter().cloned());
-                    spread_args_storage.extend(values.iter().cloned().map(CallArg::new));
-                    spread_args_storage.as_slice()
-                }
-                _ => args,
-            },
-            _ => args,
-        },
-        _ => args,
+    let args: &[CallArg] = if let Some((last, init)) = args.split_last()
+        && last.closure_syntax.is_none()
+        && let LuaType::Variadic(variadic) = &last.ty
+        && let VariadicType::Multi(values) = variadic.as_ref()
+    {
+        spread_args_storage.extend(init.iter().cloned());
+        spread_args_storage.extend(values.iter().cloned().map(CallArg::new));
+        &spread_args_storage
+    } else {
+        args
     };
     let arg_start = if has_self_param && colon_call {
         0

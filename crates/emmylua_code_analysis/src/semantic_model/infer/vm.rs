@@ -2064,11 +2064,8 @@ impl<'a> InferVm<'a> {
         match original_callback_ret {
             // A single-value return (`fun(): V`) takes the first value of the result.
             LuaType::TplRef(tpl) => {
-                let first = if callback_ret.contain_multi_return() {
-                    callback_ret.get_result_slot_type(0).unwrap_or(LuaType::Nil)
-                } else {
-                    callback_ret.clone()
-                };
+                // Already the type itself for anything but a multi-return.
+                let first = callback_ret.get_result_slot_type(0).unwrap_or(LuaType::Nil);
                 bindings.insert(tpl.get_tpl_id(), first);
             }
             LuaType::Variadic(v) => {
@@ -5105,7 +5102,7 @@ fn length_type(model: &SemanticModel, operand: &LuaType) -> Option<LuaType> {
             results.push(LuaType::Integer);
         } else if let Some(len) = model.operator_type("len", &ty) {
             results.push(len);
-        } else if is_class_instance(model, &ty) {
+        } else if model.is_class_instance(&ty) {
             // A class instance is a table: without `__len`, its length is an integer.
             results.push(LuaType::Integer);
         } else {
@@ -5116,17 +5113,6 @@ fn length_type(model: &SemanticModel, operand: &LuaType) -> Option<LuaType> {
 }
 
 /// Whether `ty` is an instance of a named class (`Box`, `List<T>`).
-fn is_class_instance(model: &SemanticModel, ty: &LuaType) -> bool {
-    let id = match ty {
-        LuaType::Ref(id) | LuaType::Def(id) => id.clone(),
-        LuaType::Generic(generic) => generic.get_base_type_id(),
-        _ => return false,
-    };
-    model
-        .type_def_of(&id)
-        .is_some_and(|def| def.kind == TypeDefKind::Class)
-}
-
 /// Binary operator -> `@operator` name.
 fn binary_operator_name(op: BinaryOperator) -> Option<&'static str> {
     use BinaryOperator::*;

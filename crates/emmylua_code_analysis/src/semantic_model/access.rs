@@ -1069,16 +1069,7 @@ impl<'db> SemanticModel<'db> {
         // Inherited/cross-class members: `member_info` projects along parent types, enabled only for class types;
         // same-name member resolution on unions is left to flow narrowing to avoid breaking dynamic field tests on `Foo|Bar`.
         if let Some(prefix_ty) = &prefix_ty {
-            let is_class = match prefix_ty {
-                LuaType::Ref(id) | LuaType::Def(id) => self
-                    .type_def_of(id)
-                    .is_some_and(|def| def.kind == TypeDefKind::Class),
-                LuaType::Generic(generic) => self
-                    .type_def_of(generic.get_base_type_id_ref())
-                    .is_some_and(|def| def.kind == TypeDefKind::Class),
-                _ => false,
-            };
-            if is_class {
+            if self.is_class_instance(prefix_ty) {
                 let key = LuaMemberKey::Name(name.clone());
                 if let Some(info) = self.member_info(prefix_ty, &key)
                     && let Some(id) = info.id

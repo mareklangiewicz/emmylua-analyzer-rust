@@ -70,10 +70,7 @@ impl<'db> SemanticModel<'db> {
                 .as_ref()
             && docs.returns.len() == 1
         {
-            let rich = self.doc_type_lua_rich(docs.returns[0]);
-            if !matches!(rich, LuaType::Unknown) {
-                ty = rich;
-            }
+            ty = self.rich_doc_type_or(self.view.file_id(), docs.returns[0], ty);
         }
         // `self` in method annotations is the receiver instance; concretize it by the owner type before return checks.
         if let Some(owner_ty) = self.method_owner_type(closure_syntax) {
@@ -410,10 +407,7 @@ impl<'db> SemanticModel<'db> {
                     .iter()
                     .find(|(param_name, _)| param_name == name)
             {
-                let rich = self.doc_type_lua_rich(*syntax);
-                if !matches!(rich, LuaType::Unknown) {
-                    ty = rich;
-                }
+                ty = self.rich_doc_type_or(self.view.file_id(), *syntax, ty);
             }
             // `function a.aaa(x)`: if this closure implements a member and the owner type has
             // a same-named field with a function type, use the field signature to fill in missing `---@param` types.

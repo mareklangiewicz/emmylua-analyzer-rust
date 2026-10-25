@@ -23,7 +23,7 @@ use crate::{
 };
 
 use super::check_field::union_array_for_sequence;
-use super::param_count::first_param_is_self;
+use super::param_count::{call_arg_param_index, first_param_is_self};
 use super::{CheckContext, Checker};
 
 pub struct ParamTypeChecker;
@@ -276,10 +276,14 @@ fn check_call(
     // instance (`Box<integer>`), as the VM does for the call's result.
     if let Some(class_map) = type_eval::class_generic_map(semantic_model, &receiver_ty) {
         for candidate in &mut candidates {
-            let func = LuaType::DocFunction(Rc::new(candidate.clone()));
-            if let LuaType::DocFunction(func) = type_eval::substitute_named_refs(&func, &class_map)
-            {
-                *candidate = func.as_ref().clone();
+            // The temporary input is dropped by the time the result is unwrapped, so an
+            // unchanged candidate comes back without a second copy.
+            let substituted = type_eval::substitute_named_refs(
+                &LuaType::DocFunction(Rc::new(candidate.clone())),
+                &class_map,
+            );
+            if let LuaType::DocFunction(func) = substituted {
+                *candidate = Rc::unwrap_or_clone(func);
             }
         }
     }
@@ -424,15 +428,11 @@ fn table_literal_mismatch(
 
 /// More call arguments than the candidate has parameters (after the receiver rules), and no varargs.
 fn takes_too_many_args(func: &LuaFunctionType, arg_count: usize, colon_call: bool) -> bool {
-    if func.is_variadic() {
-        return false;
-    }
-    let self_param = first_param_is_self(func);
-    let receiver_param = colon_call && (self_param || !func.is_colon_define());
-    let receiver_arg = !colon_call && !self_param && func.is_colon_define();
-    let param_count =
-        func.get_params().len() - usize::from(receiver_param && !func.get_params().is_empty());
-    arg_count.saturating_sub(usize::from(receiver_arg)) > param_count
+    !func.is_variadic()
+        && arg_count
+            .checked_sub(1)
+            .and_then(|last| call_arg_param_index(func, last, colon_call))
+            .is_some_and(|param| param >= func.get_params().len())
 }
 
 /// A cheap literal/scalar-shape score used only to order call candidates.
@@ -771,8 +771,8 @@ fn check_arg_pairs(
         };
         let arg_ty = cached_arg_type(semantic_model, args, arg_types, index);
         // A fixed parameter takes the call argument's FIRST value: `g(f(), 1)`.
-        let arg_ty = match (arg, arg_ty.is_multi_return()) {
-            (LuaExpr::CallExpr(_), true) => arg_ty.get_result_slot_type(0).unwrap_or(LuaType::Nil),
+        let arg_ty = match arg {
+            LuaExpr::CallExpr(_) => arg_ty.into_first_value(),
             _ => arg_ty,
         };
         let arg_ty = normalize_arg_for_check(semantic_model, &arg_ty);
