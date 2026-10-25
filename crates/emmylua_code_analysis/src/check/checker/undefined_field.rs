@@ -584,10 +584,11 @@ fn resolve_generic_param<'a>(semantic_model: &'a SemanticModel<'_>, ty: &'a LuaT
     let Some(facts) = semantic_model.file_facts() else {
         return ty.clone();
     };
+    // Rich, as the VM reads it: the shell form loses an object constraint's fields.
     if let Some((_, param)) = facts.generic_param_constraints(name).next()
         && let Some(constraint) = param.constraint
     {
-        return semantic_model.doc_type_lua(constraint);
+        return semantic_model.doc_type_lua_rich(constraint);
     }
     ty.clone()
 }

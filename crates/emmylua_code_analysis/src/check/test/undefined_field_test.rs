@@ -545,6 +545,32 @@ mod test {
         ));
     }
 
+    /// An object-type constraint keeps its fields (optional ones included), as the VM reads it.
+    #[test]
+    fn test_generic_object_constraint_field() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@generic T: { address?: string, at: { x: number } }
+            ---@param win T
+            local function addr(win)
+                print(win.address, win.at.x)
+            end
+        "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+            ---@generic T: { address?: string }
+            ---@param win T
+            local function addr(win)
+                print(win.title)
+            end
+        "#
+        ));
+    }
+
     #[test]
     fn test_generic_constraint_unknown_field() {
         let mut ws = VirtualWorkspace::new();
