@@ -77,4 +77,27 @@ mod test {
         "#
         ));
     }
+
+    /// The falsy branch of a member test keeps an owner whose member CAN be falsy: after
+    /// `if self.flag then return end` (`flag: boolean`), `self` is still the class, not `never`.
+    #[test]
+    fn test_member_falsy_branch_keeps_owner_with_boolean_member() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@class FalsyGuard
+                ---@field flag boolean
+                ---@field thunk (fun())?
+                local Job = {}
+
+                function Job:cancel()
+                    if self.flag then return end
+                    if self.thunk then
+                        self.thunk = nil
+                    end
+                end
+            "#
+        ));
+    }
 }
