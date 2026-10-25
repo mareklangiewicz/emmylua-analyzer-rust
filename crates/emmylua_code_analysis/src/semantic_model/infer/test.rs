@@ -1874,3 +1874,25 @@ fn expression_casts_use_the_current_file() {
         }
     }
 }
+
+#[test]
+fn test_unbound_generic_in_call_result_type_argument_degrades_to_unknown() {
+    // `from(unknown)` can't bind `V`; the result is `Box<unknown>`, not `Box<V>` with the
+    // callee's own generic leaking into the caller.
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class Box<T>
+
+        ---@generic V
+        ---@param s V[]
+        ---@return Box<V>
+        local function from(s) end
+
+        local function f(t)
+            boxed = from(t)
+        end
+    "#,
+    );
+    assert_eq!(ws.expr_ty("boxed"), ws.ty("Box<unknown>"));
+}

@@ -307,7 +307,9 @@ pub fn sanitize_unresolved_generics_with_model(
     use LuaType::*;
     match ty {
         TplRef(tpl) if !allowed.contains(&tpl.get_tpl_id()) => Unknown,
-        Generic(_) => map_alias_children(ty, &mut |child| sanitize_generic_param(model, child)),
+        Generic(_) => map_alias_children(ty, &mut |child| {
+            sanitize_generic_param(model, child, allowed)
+        }),
         TableGeneric(params) => TableGeneric(Rc::new(
             params
                 .iter()
@@ -323,19 +325,26 @@ pub fn sanitize_unresolved_generics_with_model(
     }
 }
 
-/// Replace unresolved named types inside generic arguments with `Unknown`.
-fn sanitize_generic_param(model: &SemanticModel, ty: &LuaType) -> LuaType {
+/// Replace unresolved named types and unbound generic params inside generic arguments with `Unknown`.
+fn sanitize_generic_param(
+    model: &SemanticModel,
+    ty: &LuaType,
+    allowed: &std::collections::HashSet<GenericTplId>,
+) -> LuaType {
     use LuaType::*;
     match ty {
         Ref(id) | Def(id) if model.type_def_of(id).is_none() => Unknown,
+        TplRef(tpl) if !allowed.contains(&tpl.get_tpl_id()) => Unknown,
         TableGeneric(params) => TableGeneric(Rc::new(
             params
                 .iter()
-                .map(|ty| sanitize_generic_param(model, ty))
+                .map(|ty| sanitize_generic_param(model, ty, allowed))
                 .collect(),
         )),
         Generic(_) | Array(_) | Tuple(_) | Union(_) | Object(_) | Variadic(_) | Call(_) => {
-            map_alias_children(ty, &mut |child| sanitize_generic_param(model, child))
+            map_alias_children(ty, &mut |child| {
+                sanitize_generic_param(model, child, allowed)
+            })
         }
         _ => ty.clone(),
     }
