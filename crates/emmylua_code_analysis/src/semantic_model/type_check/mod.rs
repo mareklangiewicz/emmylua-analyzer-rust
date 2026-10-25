@@ -187,10 +187,12 @@ fn check_general_type_compact_inner(
         if let LuaType::Ref(id) | LuaType::Def(id) = ty
             && let Some(def) = context.type_def_of(id)
             && def.kind == TypeDefKind::Enum
+            // An enum's values are never a map: against one, it is its runtime table.
             && !matches!(
                 if is_source { compact_type } else { source },
                 LuaType::Table | LuaType::TableConst(_)
             )
+            && !(is_source && ref_type::index_signatures(compact_type).is_some())
             && let Some(values) =
                 context.require_complete(|| enum_value_type(context.model, &def))?
         {

@@ -2,7 +2,7 @@
 //!
 //! Parts still missing from semantic fall back: alias origin, enum field unions, call operator.
 
-use crate::{LuaGenericType, LuaObjectType, LuaType, LuaTypeDeclId, TypeDefKind};
+use crate::{LuaGenericType, LuaMemberKey, LuaObjectType, LuaType, LuaTypeDeclId, TypeDefKind};
 
 use super::context::TypeCheckContext;
 use super::sub_type::{get_base_type_id, is_sub_type_of};
@@ -86,6 +86,9 @@ fn check_ref_enum(
     if matches!(compact_type, LuaType::Table) {
         return Ok(());
     }
+    if let Some(signatures) = index_signatures(compact_type) {
+        return check_member_map(context, source_id, compact_type, &signatures);
+    }
     // Same base type name.
     if let Some(base_id) = get_base_type_id(compact_type)
         && is_sub_type_of(context, source_id, &base_id)
@@ -100,6 +103,12 @@ fn check_ref_class(
     source_id: &LuaTypeDeclId,
     compact_type: &LuaType,
 ) -> TypeCheckResult {
+    // `table<K, V>`, in either spelling, is a map rather than a nominal generic.
+    if compact_type.table_generic_params().is_some()
+        && let Some(signatures) = index_signatures(compact_type)
+    {
+        return check_member_map(context, source_id, compact_type, &signatures);
+    }
     match compact_type {
         LuaType::Def(id) | LuaType::Ref(id) => {
             if source_id == id {
@@ -171,10 +180,16 @@ fn check_ref_class(
             {
                 return Ok(());
             }
-            if let LuaType::Object(object) = compact_type
-                && object.get_index_access().is_empty()
-            {
-                return check_class_fields(context, source_id, object);
+            if let LuaType::Object(object) = compact_type {
+                let mut checks = RequiredChecks::default();
+                checks.require(check_class_fields(context, source_id, object))?;
+                checks.require(check_member_map(
+                    context,
+                    source_id,
+                    compact_type,
+                    object.get_index_access(),
+                ))?;
+                return checks.finish();
             }
             Err(context.mismatch(&LuaType::Ref(source_id.clone()), compact_type))
         }
@@ -213,6 +228,62 @@ fn check_class_fields(
             .map(|info| info.typ.clone())
             .unwrap_or(LuaType::Nil);
         checks.require(check_general_type_compact(context, &actual, expected))?;
+    }
+    checks.finish()
+}
+
+/// The `[K]: V` index signatures of a map type: an object's, or `table<K, V>`'s one.
+pub(super) fn index_signatures(ty: &LuaType) -> Option<Vec<(LuaType, LuaType)>> {
+    match ty {
+        LuaType::Object(object) if !object.get_index_access().is_empty() => {
+            Some(object.get_index_access().to_vec())
+        }
+        _ => match ty.table_generic_params()? {
+            [key, value] => Some(vec![(key.clone(), value.clone())]),
+            _ => None,
+        },
+    }
+}
+
+/// A named table type is a map whose members fit it: each member's key fits some signature's
+/// key type, and its value that signature's value type. `:` methods live on the class table, not
+/// on the instance a map holds, so they are not checked.
+fn check_member_map(
+    context: &mut TypeCheckContext,
+    source_id: &LuaTypeDeclId,
+    map: &LuaType,
+    signatures: &[(LuaType, LuaType)],
+) -> TypeCheckResult {
+    if signatures.is_empty() {
+        return Ok(());
+    }
+    let source = LuaType::Ref(source_id.clone());
+    let members = context.require_complete(|| context.model.member_infos(&source))?;
+    let mut checks = RequiredChecks::default();
+    for member in members.iter().filter(|member| !member.is_method) {
+        let key = match (&member.index_key_type, &member.key) {
+            (Some(key), _) => key.clone(),
+            (None, LuaMemberKey::Name(name)) => LuaType::StringConst(name.clone().into()),
+            (None, LuaMemberKey::Integer(i)) => LuaType::IntegerConst(*i),
+            (None, LuaMemberKey::None) => continue,
+        };
+        let mut covered = false;
+        for (key_ty, value_ty) in signatures {
+            match check_general_type_compact(context, &key, key_ty) {
+                Ok(()) => {
+                    covered = true;
+                    checks.require(check_general_type_compact(context, &member.typ, value_ty))?;
+                }
+                Err(err) if err.is_unresolved() => {
+                    covered = true;
+                    checks.require(Err(err))?;
+                }
+                Err(_) => {}
+            }
+        }
+        if !covered {
+            return Err(context.mismatch(&source, map));
+        }
     }
     checks.finish()
 }

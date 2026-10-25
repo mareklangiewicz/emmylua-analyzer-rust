@@ -2999,4 +2999,69 @@ mod test {
             .count();
         assert_eq!(mismatches, 2, "{diagnostics:#?}");
     }
+
+    /// A class or enum is a map whose members fit it: each member whose key fits an index
+    /// signature's key type has a value of its value type. `{ [K]: V }` and `table<K, V>` alike,
+    /// and with `K`, `V` still generic (`pairs`).
+    #[test]
+    fn test_named_argument_satisfies_index_signature_param() {
+        let diagnostics = check_source(
+            r#"
+                ---@enum E
+                local E = { a = 1 }
+                ---@class C
+                ---@field x integer
+
+                ---@param t { [string]: integer }
+                local function obj(t) end
+                ---@param t table<string, integer>
+                local function map(t) end
+                ---@generic K, V
+                ---@param t table<K, V> | V[] | { [K]: V }
+                local function each(t) end
+
+                ---@type C
+                local c
+                obj(E)
+                map(E)
+                obj(c)
+                map(c)
+                each(E)
+                each(c)
+            "#,
+        );
+        let mismatches: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .collect();
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+    }
+
+    /// The index signature still rejects a member of another value type.
+    #[test]
+    fn test_named_argument_with_a_mismatched_member_fails_index_signature() {
+        let diagnostics = check_source(
+            r#"
+                ---@enum S
+                local S = { a = "x" }
+                ---@class W
+                ---@field x string
+
+                ---@param t { [string]: integer }
+                local function obj(t) end
+                ---@param t table<string, integer>
+                local function map(t) end
+
+                ---@type W
+                local w
+                obj(S)
+                map(w)
+            "#,
+        );
+        let mismatches = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .count();
+        assert_eq!(mismatches, 2, "{diagnostics:#?}");
+    }
 }
