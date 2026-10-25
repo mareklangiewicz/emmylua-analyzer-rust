@@ -7,6 +7,7 @@ use emmylua_parser::{
     LuaIndexKey, LuaLiteralToken, LuaLocalStat, LuaTableExpr, LuaVarExpr, NumberResult,
 };
 
+use super::check_field::is_optional;
 use crate::DiagnosticCode;
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::infer::vm::bind_signature_generics;
@@ -856,7 +857,9 @@ fn collect_members_with_index_signatures(
             }
         } else {
             out.entry(member.key.clone()).or_insert_with(|| ty.clone());
-            if !member.is_nullable && !required_out.iter().any(|(existing, _)| existing == &name) {
+            // Optional either way: `---@field f? T` or `---@field f T?`.
+            let optional = member.is_nullable || is_optional(semantic_model, &ty);
+            if !optional && !required_out.iter().any(|(existing, _)| existing == &name) {
                 required_out.push((name, ty));
             }
         }

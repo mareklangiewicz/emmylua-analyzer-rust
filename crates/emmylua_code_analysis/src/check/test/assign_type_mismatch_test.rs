@@ -3289,4 +3289,38 @@ return t
             "#
         ));
     }
+
+    /// A positional literal for a class with optional fields: a field whose TYPE is optional
+    /// (`---@field vim T?`, not only `vim?`) is not required, so its absence reports nothing.
+    #[test]
+    fn test_positional_literal_skips_fields_optional_by_type() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@alias MaybeText string?
+
+                ---@class Case
+                ---@field [1] string
+                ---@field want any
+                ---@field vim (fun(): any)?
+                ---@field defect string?
+                ---@field note MaybeText
+
+                ---@type Case
+                local one = { 'list', want = 1 }
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Pair
+                ---@field [1] string
+                ---@field want integer
+
+                ---@type Pair
+                local two = { 'list' }
+            "#
+        ));
+    }
 }
