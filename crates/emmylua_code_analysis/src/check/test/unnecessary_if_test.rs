@@ -305,4 +305,20 @@ mod test {
             "#
         ));
     }
+
+    /// A local annotated with an object type reads its field from that type, not from the
+    /// initializer's literal field: `{ to = nil } ---@type { to: fun()? }` can be set later.
+    #[test]
+    fn test_object_type_field_over_initializer_literal() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                local out = { to = nil } ---@type { to: fun(line: string)? }
+                local function write(line)
+                    if out.to then out.to(line) end
+                end
+            "#
+        ));
+    }
 }

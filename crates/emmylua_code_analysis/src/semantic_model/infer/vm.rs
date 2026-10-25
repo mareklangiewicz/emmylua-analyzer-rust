@@ -1152,9 +1152,10 @@ impl<'a> InferVm<'a> {
         // Declared named-type members take precedence over runtime members on the
         // table/instance: `b["field"]` for `local b: B = { field = 1 }` should use the
         // class `@field field integer`, not project the table literal `1` as `IntegerConst`.
+        // An annotated object type (`---@type { to: fun()? }`) declares its fields the same way.
         let type_has_member = matches!(
             &owner.ty,
-            LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+            LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) | LuaType::Object(_)
         ) && self.model.member_type(&owner.ty, key).is_some();
         for owner_id in owners {
             if type_has_member {
