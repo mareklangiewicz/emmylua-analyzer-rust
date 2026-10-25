@@ -166,7 +166,17 @@ fn index_expr_callable_candidates(
     index_expr: &LuaIndexExpr,
 ) -> Vec<LuaFunctionType> {
     let Some(resolved) = semantic_model.resolve_member(index_expr) else {
-        return Vec::new();
+        // The member index can't resolve a member of a computed prefix (`mk():take(n)`, every call
+        // in a fluent chain): look the name up on the prefix's inferred type instead.
+        let (Some(prefix), Some(emmylua_parser::LuaIndexKey::Name(name))) =
+            (index_expr.get_prefix_expr(), index_expr.get_index_key())
+        else {
+            return Vec::new();
+        };
+        let prefix_ty = semantic_model.type_of_expr(prefix.get_syntax_id());
+        let key = LuaMemberKey::Name(name.get_name_text().into());
+        return CallableCandidateSet::from_prefix_type(semantic_model, &prefix_ty, &key)
+            .into_candidates();
     };
 
     if let Some(prefix) = index_expr.get_prefix_expr() {

@@ -2869,4 +2869,23 @@ mod test {
             "#
         ));
     }
+
+    #[test]
+    fn test_method_call_on_call_result_is_checked() {
+        // `mk():take(...)`: the member can't be resolved from the syntax alone, so its candidates
+        // come from the callee's inferred type.
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@class Box
+            local Box = {}
+            ---@param n integer
+            function Box:take(n) end
+            ---@return Box
+            local function mk() return Box end
+            mk():take('y')
+            "#
+        ));
+    }
 }
