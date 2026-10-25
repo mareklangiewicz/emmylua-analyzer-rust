@@ -67,6 +67,7 @@ fn check_index(
             .unwrap_or_else(|| semantic_model.type_of_expr(prefix.get_syntax_id())),
         _ => semantic_model.type_of_expr(prefix.get_syntax_id()),
     };
+    let prefix_ty = resolve_generic_param(semantic_model, &prefix_ty);
     if is_invalid_prefix_type(&prefix_ty) {
         return;
     }
@@ -571,9 +572,11 @@ fn enum_runtime_decl<'db>(
     matches!(LuaExpr::cast(node), Some(LuaExpr::TableExpr(_))).then_some(decl)
 }
 
-/// Generic parameter projection fallback (`Ref("T")`): replace with the constraint type declared in the signature doc.
+/// A generic parameter reads as its constraint: a constrained `TplRef`, or the `Ref("T")`
+/// projection fallback, replaced with the constraint declared in the signature doc.
 fn resolve_generic_param<'a>(semantic_model: &'a SemanticModel<'_>, ty: &'a LuaType) -> LuaType {
     let id = match ty {
+        LuaType::TplRef(tpl) => return tpl.get_constraint().cloned().unwrap_or_else(|| ty.clone()),
         LuaType::Ref(id) | LuaType::Def(id) => id,
         _ => return ty.clone(),
     };

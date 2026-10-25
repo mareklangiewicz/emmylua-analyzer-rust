@@ -325,7 +325,11 @@ impl<'db> SemanticModel<'db> {
                 }
             }
         }
-        self.analysis().decl_type_lua(self.file_id(), decl.clone())
+        // A documented param (`---@param wins T[]`) lands here; its `T` is its signature's.
+        let ty = self
+            .analysis()
+            .decl_type_lua(self.file_id(), decl.clone())?;
+        Some(self.attach_param_decl_constraint(decl, ty))
     }
     /// Parameter declarations may lose generic constraints in `type_of_decl`'s fallback path; re-attach them here.
     pub(crate) fn attach_param_decl_constraint(&self, decl: &SemanticId, ty: LuaType) -> LuaType {
@@ -359,44 +363,48 @@ impl<'db> SemanticModel<'db> {
             return ty;
         };
         let generic_params = &docs.generic_params;
-        match ty {
-            LuaType::TplRef(ref tpl) => {
-                if let Some(param) = generic_params.iter().find(|g| g.name == tpl.get_name()) {
-                    let constraint = param.constraint.map(|syntax| self.doc_type_lua(syntax));
-                    let default = tpl.get_default_type().cloned();
-                    LuaType::TplRef(Rc::new(GenericTpl::new(
-                        tpl.get_tpl_id(),
-                        SmolStr::from(tpl.get_name()),
-                        constraint,
-                        default,
-                        tpl.is_const(),
-                        None,
-                    )))
+        // Rich: the shell lowers an object constraint (`T: { at: integer }`) to a bare `table`.
+        let constraint_of = |param: &DocGenericParam| {
+            param.constraint.map(|syntax| {
+                let rich = self.doc_type_lua_rich(syntax);
+                if rich.is_unknown() {
+                    self.doc_type_lua(syntax)
                 } else {
-                    ty
+                    rich
                 }
-            }
-            LuaType::Ref(ref id) if generic_params.iter().any(|g| g.name == id.get_name()) => {
-                if let Some((index, param)) = generic_params
-                    .iter()
-                    .enumerate()
-                    .find(|(_, g)| g.name == id.get_name())
-                {
-                    let constraint = param.constraint.map(|syntax| self.doc_type_lua(syntax));
-                    LuaType::TplRef(Rc::new(GenericTpl::new(
-                        GenericTplId::Type(index as u32),
-                        SmolStr::from(id.get_name()),
-                        constraint,
-                        None,
-                        false,
-                        None,
-                    )))
-                } else {
-                    ty
-                }
-            }
-            _ => ty,
+            })
+        };
+        if let LuaType::TplRef(tpl) = &ty {
+            let Some(param) = generic_params.iter().find(|g| g.name == tpl.get_name()) else {
+                return ty;
+            };
+            return LuaType::TplRef(Rc::new(GenericTpl::new(
+                tpl.get_tpl_id(),
+                SmolStr::from(tpl.get_name()),
+                constraint_of(param),
+                tpl.get_default_type().cloned(),
+                tpl.is_const(),
+                None,
+            )));
         }
+        // The signature's generics, wherever they sit in the param type (`T`, `T[]`, `{ x: T }`),
+        // are its own: a same-named `T` of another signature in the file does not apply.
+        let tpls = generic_params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                let tpl = GenericTpl::new(
+                    GenericTplId::Type(index as u32),
+                    param.name.clone(),
+                    constraint_of(param),
+                    None,
+                    false,
+                    None,
+                );
+                (param.name.to_string(), LuaType::TplRef(Rc::new(tpl)))
+            })
+            .collect();
+        substitute_named_refs(&ty, &tpls)
     }
     /// `---@[lsp_optimization("delayed_definition")]`: no longer treat "uninitialized" as nil,
     /// instead take the union of types from all assignments after that declaration.
@@ -1280,11 +1288,12 @@ impl<'db> SemanticModel<'db> {
                     .collect()
             })
             .unwrap_or_default();
-        if matches!(&ty, LuaType::Ref(id) if generic_names.contains(id.get_name())) {
-            LuaType::Unknown
-        } else {
-            ty
-        }
+        let leaked = match &ty {
+            LuaType::Ref(id) => generic_names.contains(id.get_name()),
+            LuaType::TplRef(tpl) => generic_names.contains(tpl.get_name()),
+            _ => false,
+        };
+        if leaked { LuaType::Unknown } else { ty }
     }
     /// Flow-sensitive type of a member at offset (member assignment flow awareness + `---@cast t.x +T` widening).
     pub fn type_of_member_at(&self, member: &SemanticId, offset: TextSize) -> LuaType {
