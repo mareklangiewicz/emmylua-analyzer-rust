@@ -1,6 +1,7 @@
 use super::prelude::*;
 use crate::LuaTypeIdentifier;
 use crate::semantic_db::TypeDefList;
+use crate::semantic_model::signature::needs_rich_doc_type;
 use crate::semantic_model::type_eval::substitute_named_refs;
 
 impl<'db> SemanticModel<'db> {
@@ -278,6 +279,29 @@ impl<'db> SemanticModel<'db> {
                         param_ty = infer::vm::replace_self_type(&param_ty, &owner_ty);
                     }
                     return Some(self.attach_generic_constraints(param_ty, closure_syntax));
+                }
+                // The shell lowers a structural `---@param` type (`{ x: T }`) to a bare `table`;
+                // the rich projection keeps it, as the signature's params do.
+                if let Some(docs) = signature.docs.as_ref()
+                    && let Some(name) = signature.param_names.get(param_index)
+                    && let Some((_, doc_syntax)) = docs
+                        .param_types
+                        .iter()
+                        .find(|(doc_name, _)| doc_name == name)
+                    && let Some(ty) = self
+                        .analysis()
+                        .decl_type_lua(self.file_id(), decl.id.clone())
+                    && needs_rich_doc_type(&ty)
+                {
+                    let rich = self.doc_type_lua_rich(*doc_syntax);
+                    if !rich.is_unknown() {
+                        let rich = if ty.is_nullable() && !rich.is_nullable() {
+                            LuaType::from_vec(vec![rich, LuaType::Nil])
+                        } else {
+                            rich
+                        };
+                        return Some(self.attach_generic_constraints(rich, closure_syntax));
+                    }
                 }
             }
 
