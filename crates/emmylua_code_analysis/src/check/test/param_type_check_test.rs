@@ -1814,7 +1814,7 @@ mod test {
     fn test_union_missing_member_accepted_by_nullable_param() {
         let mut ws = VirtualWorkspace::new();
         // `opts or {}` is `{ id?: any }|{}`: `opts.id` may be missing, which a param that
-        // accepts nil takes as is.
+        // accepts nil takes as is; one that rejects nil still reports it.
         assert!(ws.has_no_diagnostic(
             DiagnosticCode::ParamTypeMismatch,
             r#"
@@ -1835,9 +1835,14 @@ mod test {
             ---@param label string
             local function need(label) end
 
-            ---@param opts? { label?: string }
+            ---@class UnionMissingA
+            ---@field label string
+
+            ---@class UnionMissingB
+            ---@field id integer
+
+            ---@param opts UnionMissingA | UnionMissingB
             local function ask(opts)
-                opts = opts or {}
                 need(opts.label)
             end
         "#
