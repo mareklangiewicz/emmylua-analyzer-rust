@@ -10,11 +10,9 @@ mod test {
         assert!(ws.has_no_diagnostic(
             DiagnosticCode::UndefinedField,
             r#"
-                ---@alias std.NotNull<T> T - ?
-
                 ---@generic V
                 ---@param t {[any]: V}
-                ---@return fun(tbl: any):int, std.NotNull<V>
+                ---@return fun(tbl: any):int, V
                 function ipairs(t) end
 
                 ---@type {[integer]: string|table}
