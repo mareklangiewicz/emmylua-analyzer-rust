@@ -39,7 +39,7 @@ use crate::{
 use super::callable::CallableCandidateSet;
 use super::overload::{
     CallArg, call_operator_self_type, match_call_candidate, pcall_callback_ret, pcall_return_type,
-    select_callable, select_callable_partial,
+    select_callable, select_callable_partial, table_literal_as_array_by,
 };
 use super::unify;
 use crate::semantic_model::SemanticModel;
@@ -1782,6 +1782,7 @@ impl<'a> InferVm<'a> {
                     continue;
                 }
                 let closure_ret = self.closure_return_type_with_env(closure_syntax);
+                let closure_ret = self.array_literals_for(callback_fun.get_ret(), closure_ret);
                 if !matches!(closure_ret, LuaType::Unknown | LuaType::Any) {
                     let _ = unify_call_bindings(
                         self.model,
@@ -2071,6 +2072,27 @@ impl<'a> InferVm<'a> {
                     self.closure_params.insert((closure_syntax, param_idx), ty);
                 }
             }
+        }
+    }
+
+    /// A closure's returned table literal, against a callback return with a `U[]` in it, as the
+    /// array of its elements typed in the filled param environment: outside it, the element of
+    /// `function(v) return { tostring(v) } end` re-enters the call being inferred and is unknown.
+    fn array_literals_for(&self, pattern: &LuaType, ty: LuaType) -> LuaType {
+        let is_array = |t: &LuaType| matches!(t, LuaType::Array(_));
+        if !is_array(pattern) && !pattern.any_nested_type(is_array) {
+            return ty;
+        }
+        let as_array = |t: &LuaType| {
+            table_literal_as_array_by(self.model, t, |syntax| self.type_of_expr_inherit(syntax))
+                .unwrap_or_else(|| t.clone())
+        };
+        match &ty {
+            LuaType::TableConst(_) => as_array(&ty),
+            LuaType::Union(union) => {
+                LuaType::from_vec(union.into_vec().iter().map(as_array).collect())
+            }
+            _ => ty,
         }
     }
 

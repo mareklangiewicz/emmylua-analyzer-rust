@@ -1876,6 +1876,26 @@ fn expression_casts_use_the_current_file() {
 }
 
 #[test]
+fn test_callback_returning_table_literal_binds_array_return_pattern() {
+    // `fun(v): U[]`: a callback returning `{ s }` binds `U` by the literal's element type, as a
+    // table literal passed straight to a `U[]` param does.
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    ws.def(
+        r#"
+        ---@class Box<T>
+
+        ---@generic U
+        ---@param f fun(v: integer): U[]
+        ---@return Box<U>
+        local function flatmap(f) end
+
+        flat = flatmap(function(v) return { tostring(v) } end)
+    "#,
+    );
+    assert_eq!(ws.expr_ty("flat"), ws.ty("Box<string>"));
+}
+
+#[test]
 fn test_callback_returning_optional_binds_through_union_return_pattern() {
     // A callback returning `List<string>?` is a two-member union against a four-member one: each
     // of its members binds through some member of the pattern.
