@@ -960,7 +960,7 @@ impl<'a> InferVm<'a> {
     /// Dynamic string-key access on a table literal:
     /// with named fields, return the union of those field types plus nil; when there are
     /// only `[key]` computed keys (currently recorded as `Name("")`), return the index
-    /// signature's value type without adding nil.
+    /// signature's value type without adding nil; with no known members, unknown.
     fn index_member_dynamic_string(&mut self, owner: Value) -> Value {
         if !matches!(&owner.ty, LuaType::TableConst(_)) {
             return Value::plain(LuaType::Unknown);
@@ -988,6 +988,11 @@ impl<'a> InferVm<'a> {
         }
         if !empty_key_types.is_empty() {
             return Value::plain(LuaType::from_vec(empty_key_types));
+        }
+        // An empty `{}` has no known shape (dynamic-key writes record no member), as for a
+        // named key: see `table_literal_has_members`.
+        if !Self::table_literal_has_members(self.model, &owner.ty) {
+            return Value::plain(LuaType::Unknown);
         }
         Value::plain(LuaType::Nil)
     }
