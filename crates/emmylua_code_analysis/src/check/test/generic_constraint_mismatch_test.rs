@@ -842,4 +842,81 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_method_keyof_owner_class_generic() {
+        // `K: keyof T` on a method, where `T` is the owner class's generic: `T` comes from the receiver.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Box<T>
+            local Box = {}
+
+            ---@generic K: keyof T
+            ---@param k K
+            ---@return std.RawGet<T, K>
+            function Box:get(k) end
+
+            ---@class Root
+            ---@field root string
+        "#,
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::GenericConstraintMismatch,
+            r#"
+            local b = {} ---@type Box<Root>
+            local typo = b:get('roott')
+        "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::GenericConstraintMismatch,
+            r#"
+            local b = {} ---@type Box<Root>
+            local ok = b:get('root')
+        "#
+        ));
+    }
+
+    #[test]
+    fn test_colon_call_binds_generics_from_the_right_args() {
+        // `o:f(1)` on `function Obj.f(o, v)`: the receiver is `o`, the first argument is `v`.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Obj
+            local Obj = {}
+
+            ---@generic V: string
+            ---@param o Obj
+            ---@param v V
+            function Obj.f(o, v) end
+
+            ---@generic V: string
+            ---@param v V
+            function Obj:g(v) end
+        "#,
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::GenericConstraintMismatch,
+            r#"
+            local o = {} ---@type Obj
+            o:f(1)
+        "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::GenericConstraintMismatch,
+            r#"
+            local o = {} ---@type Obj
+            o:g("x")
+            Obj.g(o, "x")
+        "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::GenericConstraintMismatch,
+            r#"
+            local o = {} ---@type Obj
+            Obj.g(o, 1)
+        "#
+        ));
+    }
 }
