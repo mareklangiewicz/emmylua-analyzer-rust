@@ -291,4 +291,36 @@ mod test {
             ]))),
         );
     }
+
+    /// `ipairs` is generic over its value only (`fun(t: V[]): fun(): int, V`), so an array
+    /// argument still binds the loop value.
+    #[test]
+    fn test_ipairs_array_value() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+
+        ws.def(
+            r#"
+            ---@class B
+            ---@field since integer?
+
+            ---@type string[]
+            local names = {}
+            for i, name in ipairs(names) do
+                d1 = name
+                d2 = i
+            end
+
+            ---@param xs B[]
+            local function each(xs)
+                for _, x in ipairs(xs) do
+                    d3 = x
+                end
+            end
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("d1"), LuaType::String);
+        assert_eq!(ws.expr_ty("d2"), LuaType::Integer);
+        assert_eq!(ws.expr_ty("d3"), ws.ty("B"));
+    }
 }
