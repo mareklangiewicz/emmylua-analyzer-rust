@@ -427,7 +427,7 @@ fn check_member_assign(
                 return check_value_against_target(context, semantic_model, &target, value_expr);
             };
             let prefix_ty = semantic_model
-                .type_of_decl_assign_target_at(&SemanticId::Decl(owner.clone()), target_offset);
+                .type_of_decl_unwidened_at(&SemanticId::Decl(owner.clone()), target_offset);
             let key = member.key.clone();
             let infos = semantic_model.member_infos_with_key(&prefix_ty, &key);
             let declared_ty = infos
@@ -535,13 +535,6 @@ fn check_value_against(
     let value_ty = assignment_value_type(semantic_model, value_expr);
     if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)
         || is_compatible(semantic_model, &value_ty, target)
-    {
-        return;
-    }
-    // A local born as an undeclared table literal takes any table later, as it takes any table
-    // literal above: `local rows = {}` then `rows = parse(out)`.
-    if matches!(target, LuaType::TableConst(_))
-        && is_compatible(semantic_model, &value_ty, &LuaType::Table)
     {
         return;
     }

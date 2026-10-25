@@ -1412,7 +1412,7 @@ impl<'db> SemanticModel<'db> {
         decl: &SemanticId,
         offset: TextSize,
     ) -> LuaType {
-        let target = flow::type_of_decl_assign_target_at(self, decl, offset);
+        let target = self.type_of_decl_unwidened_at(decl, offset);
         let inferred = self
             .file_facts()
             .and_then(|facts| facts.decl_by_id(decl))
@@ -1424,6 +1424,12 @@ impl<'db> SemanticModel<'db> {
         } else {
             target
         }
+    }
+    /// The assignment target's type before the contract widens its literals: casts applied, no
+    /// conditional narrowing. Reads of its shape (members, `__call`) take this, since the
+    /// contract makes `{ n = 1 }` a bare `table`.
+    pub(crate) fn type_of_decl_unwidened_at(&self, decl: &SemanticId, offset: TextSize) -> LuaType {
+        flow::type_of_decl_assign_target_at(self, decl, offset)
     }
     /// Member assignment contract, keeping explicit field annotations exact.
     pub(crate) fn member_assignment_type(&self, member: &SemanticId, target: LuaType) -> LuaType {
@@ -1700,6 +1706,8 @@ fn widen_assignment_type(ty: LuaType) -> LuaType {
             LuaType::from_vec(union.iter().cloned().map(widen_assignment_type).collect())
         }
         LuaType::FloatConst(_) => LuaType::Number,
+        // A table literal is a table to fill in: `local rows = {}` then `rows = parse(out)`.
+        LuaType::TableConst(_) => LuaType::Table,
         _ => infer::vm::widen_variadic_const(&ty),
     }
 }

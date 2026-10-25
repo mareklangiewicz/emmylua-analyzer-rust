@@ -50,7 +50,7 @@ fn check_call(
                     .ancestors()
                     .any(|node| LuaLocalStat::cast(node).is_some())
                 {
-                    semantic_model.type_of_decl_assign_target_at(&decl, name_expr.get_position())
+                    semantic_model.type_of_decl_unwidened_at(&decl, name_expr.get_position())
                 } else {
                     semantic_model.type_of_decl_at(&decl, name_expr.get_position())
                 }

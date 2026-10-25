@@ -3258,4 +3258,35 @@ return t
             "#
         ));
     }
+
+    /// The contract widens a table literal wherever it sits, as it widens a number literal: a
+    /// local born `{}` or `false`, or a member born `{}`, takes a later table.
+    #[test]
+    fn test_table_literal_widens_inside_a_union_contract() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@type string[]
+                local strs
+                ---@type boolean
+                local flag
+
+                local a = flag and {} or false
+                a = strs
+                local M = {}
+                M.rows = {}
+                M.rows = strs
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@type boolean
+                local flag
+                local c = flag and {} or false
+                c = 1
+            "#
+        ));
+    }
 }

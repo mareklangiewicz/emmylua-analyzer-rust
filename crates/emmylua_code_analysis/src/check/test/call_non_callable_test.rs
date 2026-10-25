@@ -447,4 +447,19 @@ mod test {
             1
         );
     }
+
+    /// A local initializer reads the callee's declaration, so a callable table literal keeps its
+    /// `__call` there: the assignment contract widens it to `table`, the call must not.
+    #[test]
+    fn test_callable_table_called_in_a_local_initializer() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            local command = setmetatable({}, { __call = function() return 1 end })
+            local x = command()
+            return x
+            "#,
+        ));
+    }
 }
