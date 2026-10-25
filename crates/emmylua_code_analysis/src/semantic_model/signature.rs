@@ -3,12 +3,14 @@ use crate::{MemberList, OperatorDef};
 use super::prelude::*;
 
 // Object annotations lose their fields when lowered to `table` or `table | nil`.
-fn needs_rich_doc_type(ty: &LuaType) -> bool {
+pub(crate) fn needs_rich_doc_type(ty: &LuaType) -> bool {
     match ty {
         LuaType::Unknown | LuaType::Table => true,
         LuaType::Union(union) => union
             .iter()
             .all(|part| matches!(part, LuaType::Table | LuaType::Nil)),
+        // `{ x: T }[]` lowers to `table[]` the same way.
+        LuaType::Array(array) => needs_rich_doc_type(array.get_base()),
         _ => false,
     }
 }

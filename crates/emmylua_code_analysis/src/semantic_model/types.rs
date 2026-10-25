@@ -1,6 +1,7 @@
 use super::prelude::*;
 use crate::LuaTypeIdentifier;
 use crate::semantic_db::TypeDefList;
+use crate::semantic_model::signature::needs_rich_doc_type;
 use crate::semantic_model::type_eval::substitute_named_refs;
 
 impl<'db> SemanticModel<'db> {
@@ -884,12 +885,20 @@ impl<'db> SemanticModel<'db> {
         else {
             return Some(ty);
         };
+        // The shell lowers a structural doc type (`{ x: T }`, `{ x: T }[]`) to a bare `table`;
+        // the rich projection keeps it, as for a declaration's `---@type`.
+        let rich_doc_type = |doc_syntax: LuaSyntaxId, ty: LuaType| {
+            if !needs_rich_doc_type(&ty) {
+                return ty;
+            }
+            let rich = self.doc_type_lua_rich_in(member_file, doc_syntax);
+            if rich.is_unknown() { ty } else { rich }
+        };
         let ty = match (member_def.doc_type_syntax, member_def.value_syntax) {
-            // The shell lowers a structural doc type (`---@type { x: T }`) to a bare `table`;
-            // the rich projection keeps it, as for a declaration's `---@type`.
-            (Some(doc_syntax), _) if matches!(ty, LuaType::Table | LuaType::Unknown) => {
-                let rich = self.doc_type_lua_rich_in(member_file, doc_syntax);
-                if rich.is_unknown() { ty } else { rich }
+            (Some(doc_syntax), _) => rich_doc_type(doc_syntax, ty),
+            // A `---@field`'s type syntax is its value.
+            (None, Some(field_syntax)) if matches!(member_def.owner, SemanticId::TypeDef(_)) => {
+                rich_doc_type(field_syntax, ty)
             }
             (None, Some(value_syntax)) => {
                 flow::apply_expr_casts(self, value_syntax, ty, flow::ExprCastMode::AsOnly)

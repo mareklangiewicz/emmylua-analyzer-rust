@@ -405,6 +405,19 @@ impl<'db> SemanticModel<'db> {
                     }
                 })
                 .unwrap_or_else(|| self.analysis().doc_type_lua(file_id, type_syntax, &[])),
+            // `{ x: T }[]`: the shell lowers the element to a bare `table`. Like `T...` above, a
+            // named element (`T[]`) stays with the shell, which keeps its generic context.
+            LuaDocType::Array(array) => array
+                .get_type()
+                .map(|inner| {
+                    let base = self.doc_type_lua_rich_in(file_id, inner.get_syntax_id());
+                    if matches!(base, LuaType::Unknown | LuaType::Ref(_) | LuaType::Def(_)) {
+                        self.analysis().doc_type_lua(file_id, type_syntax, &[])
+                    } else {
+                        LuaType::Array(Rc::new(LuaArrayType::from_base_type(base)))
+                    }
+                })
+                .unwrap_or_else(|| self.analysis().doc_type_lua(file_id, type_syntax, &[])),
             LuaDocType::Generic(generic) => {
                 let Some(name) = generic.get_name_type().and_then(|n| n.get_name_text()) else {
                     return self.analysis().doc_type_lua(file_id, type_syntax, &[]);
