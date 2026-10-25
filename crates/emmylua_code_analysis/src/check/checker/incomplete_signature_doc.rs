@@ -62,6 +62,9 @@ fn check_signature(
     let Some(closure) = LuaClosureExpr::cast(node) else {
         return;
     };
+    if !is_declared_function(&closure) {
+        return;
+    }
 
     let Some(docs) = &signature.docs else {
         // No comment: always report for global functions; for local functions only when there are parameters/return values.
@@ -146,6 +149,21 @@ fn check_signature(
             }
         }
     }
+}
+
+/// Whether the closure is declared by a statement that can carry its doc comment: `function f`,
+/// `local function f`, or a value of `local f = ...` / `t.f = ...`. A closure passed as an argument,
+/// stored in a table constructor or returned is an inline callback and is not checked.
+fn is_declared_function(closure: &LuaClosureExpr) -> bool {
+    closure.syntax().parent().is_some_and(|parent| {
+        matches!(
+            parent.kind().into(),
+            LuaSyntaxKind::FuncStat
+                | LuaSyntaxKind::LocalFuncStat
+                | LuaSyntaxKind::LocalStat
+                | LuaSyntaxKind::AssignStat
+        )
+    })
 }
 
 /// Whether there is a comment directly before the function statement (a pure `---` also counts).
