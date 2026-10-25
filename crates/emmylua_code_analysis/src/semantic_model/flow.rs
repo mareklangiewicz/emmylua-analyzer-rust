@@ -1256,32 +1256,9 @@ fn numeric_for_loop_index(model: &SemanticModel, key_expr: &LuaExpr, prefix: &Lu
                     .is_some_and(|op| op.get_op() == UnaryOperator::OpLen)
                     && unary
                         .get_expr()
-                        .is_some_and(|inner| same_access_path(model, &inner, prefix))
+                        .is_some_and(|inner| same_member_access(model, &inner, prefix))
             })
     })
-}
-
-/// Whether two expressions read the same place: names resolving to one declaration, or the
-/// same static keys (`t.list`, `t['list']`, `t[1]`) on such places.
-fn same_access_path(model: &SemanticModel, a: &LuaExpr, b: &LuaExpr) -> bool {
-    match (a, b) {
-        (LuaExpr::NameExpr(a), LuaExpr::NameExpr(b)) => model
-            .resolve_name(a.get_position())
-            .is_some_and(|decl| model.resolve_name(b.get_position()) == Some(decl)),
-        (LuaExpr::IndexExpr(a), LuaExpr::IndexExpr(b)) => {
-            let static_part = |index: &emmylua_parser::LuaIndexExpr| match index.get_index_key()? {
-                emmylua_parser::LuaIndexKey::Expr(_) => None,
-                key => Some(key.get_path_part()),
-            };
-            static_part(a).is_some_and(|key| static_part(b) == Some(key))
-                && a.get_prefix_expr().zip(b.get_prefix_expr()).is_some_and(
-                    |(a_prefix, b_prefix)| same_access_path(model, &a_prefix, &b_prefix),
-                )
-        }
-        (LuaExpr::ParenExpr(a), b) => a.get_expr().is_some_and(|a| same_access_path(model, &a, b)),
-        (a, LuaExpr::ParenExpr(b)) => b.get_expr().is_some_and(|b| same_access_path(model, a, &b)),
-        _ => false,
-    }
 }
 
 /// Convert a condition pointer back to an expression (for branch reachability checks).

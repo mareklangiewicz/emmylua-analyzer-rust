@@ -506,4 +506,41 @@ mod test {
             );
         }
     }
+
+    #[test]
+    fn test_numeric_for_bound_through_a_local_alias_of_the_path() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        // `#list` bounds `t.list[i]` when `list` is a local alias of `t.list`, as member
+        // narrowing reads such aliases.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Holder
+            ---@field list string[]
+
+            ---@type Holder
+            local t = { list = {} }
+            local list = t.list
+            for i = 1, #list do
+                print(t.list[i]:upper())
+            end
+        "#
+        ));
+        // A path written inside the loop is no longer the alias's.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Holder3
+            ---@field list string[]
+
+            ---@type Holder3
+            local t = { list = {} }
+            local list = t.list
+            for i = 1, #list do
+                t.list = {}
+                print(t.list[i]:upper())
+            end
+        "#
+        ));
+    }
 }
