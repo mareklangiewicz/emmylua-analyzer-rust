@@ -582,4 +582,18 @@ mod test {
 
         assert_eq!(ws.expr_ty("result"), ws.ty("integer?"));
     }
+
+    /// A member's declared object type keeps its fields: `---@type { waiting: integer }` on
+    /// `M.state = { waiting = 0 }` does not degrade to a bare `table`.
+    #[test]
+    fn test_member_declared_object_type_keeps_fields() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            M = {}
+            M.state = { waiting = 0 } ---@type { prev: string?, waiting: integer }
+            "#,
+        );
+        assert_eq!(ws.expr_ty("M.state.waiting"), ws.ty("integer"));
+    }
 }
