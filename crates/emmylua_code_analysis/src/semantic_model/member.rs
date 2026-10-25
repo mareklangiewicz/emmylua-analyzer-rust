@@ -312,43 +312,35 @@ pub(crate) fn member_info_impl(
     // Intersection members: same-key members from all components are merged into the narrowest
     // (`string? & string` is `string`); conflicting types (`number & string`) collapse to `never`.
     if let LuaType::Intersection(intersection) = prefix_type {
-        let mut types = Vec::new();
-        let mut first = None;
-        for component in intersection.get_types() {
-            if let Some(info) = member_info(model, component, key) {
-                if !types.contains(&info.typ) {
-                    types.push(info.typ.clone());
-                }
-                if first.is_none() {
-                    first = Some(info);
-                }
-            }
-        }
-        if types.is_empty() {
-            return None;
-        }
-        let mut typ = types.remove(0);
-        for other in types {
+        let mut infos = intersection
+            .get_types()
+            .iter()
+            .filter_map(|component| member_info(model, component, key));
+        let first = infos.next()?;
+        // The member is the narrowest component's, declaration and all: a caller that reads the
+        // type back from the declaration must find the same type.
+        let mut narrowest = first.clone();
+        for other in infos {
             // An unknown component says nothing about the member; it never narrows.
-            if matches!(other, LuaType::Unknown | LuaType::Any) {
+            if matches!(other.typ, LuaType::Unknown | LuaType::Any) {
                 continue;
             }
-            if matches!(typ, LuaType::Unknown | LuaType::Any)
-                || model.type_check_subtype(&other, &typ)
+            if matches!(narrowest.typ, LuaType::Unknown | LuaType::Any)
+                || model.type_check_subtype(&other.typ, &narrowest.typ)
             {
-                typ = other;
-            } else if !model.type_check_subtype(&typ, &other) {
-                typ = LuaType::Never;
+                narrowest = other;
+            } else if !model.type_check_subtype(&narrowest.typ, &other.typ) {
+                narrowest = MemberInfo {
+                    typ: LuaType::Never,
+                    ..first
+                };
                 break;
             }
         }
         return Some(MemberInfo {
             key: key.clone(),
-            typ,
             index_key_type: None,
-            id: first.as_ref().and_then(|info| info.id.clone()),
-            file_id: first.as_ref().and_then(|info| info.file_id),
-            is_method: first.as_ref().is_some_and(|info| info.is_method),
+            ..narrowest
         });
     }
     if let Some(info) = member_infos_with_key(model, prefix_type, key)
