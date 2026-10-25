@@ -7,7 +7,8 @@ use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefK
 use crate::semantic_model::infer::unify::{self, TplBindings};
 use crate::semantic_model::type_eval::{map_type, substitute_named_refs, with_expanded_alias};
 use crate::{
-    FileId, GenericTplId, InFiled, LuaAliasCallKind, LuaGenericType, LuaMemberKey, LuaType,
+    FileId, GenericTplId, InFiled, LuaAliasCallKind, LuaGenericType, LuaIntersectionType,
+    LuaMemberKey, LuaType,
 };
 use crate::{Member, semantic_db::facts::FileFacts};
 use smol_str::SmolStr;
@@ -190,13 +191,7 @@ fn direct_member_info(
             let def = model.type_def_of(id)?;
             if def.kind == TypeDefKind::Alias {
                 return with_expanded_alias(model, prefix_type, |expanded| {
-                    // An intersection's components merge into one member (see `member_info`),
-                    // which a direct lookup doesn't do.
-                    if matches!(expanded, LuaType::Intersection(_)) {
-                        member_info(model, expanded, key)
-                    } else {
-                        direct_member_info(model, expanded, key)
-                    }
+                    direct_member_info(model, expanded, key)
                 })
                 .flatten();
             }
@@ -306,12 +301,52 @@ fn direct_member_info(
             is_method: false,
         }),
         LuaType::Array(array) => direct_member_info(model, array.get_base(), key),
+        LuaType::Intersection(intersection) => intersection_member_info(model, intersection, key),
         LuaType::String | LuaType::StringConst(_) | LuaType::DocStringConst(_) => {
             let string_owner = SemanticId::name(SmolStr::new("string"));
             find_member_in_owner(model, &string_owner, key, None, None)
         }
         _ => None,
     }
+}
+
+/// An intersection's member merges the same-key members of all components into the narrowest
+/// (`string? & string` is `string`); conflicting types (`number & string`) collapse to `never`.
+fn intersection_member_info(
+    model: &SemanticModel,
+    intersection: &LuaIntersectionType,
+    key: &LuaMemberKey,
+) -> Option<MemberInfo> {
+    let mut infos = intersection
+        .get_types()
+        .iter()
+        .filter_map(|component| member_info(model, component, key));
+    let first = infos.next()?;
+    // The member is the narrowest component's, declaration and all: a caller that reads the
+    // type back from the declaration must find the same type.
+    let mut narrowest = first.clone();
+    for other in infos {
+        // An unknown component says nothing about the member; it never narrows.
+        if matches!(other.typ, LuaType::Unknown | LuaType::Any) {
+            continue;
+        }
+        if matches!(narrowest.typ, LuaType::Unknown | LuaType::Any)
+            || model.type_check_subtype(&other.typ, &narrowest.typ)
+        {
+            narrowest = other;
+        } else if !model.type_check_subtype(&narrowest.typ, &other.typ) {
+            narrowest = MemberInfo {
+                typ: LuaType::Never,
+                ..first
+            };
+            break;
+        }
+    }
+    Some(MemberInfo {
+        key: key.clone(),
+        index_key_type: None,
+        ..narrowest
+    })
 }
 
 /// For a mapped alias over `keyof X` (`Partial<T>` is `{ [P in keyof T]?: T[P] }`), the type `X`
@@ -358,40 +393,6 @@ pub(crate) fn member_info_impl(
     // Single-key direct lookup avoids collecting every member of a type when only one key is needed.
     if let Some(info) = direct_member_info(model, prefix_type, key) {
         return Some(info);
-    }
-    // Intersection members: same-key members from all components are merged into the narrowest
-    // (`string? & string` is `string`); conflicting types (`number & string`) collapse to `never`.
-    if let LuaType::Intersection(intersection) = prefix_type {
-        let mut infos = intersection
-            .get_types()
-            .iter()
-            .filter_map(|component| member_info(model, component, key));
-        let first = infos.next()?;
-        // The member is the narrowest component's, declaration and all: a caller that reads the
-        // type back from the declaration must find the same type.
-        let mut narrowest = first.clone();
-        for other in infos {
-            // An unknown component says nothing about the member; it never narrows.
-            if matches!(other.typ, LuaType::Unknown | LuaType::Any) {
-                continue;
-            }
-            if matches!(narrowest.typ, LuaType::Unknown | LuaType::Any)
-                || model.type_check_subtype(&other.typ, &narrowest.typ)
-            {
-                narrowest = other;
-            } else if !model.type_check_subtype(&narrowest.typ, &other.typ) {
-                narrowest = MemberInfo {
-                    typ: LuaType::Never,
-                    ..first
-                };
-                break;
-            }
-        }
-        return Some(MemberInfo {
-            key: key.clone(),
-            index_key_type: None,
-            ..narrowest
-        });
     }
     if let Some(info) = member_infos_with_key(model, prefix_type, key)
         .into_iter()

@@ -1978,6 +1978,27 @@ fn test_call_result_keeps_object_array_element() {
 }
 
 #[test]
+fn test_intersection_member_merges_behind_a_generic_alias() {
+    // A generic alias of an intersection merges it like a plain alias does: `m` is the
+    // narrower `string`, not `P`'s `string?`.
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@class P
+        ---@field m string?
+
+        ---@alias G<T> P & { m: string, t: T }
+
+        ---@type G<integer>
+        local generic
+
+        via_generic = generic.m
+    "#,
+    );
+    assert_eq!(ws.expr_ty("via_generic"), LuaType::String);
+}
+
+#[test]
 fn test_intersection_member_is_the_narrower_component() {
     // `P & { m: string }` reads `m` as `string`: an intersection value is both, so a member both
     // components declare has the narrower type, not the first component's `string?`.
