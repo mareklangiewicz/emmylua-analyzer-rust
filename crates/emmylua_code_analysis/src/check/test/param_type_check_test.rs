@@ -2911,4 +2911,30 @@ mod test {
             "#
         ));
     }
+
+    #[test]
+    fn test_overload_mismatch_reports_the_overload_whose_arity_fits() {
+        // Both overloads reject `'INFOX'`; the two-argument call is reported against the two-parameter one.
+        let diagnostics = check_source(
+            r#"
+            ---@class Logger
+            ---@overload fun(emit: fun(level: integer)): Logger
+            ---@overload fun(level: integer, data: any)
+            local Logger = {}
+            ---@type Logger
+            local log
+            log('INFOX', 'x')
+            "#,
+        );
+        let messages: Vec<String> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+            .map(|d| d.message.clone())
+            .collect();
+        assert_eq!(
+            messages,
+            vec!["expected `integer` but found `\"INFOX\"`. ".to_string()],
+            "{diagnostics:#?}"
+        );
+    }
 }
