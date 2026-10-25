@@ -8,7 +8,7 @@ use emmylua_parser::{
 };
 
 use crate::DiagnosticCode;
-use crate::semantic_db::def::{SemanticId, TypeDef, TypeDefKind};
+use crate::semantic_db::def::{DeclKind, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::{expand_alias_branches, expand_alias_generic};
 use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
@@ -163,7 +163,9 @@ fn check_index_assign(
         {
             continue;
         }
-        if semantic_model.member_info(&prefix_ty, &key).is_some() {
+        if semantic_model.member_info(&prefix_ty, &key).is_some()
+            || is_global_table_surface_member(semantic_model, &target_id, &key)
+        {
             continue;
         }
         context.add_diagnostic(
@@ -178,6 +180,36 @@ fn check_index_assign(
             ),
         );
     }
+}
+
+/// A class bound to a GLOBAL table (`---@class packagelib` + `package = {}`) has that table's
+/// assignments (`package.path = ""`) as members, owned by `Name("package")` rather than by the class.
+/// Only the binding file's assignments are the surface; one another file adds stays an injection.
+fn is_global_table_surface_member(
+    semantic_model: &SemanticModel<'_>,
+    target_id: &SemanticId,
+    key: &LuaMemberKey,
+) -> bool {
+    let LuaMemberKey::Name(name) = key else {
+        return false;
+    };
+    semantic_model
+        .resolve_owner_set(target_id.clone())
+        .iter()
+        .filter_map(|owner| match owner {
+            SemanticId::Decl(decl_key) => semantic_model
+                .file_facts_of(decl_key.file_id)
+                .and_then(|facts| facts.decl_by_id(owner))
+                .filter(|decl| matches!(decl.kind, DeclKind::Global))
+                .map(|decl| (decl_key.file_id, decl.name.clone())),
+            _ => None,
+        })
+        .any(|(file_id, global)| {
+            semantic_model
+                .members_of_owner_named(&SemanticId::name(global), name)
+                .iter()
+                .any(|member_ref| member_ref.file_id == file_id)
+        })
 }
 
 /// Follows alias definitions until a non-alias type is reached. Returns `None` when the

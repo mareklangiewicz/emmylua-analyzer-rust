@@ -779,6 +779,42 @@ mod dictionary_constructor {
             );
         }
     }
+
+    #[gtest]
+    fn global_class_table_runtime_members_are_not_injections_cross_file() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file("foo.lua", "---@class foolib\nfoo = {}\nfoo.x = ''\n");
+        assert_that!(
+            ws.has_no_diagnostic(DiagnosticCode::InjectField, "foo.x = 'y'"),
+            eq(true)
+        );
+        assert_that!(
+            ws.has_no_diagnostic(DiagnosticCode::InjectField, "foo.typo = 'y'"),
+            eq(false)
+        );
+        // Another file's assignment is not the binding file's surface.
+        ws.def_file("other.lua", "foo.extra = 1\n");
+        assert_that!(
+            ws.has_no_diagnostic(DiagnosticCode::InjectField, "foo.extra = 2"),
+            eq(false)
+        );
+    }
+
+    #[gtest]
+    fn std_package_path_is_not_an_injection() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::InjectField,
+                "package.path = './?.lua;' .. package.path"
+            ),
+            eq(true)
+        );
+        assert_that!(
+            ws.has_no_diagnostic(DiagnosticCode::InjectField, "package.typo = ''"),
+            eq(false)
+        );
+    }
 }
 
 #[cfg(test)]
