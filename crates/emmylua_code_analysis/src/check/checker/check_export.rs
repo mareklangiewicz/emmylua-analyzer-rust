@@ -7,7 +7,7 @@ use emmylua_parser::{
 };
 
 use crate::DiagnosticCode;
-use crate::semantic_db::def::ModuleExport;
+use crate::semantic_db::def::{ModuleExport, SemanticId};
 use crate::semantic_db::facts::FileFacts;
 use crate::semantic_model::SemanticModel;
 use crate::{FileId, InFiled, LuaMemberKey, LuaType};
@@ -95,7 +95,7 @@ fn check_index_expr(
         .member_infos_with_key(&export_ty, &key)
         .into_iter()
         .any(|info| info.file_id.is_none_or(|file_id| file_id == module_file));
-    if is_surface_member {
+    if is_surface_member || is_declared_class_field(semantic_model, &prefix_ty, &key) {
         return;
     }
     let field_name = index_key.get_path_part();
@@ -123,6 +123,31 @@ fn check_index_expr(
         }
         _ => {}
     }
+}
+
+/// A `---@field` of the class the export table is bound to (`---@class M` + `local M = {}`) is part of
+/// the export surface even when no runtime assignment backs it (a metatable `__index`, a field the
+/// module fills in later). Only doc fields count: a runtime member another file adds stays an injection.
+fn is_declared_class_field(
+    semantic_model: &SemanticModel<'_>,
+    prefix_ty: &LuaType,
+    key: &LuaMemberKey,
+) -> bool {
+    if !matches!(prefix_ty, LuaType::Ref(_) | LuaType::Def(_)) {
+        return false;
+    }
+    semantic_model
+        .member_infos_with_key(prefix_ty, key)
+        .into_iter()
+        .any(|info| {
+            let (Some(id), Some(file_id)) = (info.id, info.file_id) else {
+                return false;
+            };
+            semantic_model
+                .file_facts_of(file_id)
+                .and_then(|facts| facts.member_by_id(&id))
+                .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
+        })
 }
 
 /// Table type of a module export surface (`return { ... }` / `local M = {}; return M`).

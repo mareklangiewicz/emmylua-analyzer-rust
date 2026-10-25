@@ -1302,3 +1302,53 @@ fn enum_runtime_cross_file_dynamic_and_conditional_keys() {
         eq(false)
     );
 }
+
+#[googletest::gtest]
+fn required_module_class_declared_field_is_defined() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file(
+        "store.lua",
+        "---@class store\n---@field kv string\nlocal M = {}\nreturn M\n",
+    );
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            "local store = require 'store'\nreturn store.kv"
+        ),
+        eq(true)
+    );
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            "local store = require 'store'\nreturn store.typo"
+        ),
+        eq(false)
+    );
+}
+
+#[googletest::gtest]
+fn required_module_class_declared_field_is_not_an_injection() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    ws.def_file(
+        "store.lua",
+        "---@class store\n---@field kv string\nlocal M = {}\nreturn M\n",
+    );
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            "local store = require 'store'\nstore.kv = 'x'"
+        ),
+        eq(true)
+    );
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::InjectField,
+            "local store = require 'store'\nstore.typo = 'x'"
+        ),
+        eq(false)
+    );
+}
