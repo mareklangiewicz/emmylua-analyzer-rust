@@ -1874,3 +1874,19 @@ fn expression_casts_use_the_current_file() {
         }
     }
 }
+
+#[test]
+fn test_call_result_keeps_object_array_element() {
+    // `fun(): { t: string }[]` called is an array of `{ t: string }`, so an element's `t` reads
+    // `string`; the element is not erased to `table`.
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+        ---@return { t: string }[]
+        local function rows() return {} end
+
+        got = rows()[1].t
+    "#,
+    );
+    assert_eq!(ws.expr_ty("got"), LuaType::String);
+}

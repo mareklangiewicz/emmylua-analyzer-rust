@@ -3068,6 +3068,17 @@ impl<'a> InferVm<'a> {
                     None => LuaType::Unknown,
                 }
             }
+            // The element lowers like a whole type: an object element keeps its fields (the shell
+            // makes `{ t: string }[]` a `table[]`), a `T` element still binds.
+            LuaDocType::Array(array) => match array.get_type() {
+                Some(base) => LuaType::Array(Rc::new(LuaArrayType::from_base_type(
+                    self.doc_type_lua_with_generics(file_id, base.get_syntax_id(), generic_params),
+                ))),
+                None => self
+                    .model
+                    .analysis()
+                    .doc_type_lua(file_id, type_syntax, generic_params),
+            },
             LuaDocType::Literal(_)
             | LuaDocType::Object(_)
             | LuaDocType::Binary(_)
