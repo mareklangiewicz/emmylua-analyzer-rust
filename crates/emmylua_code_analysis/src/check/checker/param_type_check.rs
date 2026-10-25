@@ -270,7 +270,9 @@ fn check_call(
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });
 
-    let mut best: Option<Vec<Mismatch>> = None;
+    // When every candidate fails, report the one with the fewest mismatches; on a tie, prefer one
+    // that takes all the arguments (`log('x', data)` against `fun(level, data)`, not `fun(emit)`).
+    let mut best: Option<((usize, bool), Vec<Mismatch>)> = None;
     for candidate in ordered {
         let mismatches = check_candidate(
             semantic_model,
@@ -284,14 +286,15 @@ fn check_call(
         if mismatches.is_empty() {
             return;
         }
-        if best
-            .as_ref()
-            .is_none_or(|current| mismatches.len() < current.len())
-        {
-            best = Some(mismatches);
+        let rank = (
+            mismatches.len(),
+            takes_too_many_args(candidate, args.len(), colon_call),
+        );
+        if best.as_ref().is_none_or(|(current, _)| rank < *current) {
+            best = Some((rank, mismatches));
         }
     }
-    if let Some(mismatches) = best {
+    if let Some((_, mismatches)) = best {
         let literal_names = doc_overload_literal_names(semantic_model, &callee);
         for mismatch in mismatches {
             let message = if literal_names.len() >= 2 {
@@ -395,6 +398,19 @@ fn table_literal_mismatch(
         }
         _ => None,
     }
+}
+
+/// More call arguments than the candidate has parameters (after the receiver rules), and no varargs.
+fn takes_too_many_args(func: &LuaFunctionType, arg_count: usize, colon_call: bool) -> bool {
+    if func.is_variadic() {
+        return false;
+    }
+    let self_param = first_param_is_self(func);
+    let receiver_param = colon_call && (self_param || !func.is_colon_define());
+    let receiver_arg = !colon_call && !self_param && func.is_colon_define();
+    let param_count =
+        func.get_params().len() - usize::from(receiver_param && !func.get_params().is_empty());
+    arg_count.saturating_sub(usize::from(receiver_arg)) > param_count
 }
 
 /// A cheap literal/scalar-shape score used only to order call candidates.
