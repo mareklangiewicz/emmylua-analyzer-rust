@@ -394,41 +394,13 @@ pub(crate) fn resolved_call_signatures(
     out
 }
 
-/// The owner `---@class` of a member-method callee: `SemanticId::Member -> owner TypeDef`.
-fn owner_type_def<'db>(
-    semantic_model: &SemanticModel<'db>,
-    callee: &LuaExpr,
-) -> Option<&'db TypeDef> {
-    let index_expr = LuaIndexExpr::cast(callee.syntax().clone())?;
-    let resolved = semantic_model.resolve_member(&index_expr)?;
-    let member_id = resolved.member_id?;
-    let member_file = resolved.file_id?;
-    let facts = semantic_model.file_facts_of(member_file)?;
-    let member = facts.member_by_id(&member_id)?;
-    let type_def_id = match &member.owner {
-        SemanticId::TypeDef(type_def_id) => type_def_id.clone(),
-        SemanticId::Decl(_) => {
-            let owner_decl = facts.decl_by_id(&member.owner)?;
-            let owner_syntax = owner_decl.owner_syntax?;
-            let def = facts.type_def_by_owner_syntax(owner_syntax)?;
-            match &def.id {
-                SemanticId::TypeDef(type_def_id) => type_def_id.clone(),
-                _ => return None,
-            }
-        }
-        _ => return None,
-    };
-    facts.type_def_by_id(&SemanticId::TypeDef(type_def_id))
-}
-
-/// `b:get(k)` with `b: Box<Root>`: the owner class's generic params bound to the receiver's type arguments.
+/// `b:get(k)` with `b: Box<Root>`: the receiver class's generic params bound to its type arguments.
+/// Taken from the receiver's type rather than the member's owner: a class table built as
+/// `local Box = cls('Box') --[[@as Box<any>]]` has no `---@class` attached to its declaration.
 fn receiver_class_args(
     semantic_model: &SemanticModel<'_>,
     callee: &LuaExpr,
 ) -> Vec<(String, LuaType)> {
-    let Some(def) = owner_type_def(semantic_model, callee) else {
-        return Vec::new();
-    };
     let Some(prefix) =
         LuaIndexExpr::cast(callee.syntax().clone()).and_then(|e| e.get_prefix_expr())
     else {
@@ -437,12 +409,9 @@ fn receiver_class_args(
     let LuaType::Generic(generic) = semantic_model.type_of_expr(prefix.get_syntax_id()) else {
         return Vec::new();
     };
-    if semantic_model
-        .type_def_of(&generic.get_base_type_id())
-        .is_none_or(|base| base.id != def.id)
-    {
+    let Some(def) = semantic_model.type_def_of(&generic.get_base_type_id()) else {
         return Vec::new();
-    }
+    };
     def.generic_params
         .iter()
         .zip(generic.get_params())
@@ -456,7 +425,41 @@ fn owner_generic_constraints(
     callee: &LuaExpr,
 ) -> HashMap<smol_str::SmolStr, (usize, LuaType)> {
     let mut out = HashMap::new();
-    let Some(def) = owner_type_def(semantic_model, callee) else {
+    let Some(index_expr) = LuaIndexExpr::cast(callee.syntax().clone()) else {
+        return out;
+    };
+    let Some(resolved) = semantic_model.resolve_member(&index_expr) else {
+        return out;
+    };
+    let (Some(member_id), Some(member_file)) = (resolved.member_id, resolved.file_id) else {
+        return out;
+    };
+    let Some(facts) = semantic_model.file_facts_of(member_file) else {
+        return out;
+    };
+    let Some(member) = facts.member_by_id(&member_id) else {
+        return out;
+    };
+    let type_def_id = match &member.owner {
+        SemanticId::TypeDef(type_def_id) => type_def_id.clone(),
+        SemanticId::Decl(_) => {
+            let Some(owner_decl) = facts.decl_by_id(&member.owner) else {
+                return out;
+            };
+            let Some(owner_syntax) = owner_decl.owner_syntax else {
+                return out;
+            };
+            let Some(def) = facts.type_def_by_owner_syntax(owner_syntax) else {
+                return out;
+            };
+            match &def.id {
+                SemanticId::TypeDef(type_def_id) => type_def_id.clone(),
+                _ => return out,
+            }
+        }
+        _ => return out,
+    };
+    let Some(def) = facts.type_def_by_id(&SemanticId::TypeDef(type_def_id)) else {
         return out;
     };
     for (index, param) in def.generic_params.iter().enumerate() {
