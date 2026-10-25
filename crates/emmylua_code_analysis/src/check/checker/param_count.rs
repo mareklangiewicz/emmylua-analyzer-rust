@@ -806,7 +806,9 @@ pub(crate) fn callable_functions(
             };
             let mut out = Vec::new();
             for syntax in &def.call_overloads {
-                if let LuaType::DocFunction(func) = semantic_model.doc_type_lua(*syntax) {
+                if let LuaType::DocFunction(func) =
+                    semantic_model.doc_type_lua_in(def.file_id, *syntax, &[])
+                {
                     out.push(func.as_ref().clone());
                 }
             }
