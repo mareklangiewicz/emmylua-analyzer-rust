@@ -2,6 +2,7 @@ use super::prelude::*;
 use crate::check::checker::generic_constraint_mismatch::resolved_call_signatures;
 use crate::check::checker::param_count::callable_functions;
 use crate::check::checker::param_type_check::callable_candidates_uncached;
+use crate::semantic_db::facts::member_key_from_index_key;
 
 impl<'db> SemanticModel<'db> {
     /// Currently configured runtime version (used for `---@version` visibility checks).
@@ -536,7 +537,7 @@ impl<'db> SemanticModel<'db> {
         let LuaType::Union(union) = &prefix_ty else {
             return false;
         };
-        let Some(key) = infer::vm::index_key_to_member_key(&index_key) else {
+        let Some(key) = member_key_from_index_key(&index_key) else {
             return false;
         };
         union.into_vec().iter().any(|component| {

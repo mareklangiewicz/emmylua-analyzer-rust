@@ -3323,4 +3323,31 @@ return t
             "#
         ));
     }
+
+    /// A positional value meets the object's `[n]` field: `{ 1 }` is no `{ [1]: string }`, and a
+    /// table in a positional slot is checked against that field's type.
+    #[test]
+    fn test_positional_value_checks_against_object_index_field() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Item
+                ---@field name string
+
+                ---@type { [1]: string, [2]: Item[] }
+                local op = { 'map', { { name = 1 } } }
+            "#
+        ));
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Item
+                ---@field name string
+
+                ---@type { [1]: string, [2]: Item[] }
+                local op = { 'map', { { name = 'x' } } }
+            "#
+        ));
+    }
 }

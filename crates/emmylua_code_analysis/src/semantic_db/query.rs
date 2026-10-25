@@ -3735,7 +3735,10 @@ fn resolve_expr_root(
             LuaExpr::IndexExpr(parent) => {
                 segments.push(SmolStr::new(parent.get_index_key()?.get_path_part()));
                 keys.push((
-                    parent.get_index_key().and_then(member_key_from_index_key),
+                    parent
+                        .get_index_key()
+                        .as_ref()
+                        .and_then(member_key_from_index_key),
                     parent.get_position(),
                 ));
                 current = parent.get_prefix_expr()?;

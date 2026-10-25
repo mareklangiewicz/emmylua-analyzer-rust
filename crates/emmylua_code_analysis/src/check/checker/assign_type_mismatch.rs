@@ -4,11 +4,12 @@ use std::collections::{HashMap, HashSet};
 
 use emmylua_parser::{
     LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaIndexExpr,
-    LuaIndexKey, LuaLiteralToken, LuaLocalStat, LuaTableExpr, LuaVarExpr, NumberResult,
+    LuaIndexKey, LuaLiteralToken, LuaLocalStat, LuaTableExpr, LuaVarExpr,
 };
 
 use super::check_field::is_optional;
 use crate::DiagnosticCode;
+use crate::semantic_db::facts::member_key_from_index_key;
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::infer::vm::bind_signature_generics;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
@@ -642,7 +643,7 @@ fn check_table_fields(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            let member_key = index_key_to_member_key(semantic_model, &key);
+            let member_key = member_key_from_index_key(&key);
             if let Some(expected) = member_key
                 .as_ref()
                 .and_then(|key| object.get_fields().get(key))
@@ -777,34 +778,6 @@ fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaT
         LuaIndexKey::Name(_) | LuaIndexKey::String(_) => LuaType::String,
         LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_) => LuaType::Integer,
         LuaIndexKey::Expr(expr) => semantic_model.type_of_expr(expr.get_syntax_id()),
-    }
-}
-
-fn index_key_to_member_key(
-    _semantic_model: &SemanticModel<'_>,
-    key: &LuaIndexKey,
-) -> Option<LuaMemberKey> {
-    match key {
-        LuaIndexKey::Name(_) | LuaIndexKey::String(_) => {
-            Some(LuaMemberKey::Name(key.get_path_part().into()))
-        }
-        LuaIndexKey::Integer(_) | LuaIndexKey::Idx(_) => {
-            let value = match key {
-                LuaIndexKey::Integer(token) => Some(token.get_number_value()),
-                LuaIndexKey::Idx(_) => key
-                    .get_path_part()
-                    .parse::<i64>()
-                    .ok()
-                    .map(NumberResult::Int),
-                _ => None,
-            };
-            match value {
-                Some(NumberResult::Int(i)) => Some(LuaMemberKey::Integer(i)),
-                Some(NumberResult::Uint(u)) => Some(LuaMemberKey::Integer(u as i64)),
-                _ => None,
-            }
-        }
-        LuaIndexKey::Expr(_) => None,
     }
 }
 

@@ -22,6 +22,7 @@ use crate::semantic_db::def::{
     ConstructorAttribute, ConstructorReturnMode, DeclKind, DocGenericParam, SemanticId, Signature,
     SignatureDoc,
 };
+use crate::semantic_db::facts::member_key_from_index_key;
 use crate::semantic_db::types::PrimitiveType;
 use crate::semantic_model::flow::{ExprCastMode, apply_expr_casts, type_of_expr_with_cast};
 use crate::semantic_model::member::{
@@ -204,20 +205,6 @@ pub fn compile(expr: LuaExpr, file_id: FileId, out: &mut Vec<Instr>) {
     }
 }
 
-pub(crate) fn index_key_to_member_key(key: &LuaIndexKey) -> Option<LuaMemberKey> {
-    match key {
-        LuaIndexKey::Name(name) => Some(LuaMemberKey::Name(SmolStr::new(name.get_name_text()))),
-        LuaIndexKey::String(s) => Some(LuaMemberKey::Name(SmolStr::new(s.get_value()))),
-        LuaIndexKey::Integer(i) => match i.get_number_value() {
-            emmylua_parser::NumberResult::Int(n) => Some(LuaMemberKey::Integer(n)),
-            emmylua_parser::NumberResult::Uint(n) => Some(LuaMemberKey::Integer(n as i64)),
-            _ => None,
-        },
-        LuaIndexKey::Idx(i) => Some(LuaMemberKey::Integer(*i as i64)),
-        LuaIndexKey::Expr(_) => None,
-    }
-}
-
 fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &mut Vec<CTask>) {
     match expr {
         LuaExpr::LiteralExpr(literal) => {
@@ -279,7 +266,7 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
         LuaExpr::IndexExpr(index_expr) => {
             stack.push(CTask::AdjustToOne);
             let index_key = index_expr.get_index_key();
-            let key = index_key.as_ref().and_then(index_key_to_member_key);
+            let key = index_key.as_ref().and_then(member_key_from_index_key);
             if let Some(prefix) = index_expr.get_prefix_expr() {
                 if let Some(LuaIndexKey::Expr(key_expr)) = index_key {
                     // Dynamic key: prefix, key, IndexMember(dynamic).

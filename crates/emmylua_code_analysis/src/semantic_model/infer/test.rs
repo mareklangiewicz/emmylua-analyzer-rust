@@ -1978,6 +1978,24 @@ fn test_call_result_keeps_object_array_element() {
 }
 
 #[test]
+fn test_unsigned_integer_key_is_one_member_for_write_and_read() {
+    // A LuaJIT `ULL` literal past i64 is one integer key, whether the facts record the write or
+    // the VM reads it back.
+    let mut ws = crate::VirtualWorkspace::new();
+    let mut config = Emmyrc::default();
+    config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
+    ws.analysis.update_config(config.into());
+    ws.def(
+        r#"
+        local t = {}
+        t[0xFFFFFFFFFFFFFFFFULL] = "x"
+        got = t[0xFFFFFFFFFFFFFFFFULL]
+    "#,
+    );
+    assert_eq!(ws.expr_ty("got"), LuaType::String);
+}
+
+#[test]
 fn test_intersection_member_merges_behind_a_generic_alias() {
     // A generic alias of an intersection merges it like a plain alias does: `m` is the
     // narrower `string`, not `P`'s `string?`.

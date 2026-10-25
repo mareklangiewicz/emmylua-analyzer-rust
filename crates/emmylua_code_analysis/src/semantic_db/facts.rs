@@ -1877,6 +1877,7 @@ impl FactsBuilder {
     ) {
         let Some(member_key) = index_expr
             .get_index_key()
+            .as_ref()
             .and_then(member_key_from_index_key)
         else {
             return;
@@ -1962,6 +1963,7 @@ impl FactsBuilder {
                 // the deepest table it reached (`resolve_expr_root` resolves reads the same way).
                 let table = parent
                     .get_index_key()
+                    .as_ref()
                     .and_then(member_key_from_index_key)
                     .filter(|_| reached)
                     .and_then(|key| {
@@ -1994,7 +1996,7 @@ impl FactsBuilder {
         for (field, key) in table.get_fields_with_keys() {
             let path_part = SmolStr::new(key.get_path_part());
             let member_key =
-                member_key_from_index_key(key).unwrap_or(LuaMemberKey::Name(path_part));
+                member_key_from_index_key(&key).unwrap_or(LuaMemberKey::Name(path_part));
             let mut member = Member::new(
                 self.file_id,
                 field_key_range(&field),
@@ -2487,17 +2489,19 @@ pub(crate) fn nested_table_owner<'a>(
     Some(SemanticId::member(id.file_id, table.get_range()))
 }
 
-/// `LuaIndexKey` → file-independent member key.
-pub(crate) fn member_key_from_index_key(key: LuaIndexKey) -> Option<LuaMemberKey> {
+/// `LuaIndexKey` → file-independent member key, the one conversion for writes and reads. A
+/// LuaJIT `ULL` literal past i64 wraps like the integer it stores.
+pub(crate) fn member_key_from_index_key(key: &LuaIndexKey) -> Option<LuaMemberKey> {
     match key {
         LuaIndexKey::Name(_) | LuaIndexKey::String(_) => {
             Some(LuaMemberKey::Name(SmolStr::new(key.get_path_part())))
         }
         LuaIndexKey::Integer(num) => match num.get_number_value() {
             NumberResult::Int(i) => Some(LuaMemberKey::Integer(i)),
+            NumberResult::Uint(u) => Some(LuaMemberKey::Integer(u as i64)),
             _ => None,
         },
-        LuaIndexKey::Idx(idx) => Some(LuaMemberKey::Integer(idx as i64)),
+        LuaIndexKey::Idx(idx) => Some(LuaMemberKey::Integer(*idx as i64)),
         LuaIndexKey::Expr(_) => None,
     }
 }

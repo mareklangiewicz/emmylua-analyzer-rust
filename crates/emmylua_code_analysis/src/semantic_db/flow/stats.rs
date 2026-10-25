@@ -1,9 +1,8 @@
 use emmylua_parser::{
-    BinaryOperator, LuaAstNode, LuaExpr, LuaIndexKey, LuaLiteralToken, LuaLocalName, LuaVarExpr,
-    NumberResult, UnaryOperator,
+    BinaryOperator, LuaAstNode, LuaExpr, LuaLiteralToken, LuaLocalName, LuaVarExpr, NumberResult,
+    UnaryOperator,
 };
 use rowan::TextSize;
-use smol_str::SmolStr;
 
 use super::{DeclMultiReturnRef, DeclMultiReturnRefAt, FlowId, binder::FlowBinder};
 use crate::semantic_db::def::{LuaMemberKey, SemanticId};
@@ -75,22 +74,6 @@ pub(super) fn get_var_member_ids(
             Some((member.owner.clone(), member.key.clone(), member.id.clone()))
         })
         .collect()
-}
-
-/// Converts `LuaIndexKey` into a file-agnostic member key (matching the facts collection rules).
-#[allow(dead_code)]
-pub(super) fn member_key_from_index_key(key: LuaIndexKey) -> Option<LuaMemberKey> {
-    match key {
-        LuaIndexKey::Name(_) | LuaIndexKey::String(_) => {
-            Some(LuaMemberKey::Name(SmolStr::new(key.get_path_part())))
-        }
-        LuaIndexKey::Integer(num) => match num.get_number_value() {
-            NumberResult::Int(i) => Some(LuaMemberKey::Integer(i)),
-            _ => None,
-        },
-        LuaIndexKey::Idx(idx) => Some(LuaMemberKey::Integer(idx as i64)),
-        LuaIndexKey::Expr(_) => None,
-    }
 }
 
 pub(super) fn bind_multi_return_refs(
