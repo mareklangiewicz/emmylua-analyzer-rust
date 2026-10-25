@@ -229,4 +229,35 @@ mod tests {
             "#
         ));
     }
+
+    #[test]
+    fn test_inline_closures_are_not_declarations() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        // A closure passed as an argument, stored in a table constructor or returned has no declaration
+        // to carry a doc comment; only `function`/`local function` statements and the values of
+        // local/assign statements are checked.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                pcall(function(a) return a end)
+                local handlers = { on_line = function(line) return line end }
+                local mt = setmetatable({}, { __call = function(_, x) return x end })
+                ---@return fun(o: any): any
+                local function make()
+                    return function(o) return o end
+                end
+                return handlers, mt, make
+            "#
+        ));
+
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                local t = {}
+                t.m = function(x) return x end
+            "#
+        ));
+    }
 }
