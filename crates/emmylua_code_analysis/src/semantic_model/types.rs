@@ -362,49 +362,10 @@ impl<'db> SemanticModel<'db> {
         let Some(docs) = &signature.docs else {
             return ty;
         };
-        let generic_params = &docs.generic_params;
-        // Rich: the shell lowers an object constraint (`T: { at: integer }`) to a bare `table`.
-        let constraint_of = |param: &DocGenericParam| {
-            param.constraint.map(|syntax| {
-                let rich = self.doc_type_lua_rich(syntax);
-                if rich.is_unknown() {
-                    self.doc_type_lua(syntax)
-                } else {
-                    rich
-                }
-            })
-        };
-        if let LuaType::TplRef(tpl) = &ty {
-            let Some(param) = generic_params.iter().find(|g| g.name == tpl.get_name()) else {
-                return ty;
-            };
-            return LuaType::TplRef(Rc::new(GenericTpl::new(
-                tpl.get_tpl_id(),
-                SmolStr::from(tpl.get_name()),
-                constraint_of(param),
-                tpl.get_default_type().cloned(),
-                tpl.is_const(),
-                None,
-            )));
-        }
         // The signature's generics, wherever they sit in the param type (`T`, `T[]`, `{ x: T }`),
         // are its own: a same-named `T` of another signature in the file does not apply.
-        let tpls = generic_params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                let tpl = GenericTpl::new(
-                    GenericTplId::Type(index as u32),
-                    param.name.clone(),
-                    constraint_of(param),
-                    None,
-                    false,
-                    None,
-                );
-                (param.name.to_string(), LuaType::TplRef(Rc::new(tpl)))
-            })
-            .collect();
-        substitute_named_refs(&ty, &tpls)
+        let tpls = self.generic_tpls_with_metadata(self.file_id(), &docs.generic_params);
+        infer::vm::bind_signature_generics(&ty, &tpls)
     }
     /// `---@[lsp_optimization("delayed_definition")]`: no longer treat "uninitialized" as nil,
     /// instead take the union of types from all assignments after that declaration.
