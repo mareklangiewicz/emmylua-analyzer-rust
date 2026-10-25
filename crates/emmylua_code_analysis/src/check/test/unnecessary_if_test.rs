@@ -78,3 +78,27 @@ mod test {
         ));
     }
 }
+
+#[googletest::gtest]
+fn closure_local_from_module_field_keeps_declared_type() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            ---@type { panel: string? }
+            local st = { panel = nil }
+            ---@return string? p
+            local function get()
+              local p = st.panel
+              if p then return p end
+              return nil
+            end
+            return get
+            "#
+        ),
+        eq(true)
+    );
+}
