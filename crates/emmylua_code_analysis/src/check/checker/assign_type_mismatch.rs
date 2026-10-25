@@ -538,6 +538,13 @@ fn check_value_against(
     {
         return;
     }
+    // A local born as an undeclared table literal takes any table later, as it takes any table
+    // literal above: `local rows = {}` then `rows = parse(out)`.
+    if matches!(target, LuaType::TableConst(_))
+        && is_compatible(semantic_model, &value_ty, &LuaType::Table)
+    {
+        return;
+    }
     add_mismatch(context, value_expr.get_range(), target, &value_ty);
 }
 
