@@ -158,7 +158,9 @@ impl<'db> SemanticModel<'db> {
             }
             // `for k, v in pairs(x)`: iteration variables are inferred from the iterator's return slots.
             if matches!(decl.kind, DeclKind::Local { is_iter: true, .. })
-                && let Some(ty) = self.infer_for_range_var(decl)
+                && let Some(ty) = self
+                    .infer_for_range_var(decl)
+                    .or_else(|| self.infer_for_numeric_var(decl))
                 && !matches!(ty, LuaType::Unknown)
             {
                 return Some(ty);
@@ -442,6 +444,31 @@ impl<'db> SemanticModel<'db> {
     }
     /// Iteration variable types for `for k, v in pairs(x)`:
     /// taken from the return function slots of the iteration expression's callee (pairs/ipairs/next or custom `__pairs` members).
+    /// `for i = start, limit, step`: an integer loop unless the start or the step is a float (Lua 5.3
+    /// §3.3.5; the limit is not looked at). A start or step of no numeric type keeps `integer`.
+    fn infer_for_numeric_var(&self, decl: &Decl) -> Option<LuaType> {
+        let owner = decl.owner_syntax?;
+        let tree = self.syntax_tree()?;
+        let stat = LuaForStat::cast(owner.to_node_from_root(&tree.get_red_root())?)?;
+        let exprs = stat.get_iter_expr().collect::<Vec<_>>();
+        let is_float = |expr: Option<&LuaExpr>| {
+            expr.is_some_and(|expr| {
+                let ty = self.type_of_expr(expr.get_syntax_id());
+                let mut parts = match ty {
+                    LuaType::Union(union) => union.into_vec(),
+                    ty => vec![ty],
+                };
+                parts.retain(|ty| ty.is_number());
+                !parts.is_empty() && !parts.iter().all(LuaType::is_integer)
+            })
+        };
+        Some(if is_float(exprs.first()) || is_float(exprs.get(2)) {
+            LuaType::Number
+        } else {
+            LuaType::Integer
+        })
+    }
+
     pub(crate) fn infer_for_range_var(&self, decl: &Decl) -> Option<LuaType> {
         let owner = decl.owner_syntax?;
         let tree = self.syntax_tree()?;

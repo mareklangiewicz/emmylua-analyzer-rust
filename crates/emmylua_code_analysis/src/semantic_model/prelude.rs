@@ -9,7 +9,7 @@ pub(crate) use std::rc::Rc;
 pub(crate) use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaCallExpr, LuaChunk, LuaClosureExpr, LuaCommentOwner,
     LuaDocConditionalType, LuaDocNameType, LuaDocObjectFieldKey, LuaDocTag, LuaDocTagAlias,
-    LuaDocTagClass, LuaDocType, LuaExpr, LuaForRangeStat, LuaIndexExpr, LuaLiteralExpr,
+    LuaDocTagClass, LuaDocType, LuaExpr, LuaForRangeStat, LuaForStat, LuaIndexExpr, LuaLiteralExpr,
     LuaLiteralToken, LuaParseError, LuaSyntaxId, LuaSyntaxKind, LuaSyntaxNode, LuaSyntaxToken,
     LuaSyntaxTree, LuaTableExpr, LuaTableField, LuaTypeBinaryOperator, LuaTypeUnaryOperator,
     LuaVersionNumber, NumberResult, VisibilityKind,

@@ -182,6 +182,37 @@ mod test {
     }
 
     #[test]
+    fn test_numeric_for_variable_is_an_integer_unless_start_or_step_is_a_float() {
+        let mut ws = VirtualWorkspace::new();
+        let code = |header: &str, body: &str| {
+            format!(
+                "---@param n integer\nlocal function take(n) end\n---@param a integer\n---@param x number\nlocal function f(a, x)\n  for i = {header} do\n    {body}\n  end\nend\nreturn f"
+            )
+        };
+        // Lua 5.3+: an integer loop when the start and the step are; the limit does not matter.
+        for (header, integer) in [
+            ("a, 10", true),
+            ("1, x", true),
+            ("a, 10, -1", true),
+            ("1.5, 3", false),
+            ("1, 3, x", false),
+        ] {
+            assert!(
+                !ws.has_no_diagnostic(
+                    DiagnosticCode::AssignTypeMismatch,
+                    &code(header, "---@type boolean\n    local _ = i")
+                ),
+                "{header}: the loop variable is typed"
+            );
+            assert_eq!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &code(header, "take(i)")),
+                integer,
+                "{header}"
+            );
+        }
+    }
+
+    #[test]
     fn test_inline_as_call_assignment_keeps_the_cast_result() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
         let file = ws.def(
