@@ -363,7 +363,9 @@ fn check_against(
     let Some(type_syntax) = decl.doc_type_syntax else {
         return;
     };
-    let target = semantic_model.doc_type_lua(type_syntax);
+    // The shell lowering loses `A & B` (to unknown); the rich projection keeps it.
+    let shell = semantic_model.doc_type_lua(type_syntax);
+    let target = semantic_model.rich_doc_type_or(semantic_model.file_id(), type_syntax, shell);
     check_against_type(context, semantic_model, &target, table);
 }
 

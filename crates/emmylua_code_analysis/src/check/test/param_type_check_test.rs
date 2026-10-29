@@ -1667,15 +1667,16 @@ mod test {
                 function foo(x) end
             "#,
         );
+        // A literal argument's fields are reported by the assign descent.
         assert!(!ws.has_no_diagnostic(
-            DiagnosticCode::ParamTypeMismatch,
+            DiagnosticCode::AssignTypeMismatch,
             r#"
                foo({y = "", z = ""})
             "#
         ));
 
         assert!(ws.has_no_diagnostic(
-            DiagnosticCode::ParamTypeMismatch,
+            DiagnosticCode::AssignTypeMismatch,
             r#"
                foo({y = 1, z = ""})
             "#

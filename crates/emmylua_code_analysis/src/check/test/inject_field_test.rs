@@ -382,7 +382,9 @@ return items
                 local ints ---@type table<integer, string>
                 accept(ints, 1)
                 "#;
-            let reported: Vec<_> = check_source(source)
+            let mut diagnostics = check_source(source);
+            diagnostics.sort_by_key(|d| d.range.start());
+            let reported: Vec<_> = diagnostics
                 .iter()
                 .map(|d| {
                     let start = usize::from(d.range.start());
@@ -396,11 +398,11 @@ return items
             assert_eq!(
                 reported,
                 [
-                    (ParamTypeMismatch, "accept(ints, 1)".to_string()),
                     (
                         DiagnosticCode::AssignTypeMismatch,
                         "accept({count = 1}, 'a')".to_string()
                     ),
+                    (ParamTypeMismatch, "accept(ints, 1)".to_string()),
                 ]
             );
         }

@@ -21,7 +21,6 @@ use crate::{
 };
 
 use super::param_count::call_arg_param_index;
-use super::param_type_check::candidate_rejections;
 use super::{
     CheckContext, Checker,
     check_field::{static_member_key, union_array_for_sequence},
@@ -45,7 +44,6 @@ impl Checker for AssignTypeMismatchChecker {
                 LuaAst::LuaTableExpr(table) => {
                     check_inline_table_fields(context, semantic_model, &table)
                 }
-                LuaAst::LuaCallExpr(call) => check_call_args(context, semantic_model, &call),
                 _ => {}
             }
         }
@@ -145,53 +143,6 @@ fn str_tpl_uses_name(ty: &LuaType, name: &str) -> bool {
     }
 }
 
-/// Table literals in call arguments: check each field against the callee parameter type (`f({ t = "" })`).
-fn check_call_args(
-    context: &mut CheckContext<'_>,
-    semantic_model: &SemanticModel<'_>,
-    call: &LuaCallExpr,
-) {
-    if call.get_prefix_expr().is_none() {
-        return;
-    }
-    let Some(args) = call.get_args_list() else {
-        return;
-    };
-    let args: Vec<_> = args.get_args().collect();
-    if !args.iter().any(|arg| matches!(arg, LuaExpr::TableExpr(_))) {
-        return;
-    }
-    let analysis = semantic_model.call_site_analysis(call);
-    let colon_call = analysis.colon_call;
-    if let [candidate] = analysis.candidates.as_slice() {
-        check_call_table_args(context, semantic_model, candidate, &args, colon_call);
-        return;
-    }
-    // Overloads are alternatives: a candidate that takes the whole call (arguments and literal
-    // fields) reports nothing; else the one that rejects the least is reported.
-    let mut ranked: Vec<_> = analysis
-        .candidates
-        .iter()
-        .filter_map(|candidate| {
-            candidate_rejections(semantic_model, &analysis, candidate, &args)
-                .map(|rejected| (candidate, rejected))
-        })
-        .collect();
-    // As in param_type_check: when none takes every argument, they all compete.
-    if ranked.is_empty() {
-        ranked = analysis.candidates.iter().map(|c| (c, 0)).collect();
-    }
-    let best = least_rejected(ranked.into_iter().map(|(candidate, rejected)| {
-        let fields = context.collect(|context| {
-            check_call_table_args(context, semantic_model, candidate, &args, colon_call)
-        });
-        (rejected + fields.len(), fields)
-    }));
-    if let Some(fields) = best {
-        context.extend_diagnostics(fields);
-    }
-}
-
 /// Among alternatives ranked by how much they reject: `None` when one rejects nothing (the
 /// rest are not tried), else the payload of the first least-rejecting one.
 fn least_rejected<T>(alternatives: impl IntoIterator<Item = (usize, T)>) -> Option<T> {
@@ -207,7 +158,9 @@ fn least_rejected<T>(alternatives: impl IntoIterator<Item = (usize, T)>) -> Opti
     best.map(|(_, payload)| payload)
 }
 
-fn check_call_table_args(
+/// A call's table literal arguments, field by field against `candidate`'s parameters
+/// (`f({ t = "" })`). param_type_check ranks the call's candidates with it.
+pub(super) fn check_call_table_args(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     candidate: &LuaFunctionType,
@@ -562,6 +515,10 @@ pub(super) fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty:
             .into_vec()
             .iter()
             .any(|component| is_structured_table_target(semantic_model, component)),
+        LuaType::Intersection(intersection) => intersection
+            .get_types()
+            .iter()
+            .all(|component| is_structured_table_target(semantic_model, component)),
         LuaType::Generic(generic) => {
             generic.get_base_type_id().get_name() == "array"
                 || is_structured_table_target(
@@ -699,6 +656,13 @@ pub(super) fn check_table_fields(
         }));
         if let Some(found) = best {
             context.extend_diagnostics(found);
+        }
+        return;
+    }
+    // Intersection target: the literal fits every part.
+    if let LuaType::Intersection(intersection) = target {
+        for component in intersection.get_types() {
+            check_table_fields(context, semantic_model, component, table);
         }
         return;
     }

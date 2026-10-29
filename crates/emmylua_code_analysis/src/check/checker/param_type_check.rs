@@ -17,20 +17,25 @@ use crate::semantic_model::infer::unify;
 use crate::semantic_model::infer::vm::{InferVm, unify_call_bindings};
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::type_check::is_compatible;
-use crate::semantic_model::{CallSiteAnalysis, SemanticModel, type_eval};
+use crate::semantic_model::{SemanticModel, type_eval};
 use crate::{
     DiagnosticCode, LuaFunctionType, LuaMemberKey, LuaTupleStatus, LuaTupleType, LuaType,
     LuaTypeNode, TypeDefKind, VariadicType,
 };
 
+use super::assign_type_mismatch::check_call_table_args;
 use super::check_field::union_array_for_sequence;
 use super::param_count::{call_arg_param_index, first_param_is_self};
-use super::{CheckContext, Checker};
+use super::{CheckContext, Checker, Diagnostic};
 
 pub struct ParamTypeChecker;
 
 impl Checker for ParamTypeChecker {
-    const CODES: &[DiagnosticCode] = &[DiagnosticCode::ParamTypeMismatch];
+    // A call's table literal fields (AssignTypeMismatch) are reported by the same ranking.
+    const CODES: &[DiagnosticCode] = &[
+        DiagnosticCode::ParamTypeMismatch,
+        DiagnosticCode::AssignTypeMismatch,
+    ];
 
     fn check(context: &mut CheckContext<'_>, semantic_model: &SemanticModel<'_>) {
         let Some(tree) = semantic_model.syntax_tree() else {
@@ -300,8 +305,10 @@ fn check_call(
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });
 
-    // When every candidate fails, report the one with the fewest mismatches.
-    let mut best: Option<(usize, Vec<Mismatch>)> = None;
+    // A candidate rejects arguments (here) and table literal fields (the assign descent). When
+    // every candidate rejects something, report the one rejecting the least, each rejection once.
+    let has_literal = args.iter().any(|arg| matches!(arg, LuaExpr::TableExpr(_)));
+    let mut best: Option<(usize, Vec<Mismatch>, Vec<Diagnostic>)> = None;
     for candidate in ordered {
         let mismatches = check_candidate(
             semantic_model,
@@ -312,15 +319,23 @@ fn check_call(
             explicit_generics,
             Some(&analysis.arg_types),
         );
-        if mismatches.is_empty() {
+        let fields = if has_literal {
+            context.collect(|context| {
+                check_call_table_args(context, semantic_model, candidate, &args, colon_call)
+            })
+        } else {
+            Vec::new()
+        };
+        let rank = mismatches.len() + fields.len();
+        if rank == 0 {
             return;
         }
-        let rank = mismatches.len();
-        if best.as_ref().is_none_or(|(current, _)| rank < *current) {
-            best = Some((rank, mismatches));
+        if best.as_ref().is_none_or(|(current, ..)| rank < *current) {
+            best = Some((rank, mismatches, fields));
         }
     }
-    if let Some((_, mismatches)) = best {
+    if let Some((_, mismatches, fields)) = best {
+        context.extend_diagnostics(fields);
         let literal_names = doc_overload_literal_names(semantic_model, &callee);
         for mismatch in mismatches {
             let message = if literal_names.len() >= 2 {
@@ -378,76 +393,6 @@ fn has_table_literal_shape(ty: &LuaType) -> bool {
         LuaType::Union(union) => union.into_vec().iter().any(has_table_literal_shape),
         _ => false,
     }
-}
-
-fn table_literal_mismatch(
-    semantic_model: &SemanticModel<'_>,
-    param_ty: &LuaType,
-    table: &emmylua_parser::LuaTableExpr,
-) -> Option<Mismatch> {
-    match param_ty {
-        LuaType::Object(object) => {
-            let fields = object.get_fields();
-            for (field, key) in table.get_fields_with_keys() {
-                let path = key.get_path_part();
-                let Some(expected) = fields.get(&LuaMemberKey::Name(path.clone().into())) else {
-                    continue;
-                };
-                let Some(value_expr) = field.get_value_expr() else {
-                    continue;
-                };
-                let value_ty = semantic_model.type_of_expr(value_expr.get_syntax_id());
-                if value_ty == *expected || is_compatible(semantic_model, &value_ty, expected) {
-                    continue;
-                }
-                return Some(Mismatch {
-                    range: value_expr.get_range(),
-                    message: mismatch_message(semantic_model, &value_ty, expected, &path),
-                });
-            }
-            None
-        }
-        LuaType::Intersection(intersection) => intersection
-            .get_types()
-            .iter()
-            .find_map(|component| table_literal_mismatch(semantic_model, component, table)),
-        LuaType::Union(union) => {
-            let components = union.into_vec();
-            let mut last: Option<Mismatch> = None;
-            for component in components.iter() {
-                {
-                    let mismatch = table_literal_mismatch(semantic_model, component, table)?;
-                    last = Some(mismatch);
-                }
-            }
-            last
-        }
-        _ => None,
-    }
-}
-
-/// How many of the call's arguments `func` rejects; `None` when it cannot take them all.
-pub(super) fn candidate_rejections(
-    semantic_model: &SemanticModel<'_>,
-    analysis: &CallSiteAnalysis,
-    func: &LuaFunctionType,
-    args: &[LuaExpr],
-) -> Option<usize> {
-    if takes_too_many_args(func, args.len(), analysis.colon_call) {
-        return None;
-    }
-    Some(
-        check_candidate(
-            semantic_model,
-            func,
-            args,
-            analysis.colon_call,
-            &analysis.receiver_ty,
-            &analysis.explicit_generics,
-            Some(&analysis.arg_types),
-        )
-        .len(),
-    )
 }
 
 /// More call arguments than the candidate has parameters (after the receiver rules), and no varargs.
@@ -817,12 +762,10 @@ fn check_arg_pairs(
             });
             continue;
         }
-        // Table literals targeting object / intersection: check field by field and then fully take over.
+        // A table literal targeting an object / intersection: its fields are the assign
+        // descent's (`check_call_table_args`), counted in the call's ranking.
         if let LuaExpr::TableExpr(table) = arg {
             if has_table_literal_shape(&param_ty) {
-                if let Some(mismatch) = table_literal_mismatch(semantic_model, &param_ty, table) {
-                    out.push(mismatch);
-                }
                 continue;
             }
             // Named generic class `Params<T>`: table literals missing required `@field`s are also incompatible.

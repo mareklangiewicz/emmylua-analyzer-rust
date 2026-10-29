@@ -1529,8 +1529,9 @@ mod tests {
     fn test_intersection_assign_tableconst_requires_right_only_members() {
         let mut ws = VirtualWorkspace::new();
 
+        // The fields present fit; the missing one is missing-fields'.
         assert!(!ws.has_no_diagnostic_in_namespace(
-            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::MissingFields,
             r#"
             ---@class A
             ---@field y integer
@@ -3845,5 +3846,54 @@ return t
             ),
             [DiagnosticCode::AssignTypeMismatch]
         );
+    }
+    /// One ranking decides a call's overload for both its arguments and its literal fields: the
+    /// candidate rejecting the least in total is reported, each rejection once.
+    #[test]
+    fn test_call_with_table_literals_is_ranked_once() {
+        use DiagnosticCode::{AssignTypeMismatch, ParamTypeMismatch};
+        let reported = |source: &str| -> Vec<(DiagnosticCode, String)> {
+            check_source(source)
+                .iter()
+                .filter(|d| matches!(d.code, ParamTypeMismatch | AssignTypeMismatch))
+                .map(|d| (d.code, source[d.range].to_string()))
+                .collect()
+        };
+        // the main signature rejects `'a'`, the overload the literal's key: one report, not none
+        assert_eq!(
+            reported(
+                "---@param values table<string, integer>\n---@param mode integer\n---@overload fun(values: table<integer, string>, mode: string)\nlocal function accept(values, mode) return values, mode end\naccept({count = 1}, 'a')"
+            )
+            .len(),
+            1
+        );
+        // an object literal's field is reported once, by the descent
+        assert_eq!(
+            reported(
+                "---@param o {a: integer, b: string}\nlocal function f(o) return o end\nf({ a = 'x', b = 1 })"
+            ),
+            [
+                (AssignTypeMismatch, "'x'".to_string()),
+                (AssignTypeMismatch, "1".to_string())
+            ]
+        );
+        // every part of an intersection is checked
+        assert_eq!(
+            reported(
+                "---@param o {a: integer} & {b: string}\nlocal function f(o) return o end\nf({ a = 1, b = 2 })"
+            ),
+            [(AssignTypeMismatch, "2".to_string())]
+        );
+        let ab = "---@class IA\n---@field a integer\n---@class IB\n---@field b string\n";
+        for target in ["{a: integer} & {b: string}", "IA & IB"] {
+            assert_eq!(
+                reported(&format!("{ab}---@type {target}\nlocal x = {{ a = 1, b = 'x' }}")),
+                []
+            );
+            assert_eq!(
+                reported(&format!("{ab}---@type {target}\nlocal x = {{ a = 1, b = 2 }}")),
+                [(AssignTypeMismatch, "2".to_string())]
+            );
+        }
     }
 }
