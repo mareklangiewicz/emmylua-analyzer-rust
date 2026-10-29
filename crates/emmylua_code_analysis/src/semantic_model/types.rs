@@ -340,6 +340,14 @@ impl<'db> SemanticModel<'db> {
                 } else {
                     flow::type_of_expr_with_cast(self, value_syntax, flow::ExprCastMode::AsOnly)
                 };
+                // An alias of a function (`local f = M.run`, `local f = require 'm'`) reads as a broad
+                // `Function`; it names a closure whose signature it keeps.
+                if matches!(ty, LuaType::Function)
+                    && decl.multi_return_index.unwrap_or(0) == 0
+                    && let Some(fun) = self.alias_signature_in_file(self.file_id(), value_syntax)
+                {
+                    return Some(LuaType::DocFunction(Rc::new(fun)));
+                }
                 if !matches!(ty, LuaType::Unknown) {
                     // Multi-return assignment slot: the `b` in `local a, b = f()` takes f()'s 2nd return.
                     // When a single-return function has no second slot, extra assignment targets stay Any (undeclared missing values),

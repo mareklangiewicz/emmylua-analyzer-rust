@@ -3086,4 +3086,51 @@ mod test {
             .count();
         assert_eq!(mismatches, 2, "{diagnostics:#?}");
     }
+
+    /// A local alias of a member function (`local f = M.run`) keeps its signature too.
+    #[test]
+    fn test_local_alias_keeps_signature() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            local M = {}
+            ---@param n integer
+            function M.run(n) end
+            local f = M.run
+            f('z')
+            "#
+        ));
+    }
+
+    /// `---@param` above `return function(c)` documents the returned closure, and a module that
+    /// returns it keeps that signature through `require`.
+    #[test]
+    fn test_returned_closure_keeps_its_docs_through_require() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "callee.lua",
+            r#"
+            ---@param n integer
+            return function(n) end
+            "#,
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            local use = require 'callee'
+            use('x')
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@param n integer
+            return function(n)
+                ---@type boolean
+                local b = n
+            end
+            "#
+        ));
+    }
 }

@@ -946,8 +946,9 @@ impl<'db> SemanticModel<'db> {
             None
         }
     }
-    /// Signature of the function an alias value names (`M.run = verbs.run`, `local f = M.run`): follow
-    /// member reads and names to the closure at the end of the chain. A closure-valued member reads as
+    /// Signature of the function an alias value names (`M.run = verbs.run`, `local f = M.run`,
+    /// `local f = require 'm'`): follow member reads, names and `require` to the closure at the end of
+    /// the chain. A closure-valued member reads as
     /// a broad `Function` and only a call recovers its signature, through the member's identity; storing
     /// the read elsewhere drops that identity, so the stored member re-derives it here. A closure literal
     /// at `value_syntax` itself is not an alias (`None`): its member keeps whatever projection it has.
@@ -975,18 +976,30 @@ impl<'db> SemanticModel<'db> {
                 }
                 LuaExpr::NameExpr(name_expr) => {
                     let decl_id = model.resolve_name(name_expr.get_position())?;
-                    let SemanticId::Decl(decl_key) = &decl_id else {
-                        return None;
-                    };
-                    let decl = model
-                        .file_facts_of(decl_key.file_id)?
-                        .decl_by_id(&decl_id)?;
-                    (decl_key.file_id, decl.value_expr_syntax?)
+                    model.decl_value_syntax(&decl_id)?
+                }
+                // `require 'm'` names what module `m` returns.
+                expr @ LuaExpr::CallExpr(_) => {
+                    let module_file = model.require_module_file_of_expr(&expr)?;
+                    match &model.file_facts_of(module_file)?.module_export {
+                        ModuleExport::Expr { value_syntax } => (module_file, *value_syntax),
+                        ModuleExport::Decl { decl, .. } => model.decl_value_syntax(decl)?,
+                        _ => return None,
+                    }
                 }
                 _ => return None,
             };
         }
         None
+    }
+
+    /// The file and initializer of a declaration.
+    fn decl_value_syntax(&self, decl_id: &SemanticId) -> Option<(FileId, LuaSyntaxId)> {
+        let SemanticId::Decl(decl_key) = decl_id else {
+            return None;
+        };
+        let decl = self.file_facts_of(decl_key.file_id)?.decl_by_id(decl_id)?;
+        Some((decl_key.file_id, decl.value_expr_syntax?))
     }
 
     /// Signature structure of a closure in any file (used for cross-file member/global function signature resolution).

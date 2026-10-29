@@ -11,8 +11,9 @@ use emmylua_parser::{
     LuaClosureExpr, LuaComment, LuaDocFieldKey, LuaDocGenericDeclList, LuaDocTag,
     LuaDocTagAttributeUse, LuaDocTagDiagnostic, LuaDocTagField, LuaDocType, LuaDocTypeFlag,
     LuaExpr, LuaFuncStat, LuaIfClauseStat, LuaIndexExpr, LuaIndexKey, LuaLiteralExpr,
-    LuaLiteralToken, LuaLocalStat, LuaNameExpr, LuaNameToken, LuaStat, LuaSyntaxId, LuaSyntaxKind,
-    LuaTableExpr, LuaTableField, LuaVarExpr, LuaVersionCondition, NumberResult, UnaryOperator,
+    LuaLiteralToken, LuaLocalStat, LuaNameExpr, LuaNameToken, LuaReturnStat, LuaStat, LuaSyntaxId,
+    LuaSyntaxKind, LuaTableExpr, LuaTableField, LuaVarExpr, LuaVersionCondition, NumberResult,
+    UnaryOperator,
 };
 use rowan::{TextRange, TextSize, WalkEvent};
 use smol_str::SmolStr;
@@ -1672,7 +1673,12 @@ impl FactsBuilder {
                 // Parameters and locals in the function body belong to the closure scope and must not inherit the outer `---@type`.
                 // Signature docs still belong to the outer statement (LocalStat/FuncStat), so save them now and use them in
                 // collect_signature; after collect_params, the body uses the closure owner.
-                let statement_owner = self.current_owner_syntax;
+                // `---@param c C` above `return function(c)` documents that closure: the return statement is
+                // not an owner for anything else, so it is looked up here rather than tracked.
+                let statement_owner = closure
+                    .get_parent::<LuaReturnStat>()
+                    .map(|stat| stat.get_syntax_id())
+                    .or(self.current_owner_syntax);
                 self.current_owner_syntax = Some(closure.get_syntax_id());
                 self.collect_params(closure);
                 self.collect_signature(closure, statement_owner);
