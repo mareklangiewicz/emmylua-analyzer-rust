@@ -1984,8 +1984,9 @@ enum CastOp {
 struct PathState {
     /// Most recent guard first.
     narrowings: Vec<Narrowing>,
-    /// Most recent cast operation first.
-    casts: Vec<CastOp>,
+    /// Most recent cast operation first, each with `narrowings.len()` when it was met: the guards
+    /// before that index lie between the cast and the read, so they apply after it.
+    casts: Vec<(usize, CastOp)>,
 }
 
 /// Checks from an antecedent toward the declaration whether a narrowing node already exists.
@@ -2126,9 +2127,8 @@ fn trace_decl(
     // The memo holds the state for an empty incoming path. Guards collected between the query
     // and this node (`prev and prev.sig`, past the merge of an earlier `if prev and ...`)
     // narrow that state instead of its base: they apply in program order and distribute over
-    // branch merges. (One difference: they also narrow what a `---@cast` below added, which
-    // the base order applies last.) Incoming casts and correlated narrowings (dropped at some
-    // assignments below) do not commute that way, so they keep the uncached walk.
+    // branch merges. Incoming casts and correlated narrowings (dropped at some assignments
+    // below) do not commute that way, so they keep the uncached walk.
     if !path.casts.is_empty()
         || path
             .narrowings
@@ -2684,15 +2684,21 @@ enum Narrowing {
 /// After hitting a base type, apply the path state: first apply guard narrowing in "far → near" order,
 /// then apply `---@cast +T` widening last — casts are cumulative widening on the declaration and narrowing cannot erase them.
 fn finalize(model: &SemanticModel, mut base: LuaType, path: &PathState) -> LuaType {
-    for narrowing in path.narrowings.iter().rev() {
-        base = apply_narrowing(model, base, narrowing);
-    }
-    for cast in path.casts.iter().rev() {
+    // Program order: earliest guard or cast first.
+    let mut later = path.narrowings.len();
+    for (met_at, cast) in path.casts.iter().rev() {
+        for narrowing in path.narrowings[*met_at..later].iter().rev() {
+            base = apply_narrowing(model, base, narrowing);
+        }
+        later = *met_at;
         match cast {
             CastOp::Add(ty) => base = merge_types(base, ty.clone()),
             CastOp::Remove(ty) => base = remove_type(base, ty),
             CastOp::Replace(ty) => base = ty.clone(),
         }
+    }
+    for narrowing in path.narrowings[..later].iter().rev() {
+        base = apply_narrowing(model, base, narrowing);
     }
     base
 }
@@ -2788,7 +2794,7 @@ fn collect_decl_cast(
                 .get_op()
                 .is_some_and(|op| op.get_op() == BinaryOperator::OpSub)
             {
-                path.casts.push(CastOp::Remove(LuaType::Nil));
+                path.push_cast(CastOp::Remove(LuaType::Nil));
             }
             continue;
         };
@@ -2801,9 +2807,9 @@ fn collect_decl_cast(
             continue;
         }
         match op_type.get_op().map(|op| op.get_op()) {
-            None => path.casts.push(CastOp::Replace(ty)),
-            Some(BinaryOperator::OpAdd) => path.casts.push(CastOp::Add(ty)),
-            Some(BinaryOperator::OpSub) => path.casts.push(CastOp::Remove(ty)),
+            None => path.push_cast(CastOp::Replace(ty)),
+            Some(BinaryOperator::OpAdd) => path.push_cast(CastOp::Add(ty)),
+            Some(BinaryOperator::OpSub) => path.push_cast(CastOp::Remove(ty)),
             _ => {}
         }
     }
@@ -2845,7 +2851,7 @@ fn collect_member_cast(
                 .get_op()
                 .is_some_and(|op| op.get_op() == BinaryOperator::OpSub)
             {
-                path.casts.push(CastOp::Remove(LuaType::Nil));
+                path.push_cast(CastOp::Remove(LuaType::Nil));
             }
             continue;
         };
@@ -2858,9 +2864,9 @@ fn collect_member_cast(
             continue;
         }
         match op_type.get_op().map(|op| op.get_op()) {
-            None => path.casts.push(CastOp::Replace(ty)),
-            Some(BinaryOperator::OpAdd) => path.casts.push(CastOp::Add(ty)),
-            Some(BinaryOperator::OpSub) => path.casts.push(CastOp::Remove(ty)),
+            None => path.push_cast(CastOp::Replace(ty)),
+            Some(BinaryOperator::OpAdd) => path.push_cast(CastOp::Add(ty)),
+            Some(BinaryOperator::OpSub) => path.push_cast(CastOp::Remove(ty)),
             _ => {}
         }
     }
@@ -5904,6 +5910,10 @@ fn walk_member(
 }
 
 impl PathState {
+    fn push_cast(&mut self, cast: CastOp) {
+        self.casts.push((self.narrowings.len(), cast));
+    }
+
     fn clone_path(&self) -> Self {
         Self {
             narrowings: self.narrowings.iter().map(|n| n.clone_ref()).collect(),

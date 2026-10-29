@@ -799,4 +799,24 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_guard_after_cast_narrows_the_cast_type() {
+        let mut ws = VirtualWorkspace::new();
+        // The guard follows the cast, so it narrows what the cast set (both read the decl's trace).
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@return string[]?
+            local function rd() return nil end
+            local function f()
+                local missing = rd()
+                ---@cast missing string[]?
+                if missing and missing[1] then return 1 end
+                if missing and missing[2] then return 2 end
+            end
+            return f
+        "#
+        ));
+    }
 }
