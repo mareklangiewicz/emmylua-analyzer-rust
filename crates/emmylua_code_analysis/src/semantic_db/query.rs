@@ -17,17 +17,21 @@ use super::def::{
 use super::exports::{
     FileExports, GlobalExport, MemberExport, module_export_owner_file, owner_id_from_semantic_id,
 };
-use super::facts::{FactsBuilder, FileFacts, member_key_from_index_key, nested_table_owner};
+use super::facts::{
+    FactsBuilder, FileFacts, implicit_self_receiver_prefix, member_key_from_index_key,
+    nested_table_owner,
+};
 use super::inputs::WorkspaceRoot;
 use super::types::{
-    LiteralShell, ObjectFieldKey, ObjectShell, PrimitiveType, TableId, TypeCandidate, TypeShell, checked_integer_arithmetic,
+    LiteralShell, ObjectFieldKey, ObjectShell, PrimitiveType, TableId, TypeCandidate, TypeShell,
+    checked_integer_arithmetic,
 };
 use crate::Emmyrc;
 use crate::FileId;
 use emmylua_parser::{
-    BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocObjectFieldKey, LuaDocType, LuaExpr, LuaIndexExpr,
-    LuaLiteralExpr, LuaLiteralToken, LuaReturnStat, LuaSyntaxId, LuaSyntaxTree,
-    LuaTypeBinaryOperator, LuaVersionCondition, UnaryOperator,
+    BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocObjectFieldKey, LuaDocType,
+    LuaExpr, LuaIndexExpr, LuaLiteralExpr, LuaLiteralToken, LuaReturnStat, LuaSyntaxId,
+    LuaSyntaxTree, LuaTypeBinaryOperator, LuaVersionCondition, UnaryOperator,
 };
 use rowan::{TextRange, TextSize};
 
@@ -671,6 +675,13 @@ pub(crate) fn member_keys_of_owner(db: &SemanticDatabase, owner: SemanticId) -> 
         keys.extend(
             members_of_owner(db, resolved)
                 .iter()
+                .filter(|&member| {
+                    db.file_facts_of(member.file_id).is_some_and(|facts| {
+                        facts
+                            .member_by_id(&member.id)
+                            .is_some_and(|decl| !decl.key.is_none())
+                    })
+                })
                 .cloned()
                 .map(|member| member.name),
         );
@@ -718,8 +729,10 @@ pub struct WorkspaceDeclIndex {
     runtime_by_name: HashMap<SmolStr, Vec<SemanticId>>,
     /// Type runtime values by `(file_id, bare_name)`.
     runtime_by_file_name: HashMap<(FileId, SmolStr), SemanticId>,
-    /// Type definition -> `(file_id, bare name)`.
-    type_def_by_id: HashMap<SemanticId, (FileId, SmolStr)>,
+    /// Type definition -> all declaring files `(file_id, bare name)`. A class may be
+    /// declared in several files (`(partial)` redeclarations, meta API definitions),
+    /// and each file's attachments contribute runtime-value associations.
+    type_def_locations: HashMap<SemanticId, Vec<(FileId, SmolStr)>>,
     by_file: HashMap<FileId, FileDeclContribution>,
 }
 
@@ -755,8 +768,11 @@ impl WorkspaceDeclIndex {
             .unwrap_or(&[])
     }
 
-    pub(crate) fn type_def_location(&self, id: &SemanticId) -> Option<(FileId, SmolStr)> {
-        self.type_def_by_id.get(id).cloned()
+    pub(crate) fn type_def_locations(&self, id: &SemanticId) -> &[(FileId, SmolStr)] {
+        self.type_def_locations
+            .get(id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     pub(crate) fn remove_file(&mut self, file_id: FileId) {
@@ -772,7 +788,12 @@ impl WorkspaceDeclIndex {
             }
         }
         for (type_id, _) in contribution.types {
-            self.type_def_by_id.remove(&type_id);
+            if let Some(locations) = self.type_def_locations.get_mut(&type_id) {
+                locations.retain(|(fid, _)| *fid != file_id);
+                if locations.is_empty() {
+                    self.type_def_locations.remove(&type_id);
+                }
+            }
         }
         for (name, decl) in contribution.runtime_values {
             if let Some(decls) = self.runtime_by_name.get_mut(&name) {
@@ -798,9 +819,11 @@ impl WorkspaceDeclIndex {
         }
         for def in &exports.types {
             contribution.types.push((def.id.clone(), def.name.clone()));
-            self.type_def_by_id
-                .entry(def.id.clone())
-                .or_insert((def.file_id, def.name.clone()));
+            // 稳定排序
+            let locations = self.type_def_locations.entry(def.id.clone()).or_default();
+            if let Err(position) = locations.binary_search_by_key(&file_id, |(fid, _)| *fid) {
+                locations.insert(position, (file_id, def.name.clone()));
+            }
         }
         for (name, decl) in &exports.runtime_values {
             contribution
@@ -1752,34 +1775,42 @@ fn push_type_associated_owner_ids(
 ) {
     for &ws_id in workspace_lookup_order(db) {
         let index = workspace_decl_index_for(db, ws_id);
-        let Some((file_id, bare_name)) = index.type_def_location(type_id) else {
+        let locations = index.type_def_locations(type_id);
+        if locations.is_empty() {
             continue;
-        };
-        if let Some(decl_id) = index.runtime_value_in(file_id, &bare_name) {
-            if let Some(decl_owner) = canonical_owner_id(db, &decl_id) {
-                push_unique_owner_id(out, decl_owner);
-            }
-            // Main-workspace `---@meta` API files use a global runtime table
-            // (`_KLuaPlayer = {}`) as the type surface, while its methods are
-            // declared under `Name("_KLuaPlayer")`. Include that owner so
-            // `@class _KLuaPlayer` + `function _KLuaPlayer.Msg` resolves.
-            if let SemanticId::Decl(key) = &decl_id
-                && let Some(decl_facts) = db.file_facts_of(key.file_id)
-                && let Some(decl) = decl_facts.decl_by_id(&decl_id)
-                && matches!(decl.kind, DeclKind::Global)
-                && decl_facts.is_meta
-                && file_workspace_id(db, key.file_id).is_some_and(|ws| ws.is_main())
-            {
-                push_unique_owner_id(out, OwnerId::Concrete(SemanticId::name(decl.name.clone())));
-            }
         }
-        if let Some(facts) = db.file_facts_of(file_id)
-            && let Some(def) = facts.type_def_by_id(type_id)
-            && let Some(owner_syntax) = def.owner_syntax
-        {
-            for decl in facts.decls_by_owner_syntax(owner_syntax) {
-                if let Some(decl_owner) = canonical_owner_id(db, &decl.id) {
+        for &(file_id, ref bare_name) in locations {
+            if let Some(decl_id) = index.runtime_value_in(file_id, bare_name) {
+                if let Some(decl_owner) = canonical_owner_id(db, &decl_id) {
                     push_unique_owner_id(out, decl_owner);
+                }
+                // Main-workspace `---@meta` API files use a global runtime table
+                // (`_KLuaPlayer = {}`) as the type surface, while its methods are
+                // declared under `Name("_KLuaPlayer")`. Include that owner so
+                // `@class _KLuaPlayer` + `function _KLuaPlayer.Msg` resolves.
+                if let SemanticId::Decl(key) = &decl_id
+                    && let Some(decl_facts) = db.file_facts_of(key.file_id)
+                    && let Some(decl) = decl_facts.decl_by_id(&decl_id)
+                    && matches!(decl.kind, DeclKind::Global)
+                    && decl_facts.is_meta
+                    && file_workspace_id(db, key.file_id).is_some_and(|ws| ws.is_main())
+                {
+                    push_unique_owner_id(
+                        out,
+                        OwnerId::Concrete(SemanticId::name(decl.name.clone())),
+                    );
+                }
+            }
+            if let Some(facts) = db.file_facts_of(file_id) {
+                for def in facts.type_defs.iter().filter(|def| def.id == *type_id) {
+                    let Some(owner_syntax) = def.owner_syntax else {
+                        continue;
+                    };
+                    for decl in facts.decls_by_owner_syntax(owner_syntax) {
+                        if let Some(decl_owner) = canonical_owner_id(db, &decl.id) {
+                            push_unique_owner_id(out, decl_owner);
+                        }
+                    }
                 }
             }
         }
@@ -2479,6 +2510,7 @@ pub(crate) fn member_keys_of_decl(
     let facts = file_facts(db, file);
     let mut keys = facts
         .members_of_owner(&decl)
+        .filter(|member| member.index_key_syntax.is_none())
         .map(|member| member.key.to_path().into())
         .collect::<Vec<_>>();
     keys.sort();
@@ -2554,7 +2586,7 @@ fn collect_type_keys(
     for member in facts
         .members
         .iter()
-        .filter(|member| member.owner == type_def)
+        .filter(|member| member.owner == type_def && member.index_key_syntax.is_none())
     {
         out.push(member.key.to_path().into());
     }
@@ -3799,14 +3831,13 @@ pub(crate) fn member_ref_from_index_expr(
 fn resolve_expr_root(
     facts: &FileFacts,
     expr: LuaExpr,
-    _segments: &mut Vec<SmolStr>,
+    segments: &mut Vec<SmolStr>,
 ) -> Option<SemanticId> {
     // Deep member chains: expand IndexExpr with an explicit task stack to avoid native stack recursion.
     let mut current = expr;
-    let mut segments = Vec::new();
     // Local root: the table each segment holds, as member collection resolved it.
     let mut keys = Vec::new();
-    loop {
+    let owner = loop {
         match current {
             LuaExpr::ParenExpr(paren) => {
                 current = paren.get_expr()?;
@@ -3822,26 +3853,31 @@ fn resolve_expr_root(
                 ));
                 current = parent.get_prefix_expr()?;
             }
-            _ => break,
-        }
-    }
-    let owner = match current {
-        LuaExpr::NameExpr(name_expr) => {
-            let name = name_expr.get_name_text()?;
-            if name == "_ENV" || name == "_G" {
-                SemanticId::name(SmolStr::new(name))
-            } else {
+            LuaExpr::NameExpr(name_expr) => {
+                let name = name_expr.get_name_text()?;
+                if name == "_ENV" || name == "_G" {
+                    break SemanticId::name(SmolStr::new(name));
+                }
                 let offset = name_expr.get_position();
                 if let Some(decl) = facts.find_visible_decl_before_offset(&name, offset)
                     && !matches!(decl.kind, DeclKind::Global)
                 {
-                    decl.id.clone()
-                } else {
-                    SemanticId::name(SmolStr::new(name))
+                    if decl.is_implicit_self {
+                        match implicit_self_receiver_prefix(decl, &name_expr)
+                            .and_then(|receiver| resolve_expr_root(facts, receiver, segments))
+                        {
+                            // Already qualified with the receiver's path and these segments.
+                            Some(owner @ SemanticId::Name(_)) => return Some(owner),
+                            Some(owner) => break owner,
+                            None => break decl.id.clone(),
+                        }
+                    }
+                    break decl.id.clone();
                 }
+                break SemanticId::name(SmolStr::new(name));
             }
+            _ => return None,
         }
-        _ => return None,
     };
     if let SemanticId::Name(root) = &owner {
         let mut path = root.as_str().to_string();

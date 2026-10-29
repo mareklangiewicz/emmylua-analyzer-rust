@@ -6,18 +6,20 @@
 use std::collections::HashMap;
 
 use emmylua_parser::{
-    LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaExpr, LuaIndexExpr, LuaSyntaxNode, LuaVarExpr,
-    PathTrait,
+    LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaSyntaxNode,
+    LuaVarExpr, PathTrait,
 };
 
 use rowan::TextRange;
 
 use crate::DiagnosticCode;
 use crate::FileId;
-use crate::LuaType;
 use crate::semantic_db::def::{Member, SemanticId};
 use crate::semantic_model::SemanticModel;
+use crate::semantic_model::render::humanize_type;
+use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::semantic_model::type_eval::expand_alias_head;
+use crate::{LuaMemberKey, LuaType};
 
 use super::{CheckContext, Checker};
 
@@ -37,51 +39,82 @@ impl Checker for DuplicateFieldChecker {
         if let Some(root) = &root {
             check_cross_file_member_assign(context, semantic_model, root);
         }
-        let mut by_owner: HashMap<&SemanticId, Vec<&Member>> = HashMap::new();
+
+        let mut by_owner: HashMap<(&SemanticId, Option<LuaSyntaxId>), Vec<&Member>> =
+            HashMap::new();
         for member in &facts.members {
-            by_owner.entry(&member.owner).or_default().push(member);
+            by_owner
+                .entry((&member.owner, member.implicit_self))
+                .or_default()
+                .push(member);
         }
-        for (owner, members) in by_owner {
-            // Group by key, by the table the key is set on (a local root's owner drops the path
-            // below it, so `M.A:init` and `M.B:init` share the owner `M`), and by the function
-            // body that sets it: sets in different bodies run on different calls.
-            let mut by_key: HashMap<(String, Option<SetSite>), Vec<&&Member>> = HashMap::new();
-            for member in &members {
+        for ((owner, _), members) in by_owner {
+            // Group by key and its index-signature domain, by the table the key is set on (a local
+            // root's owner drops the path below it, so `M.A:init` and `M.B:init` share the owner
+            // `M`), and by the function body that sets it: sets in different bodies run on
+            // different calls.
+            let mut by_key: HashMap<
+                (LuaMemberKey, Option<SetSite>),
+                Vec<(Option<LuaType>, Vec<&Member>)>,
+            > = HashMap::new();
+            for member in members {
+                let domain = if let Some(syntax) = member.index_key_syntax {
+                    let generics = facts
+                        .type_def_by_id(&member.owner)
+                        .map(|def| def.generic_params.as_slice())
+                        .unwrap_or_default();
+                    let key =
+                        semantic_model.doc_type_lua_in(semantic_model.file_id(), syntax, generics);
+                    let Some(key) = expand_alias_branches(semantic_model, &key) else {
+                        continue;
+                    };
+                    Some(key)
+                } else {
+                    None
+                };
                 let site = root.as_ref().and_then(|root| set_site(root, member));
-                by_key
-                    .entry((member.key.to_path(), site))
-                    .or_default()
-                    .push(member);
+                let groups = by_key.entry((member.key.clone(), site)).or_default();
+                if let Some((_, members)) = groups.iter_mut().find(|(key, _)| key == &domain) {
+                    members.push(member);
+                } else {
+                    groups.push((domain, vec![member]));
+                }
             }
             let is_type_def = matches!(owner, SemanticId::TypeDef(_));
-            for ((name, _), dupes) in by_key {
-                if dupes.len() <= 1 {
-                    continue;
-                }
-                let all_function = dupes
-                    .iter()
-                    .all(|member| is_function_like(semantic_model, member));
-                // `@field a fun()` may be declared repeatedly (function overloads);
-                // ordinary repeated non-function field writes are also intentional
-                // (for example a global config table assigning the same key twice).
-                if is_type_def && all_function {
-                    continue;
-                }
-                if !is_type_def && !all_function {
-                    continue;
-                }
-                let code = if is_type_def {
-                    DiagnosticCode::DuplicateDocField
-                } else {
-                    DiagnosticCode::DuplicateSetField
-                };
-                for member in dupes {
-                    if let Some(range) = member.id.member_key_range() {
-                        context.add_diagnostic(
-                            code,
-                            range,
-                            t!("Duplicate field `%{name}`.", name = name),
-                        );
+            for ((key, _), groups) in by_key {
+                for (domain, dupes) in groups {
+                    let name = domain.map_or_else(
+                        || key.to_path(),
+                        |ty| format!("[{}]", humanize_type(semantic_model, &ty)),
+                    );
+                    if dupes.len() <= 1 {
+                        continue;
+                    }
+                    let all_function = dupes
+                        .iter()
+                        .all(|member| is_function_like(semantic_model, member));
+                    // `@field a fun()` may be declared repeatedly (function overloads);
+                    // ordinary repeated non-function field writes are also intentional
+                    // (for example a global config table assigning the same key twice).
+                    if is_type_def && all_function {
+                        continue;
+                    }
+                    if !is_type_def && !all_function {
+                        continue;
+                    }
+                    let code = if is_type_def {
+                        DiagnosticCode::DuplicateDocField
+                    } else {
+                        DiagnosticCode::DuplicateSetField
+                    };
+                    for member in dupes {
+                        if let Some(range) = member.id.member_key_range() {
+                            context.add_diagnostic(
+                                code,
+                                range,
+                                t!("Duplicate field `%{name}`.", name = name),
+                            );
+                        }
                     }
                 }
             }

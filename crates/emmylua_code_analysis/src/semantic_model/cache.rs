@@ -20,6 +20,7 @@ use crate::{FileId, LuaFunctionType, LuaType, LuaTypeDeclId, LuaTypeNode};
 use super::infer::unify::TplBindings;
 use super::member::MemberInfo;
 use super::{CallSiteAnalysis, ResolvedMember};
+use crate::IndexInfo;
 
 /// Keep provisional memo entries while dependent queries still need them.
 /// Discard them at the outer query boundary so the next query can retry.
@@ -162,7 +163,24 @@ impl<T> CacheEntry<T> {
     }
 }
 
-/// Memo key for one declaration-trace state: `(file, declaration, flow node, options, mode)`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum TraceSubject {
+    Decl {
+        decl: SemanticId,
+        guards: bool,
+        casts: bool,
+        assignments: bool,
+        merge_branch: bool,
+        /// The capturing closure of a captured-local read (see `TraceOptions::capture`).
+        capture: Option<rowan::TextRange>,
+    },
+    Member {
+        member: SemanticId,
+        access: Option<LuaSyntaxId>,
+    },
+}
+
+/// Memo key for one flow-trace state on a loop-free graph: `(file, subject, flow node)`.
 ///
 /// The state is the one for an empty incoming path: `super::flow` applies the guards a
 /// query collected before reaching the node on top of it. The memo is consulted only for
@@ -170,14 +188,8 @@ impl<T> CacheEntry<T> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TraceStateKey {
     pub(crate) file_id: FileId,
-    pub(crate) decl: SemanticId,
+    pub(crate) subject: TraceSubject,
     pub(crate) flow_id: u32,
-    pub(crate) guards: bool,
-    pub(crate) casts: bool,
-    pub(crate) assignments: bool,
-    pub(crate) merge_branch: bool,
-    /// The capturing closure of a captured-local read (see `TraceOptions::capture`).
-    pub(crate) capture: Option<rowan::TextRange>,
 }
 
 #[derive(Default)]
@@ -215,7 +227,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) captured_local: HashMap<(FileId, SemanticId), Option<LuaType>>,
     /// Whole-function, syntax-only check for the local-table last-element proof.
     pub(crate) array_length_stable: HashMap<(FileId, SemanticId), bool>,
-    /// Memoized declaration-trace states for loop-free flow graphs. See
+    /// Memoized declaration/member-trace states for loop-free flow graphs. See
     /// [`TraceStateKey`] for why the path may be omitted from the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
     /// Fast negative/positive cache for `---@return_cast` lookup by call syntax.
@@ -227,6 +239,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) call_site: HashMap<(FileId, LuaSyntaxId), CallSiteAnalysis>,
     pub(crate) call_site_signatures:
         HashMap<(FileId, LuaSyntaxId), Vec<(LuaFunctionType, TplBindings)>>,
+    pub(crate) index_infos: HashMap<(FileId, LuaType), CacheEntry<Vec<IndexInfo>>>,
     pub(crate) member_infos: HashMap<(FileId, LuaType), Vec<MemberInfo>>,
     pub(crate) members_of_owner: HashMap<SemanticId, MemberList>,
     pub(crate) members_of_owner_named: HashMap<(SemanticId, SmolStr), MemberList>,
@@ -251,6 +264,7 @@ impl SemanticLocalCache {
     fn discard_provisional(&mut self) {
         self.expr_type.retain(|_, entry| entry.is_ready());
         self.decl_type.retain(|_, entry| entry.is_ready());
+        self.index_infos.retain(|_, entry| entry.is_ready());
         self.member_type.retain(|_, entry| entry.is_ready());
         self.expr_type_at.retain(|_, entry| entry.is_ready());
         self.trace_state.retain(|_, entry| entry.is_ready());

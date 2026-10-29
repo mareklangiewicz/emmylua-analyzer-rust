@@ -7,7 +7,9 @@
 //! - Enum bound to a table literal: static keys must match an enum member name/value, otherwise report;
 //! - Class runtime value bound to a table literal: check against the class member surface.
 
-use emmylua_parser::{LuaAstNode, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaSyntaxKind, LuaTokenKind};
+use emmylua_parser::{
+    LuaAstNode, LuaDocType, LuaExpr, LuaIndexExpr, LuaIndexKey, LuaSyntaxKind, LuaTokenKind,
+};
 use rowan::TextRange;
 
 use crate::DiagnosticCode;
@@ -175,9 +177,13 @@ fn is_valid_member(
             }
             match def.kind {
                 TypeDefKind::Enum => enum_table_access(semantic_model, &decl, &def, index_key),
+                // An alias owns no members, so this dispatch is what expands it to its target
+                // (`---@alias List {string}` must behave like `{string}`). Calling
+                // `valid_named_member` directly would look up members on the alias itself and
+                // reject every access.
                 TypeDefKind::Class | TypeDefKind::Alias => {
                     let class_ty = class_lua_type(&def);
-                    valid_named_member(semantic_model, &class_ty, prefix, index_expr, index_key)
+                    is_valid_member(semantic_model, &class_ty, prefix, index_expr, index_key)
                 }
             }
         }
@@ -272,8 +278,9 @@ fn valid_named_member(
 
     let key_ty = key_type(semantic_model, index_key);
     // Index signatures on named types: `@field [string]` / `@field [integer]`.
-    if let Some(def) = named_type_def(semantic_model, &prefix_ty)
-        && has_index_signature(semantic_model, &def, &key_ty)
+    if semantic_model
+        .applicable_index_infos(&prefix_ty, &key_ty)
+        .is_ok_and(|infos| !infos.is_empty())
     {
         return true;
     }
@@ -347,7 +354,7 @@ fn enum_table_access(
     accepted.iter().any(|text| text == &key_text)
 }
 
-/// Finds the declaration and same-named type definition bound to a TableConst.
+/// Finds the declaration and the type definition bound to a TableConst.
 fn table_binding(
     semantic_model: &SemanticModel<'_>,
     file_id: FileId,
@@ -356,14 +363,8 @@ fn table_binding(
     let facts = semantic_model.file_facts_of(file_id)?;
     let decl = facts.decl_by_value_range(range)?;
     let def = facts
-        .type_defs_named_case_insensitive(decl.name.as_str())
-        .next()
-        .or_else(|| {
-            // `---@enum K3` + `local apiAlias = {...}`: when names differ, associate with the type
-            // definition annotating this declaration; any earlier one in the file would bind every
-            // later local table literal to it.
-            facts.type_def_by_owner_syntax(decl.owner_syntax?)
-        })?
+        .type_defs_by_owner_syntax(decl.owner_syntax?)
+        .next()?
         .clone();
     Some((decl.clone(), def))
 }
@@ -480,37 +481,6 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
     }
 }
 
-/// Whether the type definition has an index signature matching the key type (`@field [string]` / `@field [integer]`).
-fn has_index_signature(
-    semantic_model: &SemanticModel<'_>,
-    def: &TypeDef,
-    key_ty: &LuaType,
-) -> bool {
-    for member_ref in semantic_model.members_of_owner(&def.id).iter() {
-        let Some(facts) = semantic_model.file_facts_of(member_ref.file_id) else {
-            continue;
-        };
-        let Some(member) = facts.member_by_id(&member_ref.id) else {
-            continue;
-        };
-        match member.key.to_path().as_str() {
-            "string" => {
-                if is_string_key(key_ty) {
-                    return true;
-                }
-            }
-            "integer" | "number" => {
-                if numeric_key_expanded(semantic_model, key_ty) {
-                    return true;
-                }
-            }
-            "any" | "unknown" => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
 /// Unconstrained generic parameter name (`Ref("T")` with no constraint on T in the signature): allow any member access.
 fn is_unconstrained_generic_name(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
     let id = match ty {
@@ -548,10 +518,7 @@ fn is_mapped_alias(semantic_model: &SemanticModel<'_>, def: &TypeDef) -> bool {
     let Some(node) = syntax.to_node_from_root(&tree.get_red_root()) else {
         return false;
     };
-    matches!(
-        emmylua_parser::LuaDocType::cast(node),
-        Some(emmylua_parser::LuaDocType::Mapped(_))
-    )
+    matches!(LuaDocType::cast(node), Some(LuaDocType::Mapped(_)))
 }
 
 /// Resolve the declaration of an enum runtime table (`Enum.A`), excluding enum-typed values (`p.a`).

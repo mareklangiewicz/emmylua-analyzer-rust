@@ -1,7 +1,28 @@
 #[cfg(test)]
 mod tests {
+    use crate::handlers::hover::hover;
     use crate::handlers::test_lib::{ProviderVirtualWorkspace, VirtualHoverResult, check};
     use googletest::prelude::*;
+    use lsp_types::HoverContents;
+
+    #[gtest]
+    fn test_hover_generic_index_signature_and_named_field() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_hover(
+            r#"
+            ---@class Base<K, V>
+            ---@field [K] V
+            ---@class Record: Base<integer, string>
+            ---@field integer boolean
+
+            ---@type Record
+            local <??>value"#,
+            VirtualHoverResult {
+                value: "```lua\nlocal value: Record {\n    integer: boolean,\n    [integer]: string,\n}\n```".to_string(),
+            },
+        ));
+        Ok(())
+    }
 
     fn dedent(input: &str) -> String {
         let lines: Vec<&str> = input.lines().collect();
@@ -1056,5 +1077,27 @@ mod tests {
             },
         ));
         Ok(())
+    }
+
+    #[test]
+    fn test_class_method_self_field_hover() {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let (source, position) = ProviderVirtualWorkspace::handle_file_content(
+            r#"
+            ---@class <??>LinkedTableA
+            local M
+
+            function M:init()
+                self.a = 1
+            end
+            "#,
+        )
+        .unwrap();
+        let file_id = ws.def(&source);
+        let result = hover(&ws.analysis, file_id, position).expect("class hover");
+        let HoverContents::Markup(content) = result.contents else {
+            panic!("expected markup hover");
+        };
+        assert!(content.value.contains("a: integer"), "{}", content.value);
     }
 }

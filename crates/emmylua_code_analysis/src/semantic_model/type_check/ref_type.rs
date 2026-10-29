@@ -259,20 +259,31 @@ fn check_member_map(
     }
     let source = LuaType::Ref(source_id.clone());
     let members = context.require_complete(|| context.model.member_infos(&source))?;
+    let own_signatures = context.require_complete(|| context.model.index_infos(&source))?;
+    let named = members
+        .into_iter()
+        .filter(|member| !member.is_method)
+        .filter_map(|member| {
+            let key = match &member.key {
+                LuaMemberKey::Name(name) => LuaType::StringConst(name.clone().into()),
+                LuaMemberKey::Integer(i) => LuaType::IntegerConst(*i),
+                LuaMemberKey::None => return None,
+            };
+            Some((key, member.typ))
+        });
+    let entries = named.chain(
+        own_signatures
+            .into_iter()
+            .map(|info| (info.key_type, info.value_type)),
+    );
     let mut checks = RequiredChecks::default();
-    for member in members.iter().filter(|member| !member.is_method) {
-        let key = match (&member.index_key_type, &member.key) {
-            (Some(key), _) => key.clone(),
-            (None, LuaMemberKey::Name(name)) => LuaType::StringConst(name.clone().into()),
-            (None, LuaMemberKey::Integer(i)) => LuaType::IntegerConst(*i),
-            (None, LuaMemberKey::None) => continue,
-        };
+    for (key, typ) in entries {
         let mut covered = false;
         for (key_ty, value_ty) in signatures {
             match check_general_type_compact(context, &key, key_ty) {
                 Ok(()) => {
                     covered = true;
-                    checks.require(check_general_type_compact(context, &member.typ, value_ty))?;
+                    checks.require(check_general_type_compact(context, &typ, value_ty))?;
                 }
                 Err(err) if err.is_unresolved() => {
                     covered = true;

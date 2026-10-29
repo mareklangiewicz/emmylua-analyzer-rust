@@ -11,8 +11,8 @@ use emmylua_parser::{
     LuaClosureExpr, LuaComment, LuaDocFieldKey, LuaDocGenericDeclList, LuaDocTag,
     LuaDocTagAttributeUse, LuaDocTagDiagnostic, LuaDocTagField, LuaDocType, LuaDocTypeFlag,
     LuaExpr, LuaFuncStat, LuaIfClauseStat, LuaIndexExpr, LuaIndexKey, LuaLiteralExpr,
-    LuaLiteralToken, LuaLocalStat, LuaNameToken, LuaStat, LuaSyntaxId, LuaSyntaxKind, LuaTableExpr,
-    LuaTableField, LuaVarExpr, LuaVersionCondition, NumberResult, UnaryOperator,
+    LuaLiteralToken, LuaLocalStat, LuaNameExpr, LuaNameToken, LuaStat, LuaSyntaxId, LuaSyntaxKind,
+    LuaTableExpr, LuaTableField, LuaVarExpr, LuaVersionCondition, NumberResult, UnaryOperator,
 };
 use rowan::{TextRange, TextSize, WalkEvent};
 use smol_str::SmolStr;
@@ -41,6 +41,24 @@ use emmylua_parser::VisibilityKind;
 pub struct DiagnosticDisable {
     pub range: TextRange,
     pub code: Option<DiagnosticCode>,
+}
+
+/// Whether a doc-comment owner declares a function value (and therefore an
+/// `---@overload` tag belongs to its signature, not to a surrounding class).
+fn doc_owner_has_function_value(owner: &LuaAst) -> bool {
+    match owner {
+        LuaAst::LuaFuncStat(_) | LuaAst::LuaLocalFuncStat(_) => true,
+        LuaAst::LuaLocalStat(stat) => stat
+            .get_value_exprs()
+            .any(|expr| matches!(expr, LuaExpr::ClosureExpr(_))),
+        LuaAst::LuaAssignStat(stat) => {
+            let (_, exprs) = stat.get_var_and_expr_list();
+            exprs
+                .iter()
+                .any(|expr| matches!(expr, LuaExpr::ClosureExpr(_)))
+        }
+        _ => false,
+    }
 }
 
 /// Doc annotation usage error (consumed by analyze_error checker; currently only `@field` without a `@class` context).
@@ -117,7 +135,6 @@ pub struct FileFacts {
     members_by_name: HashMap<SmolStr, Vec<usize>>,
     type_def_by_full_name: HashMap<SmolStr, usize>,
     type_def_by_name: HashMap<SmolStr, usize>,
-    type_defs_by_lower_name: HashMap<SmolStr, Vec<usize>>,
     type_defs_by_name_end: Vec<(TextSize, usize)>,
     type_defs_by_owner_syntax: HashMap<LuaSyntaxId, Vec<usize>>,
     decl_by_value_syntax: HashMap<LuaSyntaxId, usize>,
@@ -279,21 +296,8 @@ impl FileFacts {
             .filter(|def| def.name_range == range)
     }
 
-    /// Type definitions whose own name or full-name tail matches `name` case-insensitively.
-    pub fn type_defs_named_case_insensitive(&self, name: &str) -> impl Iterator<Item = &TypeDef> {
-        let key = SmolStr::new(name.to_ascii_lowercase());
-        self.type_defs_by_lower_name
-            .get(&key)
-            .into_iter()
-            .flat_map(move |indices| {
-                indices
-                    .iter()
-                    .filter_map(|&index| self.type_defs.get(index))
-            })
-    }
-
-    /// Nearest type definition whose name ends before `start` (used to associate
-    /// differently-named runtime tables with their preceding `---@enum`/`---@class`).
+    /// Nearest type definition whose name ends before `start` (positional lookup only; it is
+    /// not a binding relation, use [`Self::type_defs_by_owner_syntax`] for that).
     pub fn nearest_type_def_before(&self, start: TextSize) -> Option<&TypeDef> {
         let index = self
             .type_defs_by_name_end
@@ -969,21 +973,6 @@ impl FactsBuilder {
             .enumerate()
             .map(|(i, def)| (def.name.clone(), i))
             .collect::<HashMap<_, _>>();
-        let mut type_defs_by_lower_name: HashMap<SmolStr, Vec<usize>> = HashMap::new();
-        for (index, def) in self.type_defs.iter().enumerate() {
-            type_defs_by_lower_name
-                .entry(SmolStr::new(def.name.to_ascii_lowercase()))
-                .or_default()
-                .push(index);
-            if let Some(bare_name) = def.full_name.rsplit('.').next()
-                && bare_name != def.name.as_str()
-            {
-                type_defs_by_lower_name
-                    .entry(SmolStr::new(bare_name.to_ascii_lowercase()))
-                    .or_default()
-                    .push(index);
-            }
-        }
         let mut type_defs_by_name_end = self
             .type_defs
             .iter()
@@ -1096,7 +1085,6 @@ impl FactsBuilder {
             members_by_name,
             type_def_by_full_name,
             type_def_by_name,
-            type_defs_by_lower_name,
             type_defs_by_name_end,
             type_defs_by_owner_syntax,
             decl_by_value_syntax,
@@ -1110,7 +1098,8 @@ impl FactsBuilder {
     }
 
     fn collect_doc_comment(&mut self, comment: &LuaComment, text: &str) {
-        let owner_syntax = comment.get_owner().map(|owner| owner.get_syntax_id());
+        let owner = comment.get_owner();
+        let owner_syntax = owner.as_ref().map(|owner| owner.get_syntax_id());
         if let Some(owner_syntax) = owner_syntax {
             self.doc_comment_owners.insert(owner_syntax);
         }
@@ -1347,12 +1336,10 @@ impl FactsBuilder {
                     if let Some(doc_type) = overload_tag.get_type() {
                         // Comment block on a function statement → signature overload;
                         // `---@overload` immediately after `---@class X` → type call overload.
-                        let owner_is_function = owner_syntax.is_some_and(|owner| {
-                            matches!(
-                                owner.get_kind(),
-                                LuaSyntaxKind::FuncStat | LuaSyntaxKind::LocalFuncStat
-                            )
-                        });
+                        // Function values assigned in a local/assignment statement
+                        // (`local add = function(...)`) also document the signature.
+                        let owner_is_function =
+                            owner.as_ref().is_some_and(doc_owner_has_function_value);
                         if !owner_is_function
                             && let Some(type_def_id) = self.current_class.clone()
                             && let Some(def) =
@@ -1552,6 +1539,7 @@ impl FactsBuilder {
         };
         // Integer keys in `@field [1]` are encoded as `LuaMemberKey::Integer` (matching index expression keys).
         let member_key = match &key {
+            LuaDocFieldKey::Type(_) => LuaMemberKey::None,
             LuaDocFieldKey::Integer(token) => match token.get_number_value() {
                 NumberResult::Int(i) => LuaMemberKey::Integer(i),
                 _ => LuaMemberKey::Name(doc_field_key_name(&key)),
@@ -1566,7 +1554,10 @@ impl FactsBuilder {
             member_key,
             type_def_id,
         );
-        member.is_index_signature = matches!(key, LuaDocFieldKey::Type(_));
+        member.index_key_syntax = match &key {
+            LuaDocFieldKey::Type(ty) => Some(ty.get_syntax_id()),
+            _ => None,
+        };
         member.is_nullable = field_tag.is_nullable();
         member.value_syntax = field_tag
             .get_type()
@@ -1886,7 +1877,8 @@ impl FactsBuilder {
             return;
         };
         let mut segments = Vec::new();
-        let Some(owner) = self.resolve_member_owner(prefix, &mut segments) else {
+        let Some((owner, implicit_self)) = self.resolve_member_owner_id(prefix, &mut segments)
+        else {
             return;
         };
         // `_G.name = value` / `_ENV.name = value` also defines a real global declaration.
@@ -1908,6 +1900,7 @@ impl FactsBuilder {
         );
         member.value_syntax = value_syntax;
         member.is_method = is_method;
+        member.implicit_self = implicit_self;
         member.deprecated = self.current_comment_deprecated;
         // A `---@type` annotation on the assignment statement is also attached to the runtime member, as a fallback annotation for flow member assignment.
         if member.doc_type_syntax.is_none()
@@ -1920,44 +1913,31 @@ impl FactsBuilder {
         self.members.push(member);
     }
 
-    /// Resolves a member owner's prefix into `SemanticId`.
-    /// Local root → `Decl(local)`, or `Member(table literal)` under a path; global root → `Name(full path "a.b")` (linked in phase 2).
+    /// Resolves a member owner's prefix into `(owner, implicit_self, reached)`.
+    /// Local root → `Decl(local)`, or `Member(table literal)` under a path; global root → `Name(root)`
+    /// with `segments` collected, qualified exactly once by [`Self::resolve_member_owner_id`].
+    ///
+    /// `implicit_self` is the syntax id of the enclosing method closure when the chain is rooted at an
+    /// implicit `self`, so callers can keep per-method grouping (e.g. duplicate-field checks).
+    /// `reached` is whether every segment of a local-rooted path reached its table.
     fn resolve_member_owner(
         &self,
         expr: LuaExpr,
         segments: &mut Vec<SmolStr>,
-    ) -> Option<SemanticId> {
-        self.resolve_member_owner_path(expr, segments)
-            .map(|(owner, _)| owner)
-    }
-
-    /// `resolve_member_owner`, plus whether every segment of a local-rooted path reached its table.
-    fn resolve_member_owner_path(
-        &self,
-        expr: LuaExpr,
-        segments: &mut Vec<SmolStr>,
-    ) -> Option<(SemanticId, bool)> {
+    ) -> Option<(SemanticId, Option<LuaSyntaxId>, bool)> {
         match expr {
             // `(t).x = v` is equivalent to `t.x = v`; the member belongs to the same underlying declaration.
-            LuaExpr::ParenExpr(paren) => {
-                self.resolve_member_owner_path(paren.get_expr()?, segments)
-            }
+            LuaExpr::ParenExpr(paren) => self.resolve_member_owner(paren.get_expr()?, segments),
             LuaExpr::IndexExpr(parent) => {
                 let segment = parent
                     .get_index_key()
                     .map(|k| k.get_path_part())
                     .and_then(|p| (!p.is_empty()).then(|| SmolStr::new(p)))?;
-                let (owner, reached) =
-                    self.resolve_member_owner_path(parent.get_prefix_expr()?, segments)?;
+                let (owner, implicit_self, reached) =
+                    self.resolve_member_owner(parent.get_prefix_expr()?, segments)?;
                 segments.push(segment);
-                // Global root: rebuild the full path (root name + all segments, e.g. "M.N").
-                if let SemanticId::Name(root) = &owner {
-                    let mut path = root.as_str().to_string();
-                    for s in segments.iter() {
-                        path.push('.');
-                        path.push_str(s);
-                    }
-                    return Some((SemanticId::name(SmolStr::new(path)), true));
+                if matches!(owner, SemanticId::Name(_)) {
+                    return Some((owner, implicit_self, true));
                 }
                 // Local root: `M.A.f` belongs to the table `M.A` holds, not to `M`. A path stops at
                 // the deepest table it reached (`resolve_expr_root` resolves reads the same way).
@@ -1970,25 +1950,55 @@ impl FactsBuilder {
                         nested_table_owner(self.members.iter(), &owner, &key, parent.get_position())
                     });
                 Some(match table {
-                    Some(table) => (table, true),
-                    None => (owner, false),
+                    Some(table) => (table, implicit_self, true),
+                    None => (owner, implicit_self, false),
                 })
             }
             LuaExpr::NameExpr(name_expr) => {
                 let name = name_expr.get_name_text()?;
                 if name == "_ENV" || name == "_G" {
-                    return Some((SemanticId::name(SmolStr::new(&name)), true));
+                    return Some((SemanticId::name(SmolStr::new(&name)), None, true));
                 }
                 let offset = name_expr.get_position();
                 if let Some(decl) = self.find_visible_decl_before_offset(&name, offset)
                     && !matches!(decl.kind, DeclKind::Global)
                 {
-                    return Some((decl.id.clone(), true));
+                    if decl.is_implicit_self {
+                        let closure = decl.owner_syntax;
+                        let resolved = implicit_self_receiver_prefix(decl, &name_expr)
+                            .and_then(|receiver| self.resolve_member_owner(receiver, segments));
+                        return match resolved {
+                            Some((owner, _, reached)) => Some((owner, closure, reached)),
+                            None => Some((decl.id.clone(), closure, true)),
+                        };
+                    }
+                    return Some((decl.id.clone(), None, true));
                 }
-                Some((SemanticId::name(SmolStr::new(name)), true))
+                Some((SemanticId::name(SmolStr::new(name)), None, true))
             }
             _ => None,
         }
+    }
+
+    ///  `M` + `["N", "O"]` → `Name("M.N.O")`
+    fn resolve_member_owner_id(
+        &self,
+        expr: LuaExpr,
+        segments: &mut Vec<SmolStr>,
+    ) -> Option<(SemanticId, Option<LuaSyntaxId>)> {
+        let (owner, implicit_self, _) = self.resolve_member_owner(expr, segments)?;
+        let owner = match &owner {
+            SemanticId::Name(root) => {
+                let mut path = root.as_str().to_string();
+                for segment in segments.iter() {
+                    path.push('.');
+                    path.push_str(segment);
+                }
+                SemanticId::name(SmolStr::new(path))
+            }
+            _ => owner,
+        };
+        Some((owner, implicit_self))
     }
 
     /// Direct fields of `{ foo = 1, ... }` → owner = the local declaring the table (`Decl`).
@@ -2717,4 +2727,19 @@ fn line_range(text: &str, line: usize) -> Option<TextRange> {
         TextSize::from(start as u32),
         TextSize::from(end as u32),
     ))
+}
+
+/// 获得隐式 `self` 引用的成员归属
+pub(crate) fn implicit_self_receiver_prefix(
+    self_decl: &Decl,
+    name_expr: &LuaNameExpr,
+) -> Option<LuaExpr> {
+    let closure = name_expr
+        .ancestors::<LuaClosureExpr>()
+        .find(|closure| Some(closure.get_syntax_id()) == self_decl.owner_syntax)?;
+    let LuaVarExpr::IndexExpr(method) = closure.get_parent::<LuaFuncStat>()?.get_func_name()?
+    else {
+        return None;
+    };
+    method.get_prefix_expr()
 }

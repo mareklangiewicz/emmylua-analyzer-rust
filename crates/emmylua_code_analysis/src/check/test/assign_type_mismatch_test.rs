@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::check::test::{check_source, check_source_with_emmyrc};
-    use crate::{DiagnosticCode, Emmyrc, VirtualWorkspace};
+    use crate::{DiagnosticCode, Emmyrc, LuaMemberKey, LuaType, VirtualWorkspace};
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn test_numeric_member_guards_use_equivalent_integer_keys() {
@@ -725,6 +726,26 @@ mod tests {
                 "{parameter_type} = {value}: {diagnostics:#?}"
             );
         }
+    }
+
+    #[test]
+    fn test_table_constructor_union_values_check_all_non_nil_alternatives() {
+        let source = r#"
+            ---@param text string?
+            ---@param mixed string|integer|nil
+            local function pack(text, mixed)
+                ---@type string[]
+                local valid = {text}
+                ---@type string[]
+                local invalid = {mixed}
+                return valid, invalid
+            end
+            return pack
+        "#;
+        let diagnostics = check_source(source);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::AssignTypeMismatch);
+        assert_eq!(&source[diagnostics[0].range], "mixed", "{diagnostics:#?}");
     }
 
     #[test]
@@ -1599,6 +1620,19 @@ mod tests {
 local m = {}
 ---@type integer[]
 m.ints = {}
+            "#
+        ));
+
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+---@class A
+---@field x? A
+
+---@type A
+local t
+
+t.x = {}
             "#
         ));
 
@@ -2906,7 +2940,7 @@ return t
         );
         let diagnostics = ws
             .analysis
-            .diagnose_file(file_id, tokio_util::sync::CancellationToken::new())
+            .diagnose_file(file_id, CancellationToken::new())
             .unwrap_or_default();
         let code = Some(lsp_types::NumberOrString::String(
             DiagnosticCode::AssignTypeMismatch.get_name().to_string(),
@@ -2949,7 +2983,7 @@ return t
         );
         let diagnostics = ws
             .analysis
-            .diagnose_file(file_id, tokio_util::sync::CancellationToken::new())
+            .diagnose_file(file_id, CancellationToken::new())
             .unwrap_or_default();
         let code = Some(lsp_types::NumberOrString::String(
             DiagnosticCode::AssignTypeMismatch.get_name().to_string(),
@@ -3002,7 +3036,7 @@ return t
         );
         let diagnostics = ws
             .analysis
-            .diagnose_file(file_id, tokio_util::sync::CancellationToken::new())
+            .diagnose_file(file_id, CancellationToken::new())
             .unwrap_or_default();
         let code = Some(lsp_types::NumberOrString::String(
             DiagnosticCode::AssignTypeMismatch.get_name().to_string(),
@@ -3388,5 +3422,84 @@ return t
                 b:put({ name = 'x' })
             "#
         ));
+    }
+
+    #[test]
+    fn test_cross_file_runtime_member_priority_survives_reload() {
+        let meta = r#"
+            ---@meta
+            ---@class Surface
+            local Api = {}
+            Api.x = 0.5
+            return Api
+            "#;
+        let implementation = r#"
+            ---@class (partial) Surface
+            local Impl = {}
+            Impl.x = 1
+            return Impl
+            "#;
+        let consumer = r#"
+            ---@type Surface
+            local value
+            value.x = 0.5
+            return value
+            "#;
+        let mut ws = VirtualWorkspace::new();
+        ws.analysis
+            .diagnostic
+            .enable_only(DiagnosticCode::AssignTypeMismatch);
+        ws.def_files(vec![
+            ("aaa_meta.lua", meta),
+            ("zzz_impl.lua", implementation),
+            ("consumer.lua", consumer),
+        ]);
+        let consumer_uri = ws.virtual_url_generator.new_uri("consumer.lua");
+        let consumer_id = ws.analysis.get_file_id(&consumer_uri).expect("consumer");
+        let snapshot = |ws: &VirtualWorkspace| {
+            let model = ws.analysis.semantic_model(consumer_id);
+            let value = model
+                .file_facts()
+                .expect("facts")
+                .decl_named("value")
+                .expect("value");
+            let ty = model.type_of_decl(&value.id).expect("value type");
+            let member_type = model
+                .member_info(&ty, &LuaMemberKey::Name("x".into()))
+                .expect("member")
+                .typ;
+            let diagnostics = ws
+                .analysis
+                .diagnose_file(consumer_id, CancellationToken::new())
+                .expect("diagnostics");
+            (member_type, diagnostics)
+        };
+        let expected = snapshot(&ws);
+        assert_eq!(expected.0, LuaType::FloatConst(0.5));
+        assert!(expected.1.is_empty(), "{expected:?}");
+
+        // 同内容重载任一声明文件, 不应改变同名成员的类型和诊断.
+        for (name, content) in [
+            ("aaa_meta.lua", meta),
+            ("zzz_impl.lua", implementation),
+            ("aaa_meta.lua", meta),
+        ] {
+            ws.def_file(name, content);
+            assert_eq!(snapshot(&ws), expected, "reload {name}");
+        }
+        ws.def_files(vec![
+            ("aaa_meta.lua", meta),
+            ("zzz_impl.lua", implementation),
+            ("consumer.lua", consumer),
+        ]);
+        assert_eq!(snapshot(&ws), expected, "batch rebuild");
+
+        ws.def_file(
+            "consumer.lua",
+            &consumer.replace("value.x = 0.5", "value.x = 'invalid'"),
+        );
+        let changed = snapshot(&ws);
+        assert_eq!(changed.0, expected.0);
+        assert_eq!(changed.1.len(), 1, "{changed:?}");
     }
 }

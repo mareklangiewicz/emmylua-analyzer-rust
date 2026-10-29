@@ -32,6 +32,8 @@ pub struct Member {
     pub module_path: Option<SmolStr>,
     /// Method definition (`:`).
     pub is_method: bool,
+    /// Written through an implicit `self`. Record the syntax id of the function in which it is located.
+    pub implicit_self: Option<LuaSyntaxId>,
     /// `---@deprecated` (same comment block as `@field`).
     pub deprecated: bool,
     /// Access visibility annotation (`@public`/`@protected`/`@private`/`@package`/`@internal`; default Public).
@@ -39,7 +41,7 @@ pub struct Member {
     /// `---@readonly` (annotation owned by this member).
     pub readonly: bool,
     /// `---@field [string] any` index signature.
-    pub is_index_signature: bool,
+    pub index_key_syntax: Option<LuaSyntaxId>,
     /// `---@field x? string` nullable field.
     pub is_nullable: bool,
 }
@@ -59,10 +61,11 @@ impl Member {
             doc_type_syntax: None,
             module_path: None,
             is_method: false,
+            implicit_self: None,
             deprecated: false,
             visibility: VisibilityKind::Public,
             readonly: false,
-            is_index_signature: false,
+            index_key_syntax: None,
             is_nullable: false,
         }
     }

@@ -37,6 +37,60 @@ mod test {
     }
 
     #[test]
+    fn test_array_parent_accepts_empty_and_valid_elements() {
+        for parent in ["Item[]", "ItemArray", "ItemArrayAlias", "ArrayBase<Item>"] {
+            for value in ["{}", "{{name = 'ok'}}"] {
+                let diagnostics = check_source(&format!(
+                    r#"
+---@class Item
+---@field name string
+---@class ItemArray: Item[]
+---@alias ItemArrayAlias Item[]
+---@class ArrayBase<T>: T[]
+---@class Items: {parent}
+---@type Items
+local items = {value}
+---@param values Items
+local function accept(values) return values end
+accept({value})
+return items
+"#
+                ));
+                assert!(diagnostics.is_empty(), "{parent}, {value}: {diagnostics:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_array_parent_checks_container_fields_separately() {
+        for (value, expected) in [
+            ("{name = 1, label = 'items', {name = 'ok'}}", vec![]),
+            ("{name = 1, label = 'items'}", vec![]),
+            ("{label = 'items'}", vec![DiagnosticCode::MissingFields]),
+            ("{name = 1}", vec![DiagnosticCode::MissingFields]),
+        ] {
+            let diagnostics = check_source(&format!(
+                r#"
+---@class Item
+---@field name string
+---@class Metadata
+---@field label string
+---@class Items: Item[], Metadata
+---@field name number
+---@type Items
+local items = {value}
+return items
+"#
+            ));
+            assert_eq!(
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+                expected,
+                "{value}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_sequence_literal_takes_array_member_of_union() {
         // A sequence literal against `Plain|integer[]` is the array, not a `Plain` missing `v`.
         let ok = check_source(
@@ -119,6 +173,260 @@ mod test {
     }
 
     #[test]
+    fn test_array_parent_reports_missing_field_on_element() {
+        for (parent, value) in [
+            ("Item[]", "{{}}"),
+            ("Item[]", "{{name = 'ok'}, {}}"),
+            ("Item[][]", "{{{}}}"),
+        ] {
+            let source = format!(
+                r#"
+---@class Item
+---@field name string
+---@class Items: {parent}
+---@type Items
+local items = {value}
+return items
+"#
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(diagnostics.len(), 1, "{value}: {diagnostics:?}");
+            let diagnostic = &diagnostics[0];
+            assert_eq!(diagnostic.code, DiagnosticCode::MissingFields);
+            assert_eq!(diagnostic.message, "Missing required fields: `name`");
+            assert_eq!(&source[diagnostic.range], "{}");
+        }
+    }
+
+    #[test]
+    fn test_array_parent_checks_elements_in_calls_and_reassignments() {
+        for statement in ["accept({{}})", "items = {{}}"] {
+            let source = format!(
+                r#"
+---@class Item
+---@field name string
+---@class Items: Item[]
+---@type Items
+local items
+---@param values Items
+local function accept(values) return values end
+{statement}
+return items, accept
+"#
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(diagnostics.len(), 1, "{statement}: {diagnostics:?}");
+            assert_eq!(diagnostics[0].code, DiagnosticCode::MissingFields);
+            assert_eq!(&source[diagnostics[0].range], "{}");
+        }
+    }
+
+    #[test]
+    fn test_array_parent_rejects_invalid_element_value() {
+        let diagnostics = check_source(
+            r#"
+---@class Item
+---@field name string
+---@class Items: Item[]
+---@type Items
+local items = {{name = 123}}
+return items
+"#,
+        );
+        assert_eq!(
+            diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            vec![DiagnosticCode::AssignTypeMismatch],
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_generic_index_signature_contracts() {
+        for (value, expected) in [
+            ("{integer = true, [1] = 'ok'}", vec![]),
+            (
+                "{integer = true, [1] = false}",
+                vec![DiagnosticCode::AssignTypeMismatch],
+            ),
+            (
+                "{integer = true, ['1'] = 'ok'}",
+                vec![DiagnosticCode::InjectField],
+            ),
+            (
+                "{[1] = 'ok'}",
+                vec![
+                    DiagnosticCode::AssignTypeMismatch,
+                    DiagnosticCode::MissingFields,
+                ],
+            ),
+        ] {
+            let diagnostics = check_source(&format!(
+                "
+                ---@class Base<K, V>
+                ---@field [K] V
+
+                ---@class Record: Base<integer, string>
+                ---@field integer boolean
+                ---@type Record
+                local value = {value}
+                return value"
+            ));
+            assert_eq!(
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+                expected,
+                "{value}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_generic_index_signature_on_call_argument() {
+        let diagnostics = check_source(
+            "---@class Dictionary<K, V>
+            ---@field [K] V
+            ---@param value Dictionary<string, boolean>
+            local function accept(value) return value end
+            accept({name = true})
+            accept({name = 'bad'})",
+        );
+        assert!(
+            diagnostics.iter().any(|d| matches!(
+                d.code,
+                DiagnosticCode::AssignTypeMismatch | DiagnosticCode::ParamTypeMismatch
+            )),
+            "{diagnostics:?}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| matches!(
+                d.code,
+                DiagnosticCode::InjectField | DiagnosticCode::MissingFields
+            )),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_index_signature_float_keys_use_numeric_domain() {
+        for (domain, expected) in [
+            ("integer", vec![DiagnosticCode::InjectField]),
+            ("number", vec![]),
+        ] {
+            let diagnostics = check_source(&format!(
+                "---@class Record
+                ---@field [{domain}] string
+                ---@type Record
+                local value = {{[1.5] = 'ok'}}
+                return value"
+            ));
+            assert_eq!(
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+                expected,
+                "{domain}: {diagnostics:?}"
+            );
+        }
+    }
+
+    mod generic_tables {
+        use super::*;
+
+        use DiagnosticCode::ParamTypeMismatch;
+
+        fn assert_diagnostics(source: &str, expected: &[DiagnosticCode]) {
+            let diagnostics = check_source(source);
+            assert_eq!(
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+                expected,
+                "{source}\n{diagnostics:?}"
+            );
+        }
+
+        #[test]
+        fn test_record_constructors_ignore_overwritten_nested_values() {
+            for constructor in [
+                "{item = {}, [key] = {required = 'ok'}}",
+                "({item = {}, [key] = ({required = 'ok'})})",
+            ] {
+                assert_diagnostics(
+                    &format!(
+                        "local key = 'item'\n---@param opts {{item: {{required: string}}}}\nlocal function accept(opts) return opts end\naccept({constructor})\npcall(accept, {constructor})\n---@type {{item: {{required: string}}}}\nlocal value = {constructor}\nreturn value"
+                    ),
+                    &[],
+                );
+            }
+        }
+
+        #[test]
+        fn test_object_index_signatures_allow_nil_entries() {
+            assert_diagnostics(
+                r#"
+                ---@param opts {values: table<string, string>, [string]: string}
+                local function accept(opts) return opts end
+                accept({values = {}, label = nil})
+                "#,
+                &[],
+            );
+        }
+
+        #[test]
+        fn test_generic_table_overload_requires_the_whole_call_to_match() {
+            assert_diagnostics(
+                r#"
+                ---@param values table<integer, string>
+                ---@param mode string
+                ---@overload fun(values: table<string, integer>, mode: integer)
+                local function accept(values, mode) return values, mode end
+                accept({'a'}, 'a')
+                accept({count = 1}, 1)
+                accept({count = 1}, 'a')
+                "#,
+                &[ParamTypeMismatch],
+            );
+        }
+    }
+
+    #[test]
+    fn test_class_method_self_field_diagnostic() {
+        let diagnostics = check_source(
+            r#"
+            ---@class LinkedTableA
+            local M
+
+            function M:init()
+                self.a = 1
+            end
+            "#,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != DiagnosticCode::InjectField),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_class_method_self_field_reference_is_rejected() {
+        let diagnostics = check_source(
+            r#"
+            ---@class LinkedTableA
+
+            ---@type LinkedTableA
+            local M
+
+            function M:init()
+                self.a = 1
+            end
+            "#,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::InjectField),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_table_literal_integral_float_keys() {
         let diagnostics = check_source(
             r#"
@@ -134,6 +442,9 @@ mod test {
             ---@field [9223372036854774784] integer
             ---@type LargeNumeric
             local large = {[9223372036854774784.0] = 1}
+            ---@param value Numeric
+            local function accept(value) return value end
+            accept({[0.0] = 0, [1e0] = 1})
             return decimal, exponent, large
             "#,
         );
@@ -629,10 +940,67 @@ mod test {
             "#
         ));
     }
+    #[test]
+    fn test_partial_class_redeclaration_keeps_self_field() {
+        let diagnostics = check_source(
+            r#"
+            ---@class (partial) Develop.AttrA
+            local M = {}
+
+            ---@class (partial) Develop.AttrA
+
+            function M:__init()
+                self.a = 1
+            end
+            "#,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != DiagnosticCode::InjectField),
+            "{diagnostics:?}"
+        );
+    }
+    #[test]
+    fn test_cross_file_redeclaration_keeps_self_field() {
+        let meta = "---@meta
+
+---@class Ability
+";
+        let good = r#"
+            ---@class (partial) Ability
+            local M = {}
+
+            function M:__init(id)
+                self.id = id
+            end
+            "#;
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file("aaa_meta.lua", meta);
+        let good_id = ws.def_file("zzz_good.lua", good);
+
+        let inject_count = |ws: &VirtualWorkspace| {
+            ws.analysis
+                .diagnose_file(good_id, tokio_util::sync::CancellationToken::new())
+                .unwrap()
+                .into_iter()
+                .filter(|d| {
+                    matches!(&d.code, Some(lsp_types::NumberOrString::String(c)) if c == "inject-field")
+                })
+                .count()
+        };
+        assert_eq!(inject_count(&ws), 0);
+
+        // 重算结果应保持一致.
+        let uri = ws.analysis.get_uri(good_id).expect("uri");
+        ws.analysis.update_file_by_uri(&uri, Some(good.to_string()));
+        assert_eq!(inject_count(&ws), 0);
+    }
 }
 
 // These tests load the standard library because its `table` declaration is
 // what made dictionaries incorrectly look like closed records.
+
 mod dictionary_constructor {
     use crate::{DiagnosticCode, VirtualWorkspace};
     use googletest::prelude::*;
