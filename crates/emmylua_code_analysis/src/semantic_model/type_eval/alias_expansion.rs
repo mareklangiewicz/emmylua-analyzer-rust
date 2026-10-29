@@ -305,7 +305,15 @@ fn evaluate_builtin(model: &SemanticModel, ty: &LuaType) -> Option<LuaType> {
             let id = generic.get_base_type_id();
             let params = generic.get_params();
             if matches!(id.get_name(), "std.RawGet" | "RawGet") && params.len() == 2 {
-                return eval_index_access(model, &params[0], &params[1]);
+                // A literal key no member answers (`rawget(t, 'x')` on a plain `table`) is the alias's
+                // own `unknown`, once nothing is left to bind; kept lazy, the `Generic` read as truthy.
+                // Any other key (`keyof B`) may still evaluate later.
+                return eval_index_access(model, &params[0], &params[1]).or_else(|| {
+                    let settled = member_key_from_literal(&params[1]).is_some()
+                        && !ty.contain_tpl()
+                        && !holds_generic_placeholder(model, ty);
+                    settled.then_some(LuaType::Unknown)
+                });
             }
             if id.get_name() == "Merge" && params.len() >= 2 {
                 return eval_merge_call(

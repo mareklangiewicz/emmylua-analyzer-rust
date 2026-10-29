@@ -515,3 +515,28 @@ fn closure_local_from_annotated_member_table_keeps_declared_type() {
         eq(true)
     );
 }
+
+#[googletest::gtest]
+fn rawget_of_a_key_no_member_answers_is_not_always_truthy() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            ---@type table
+            local t = {}
+            local v = rawget(t, 'x')
+            if v then print(v) end
+            ---@param p table
+            local function f(p)
+              local w = rawget(p, 'x')
+              if w then return w end
+            end
+            return f
+            "#
+        ),
+        eq(true)
+    );
+}
