@@ -911,6 +911,10 @@ impl<'a> InferVm<'a> {
                 // `unknown` of `{ ... }`). This preserves exact shapes for runtime integer
                 // indexing like `Pos[cur]` or `points[index]`.
                 if let LuaType::TableConst(_) = &owner.ty {
+                    // An empty `{}` has no known shape, as for a string key.
+                    if !Self::table_literal_has_members(self.model, &owner.ty) {
+                        return Value::plain(LuaType::Unknown);
+                    }
                     let mut types = Vec::new();
                     for info in self.model.member_infos(&owner.ty) {
                         if matches!(info.key, LuaMemberKey::Integer(_))
@@ -918,10 +922,6 @@ impl<'a> InferVm<'a> {
                         {
                             types.push(info.typ.clone());
                         }
-                    }
-                    // An empty `{}` has no known shape, as for a string key.
-                    if !Self::table_literal_has_members(self.model, &owner.ty) {
-                        return Value::plain(LuaType::Unknown);
                     }
                     if !types.iter().any(LuaType::is_optional) {
                         types.push(LuaType::Nil);

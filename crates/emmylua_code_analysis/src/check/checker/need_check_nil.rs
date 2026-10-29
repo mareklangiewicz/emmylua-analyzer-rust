@@ -49,8 +49,7 @@ fn check_call(
     let Some(prefix) = call_expr.get_prefix_expr() else {
         return;
     };
-    let ty = prefix_type(semantic_model, &prefix);
-    if ty.is_nullable() && !is_missing_member(semantic_model, &prefix, &ty) {
+    if may_be_nil(semantic_model, &prefix) {
         context.add_diagnostic(
             DiagnosticCode::NeedCheckNil,
             prefix.get_range(),
@@ -73,18 +72,13 @@ fn check_index(
     let Some(prefix) = index_expr.get_prefix_expr() else {
         return;
     };
-    let ty = prefix_type(semantic_model, &prefix);
-    if ty.is_nullable() && !is_missing_member(semantic_model, &prefix, &ty) {
+    if may_be_nil(semantic_model, &prefix) {
         // An `assert(res[1])` on the RHS of the same assignment can protect the LHS `res[1][1]`;
         // `assert(res[2])` protects a different prefix, so NeedCheckNil is still reported.
         if assign_rhs_asserts_lhs_prefix(&prefix, index_expr) {
             return;
         }
-        context.add_diagnostic(
-            DiagnosticCode::NeedCheckNil,
-            prefix.get_range(),
-            t!("%{name} may be nil", name = prefix.syntax().text()),
-        );
+        report_may_be_nil(context, &prefix);
     }
 }
 
@@ -103,14 +97,22 @@ fn check_len(
     let Some(operand) = unary_expr.get_expr() else {
         return;
     };
-    let ty = prefix_type(semantic_model, &operand);
-    if ty.is_nullable() && !is_missing_member(semantic_model, &operand, &ty) {
-        context.add_diagnostic(
-            DiagnosticCode::NeedCheckNil,
-            operand.get_range(),
-            t!("%{name} may be nil", name = operand.syntax().text()),
-        );
+    if may_be_nil(semantic_model, &operand) {
+        report_may_be_nil(context, &operand);
     }
+}
+
+fn may_be_nil(semantic_model: &SemanticModel<'_>, prefix: &LuaExpr) -> bool {
+    let ty = prefix_type(semantic_model, prefix);
+    ty.is_nullable() && !is_missing_member(semantic_model, prefix, &ty)
+}
+
+fn report_may_be_nil(context: &mut CheckContext<'_>, prefix: &LuaExpr) {
+    context.add_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        prefix.get_range(),
+        t!("%{name} may be nil", name = prefix.syntax().text()),
+    );
 }
 
 /// A member the prefix's type does not have reads as `nil`; that is undefined-field's diagnosis,

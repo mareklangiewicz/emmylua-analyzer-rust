@@ -821,17 +821,19 @@ pub(crate) fn type_of_expr_at_node(
                 let member_ty = guarded(member_ty);
                 return apply_casts(member_ty, AsOnly);
             }
+            let loop_index = index_expr.get_prefix_expr().is_some_and(|prefix| {
+                matches!(index_expr.get_index_key(), Some(emmylua_parser::LuaIndexKey::Expr(key_expr))
+                    if numeric_for_loop_index(model, &key_expr, &prefix))
+            });
             // Inside a `#d == n` branch, `d[1]` no longer carries nil when the array length is known.
-            if let Some(known_ty) = array_index_with_known_len(model, &index_expr, offset) {
+            if let Some(known_ty) =
+                array_index_with_known_len(model, &index_expr, offset, loop_index)
+            {
                 return apply_casts(known_ty, All);
             }
             let mut ty = model.type_of_expr_node(&expr);
             // `for i = 1, #t do t[i]`: within `t`'s border whatever `t` is (a `{ ... }` literal, say).
-            if let Some(prefix) = index_expr.get_prefix_expr()
-                && let Some(emmylua_parser::LuaIndexKey::Expr(key_expr)) =
-                    index_expr.get_index_key()
-                && numeric_for_loop_index(model, &key_expr, &prefix)
-            {
+            if loop_index {
                 ty = remove_type(ty, &LuaType::Nil);
             }
             let ty = guarded_index_type(model, index_expr, offset, &ty).unwrap_or(ty);
@@ -1275,18 +1277,18 @@ fn array_index_in_known_range(index: i64, len: &LuaArrayLen) -> bool {
 }
 
 /// If the index is an integer constant and the prefix array already has a known length bound on the flow path, return the in-bounds element type.
-/// Also recognizes loop variable indexes like `for i = 1, #arr do arr[i]`.
+/// Also recognizes loop variable indexes like `for i = 1, #arr do arr[i]` (`loop_index`, from
+/// `numeric_for_loop_index`).
 fn array_index_with_known_len(
     model: &SemanticModel,
     index_expr: &emmylua_parser::LuaIndexExpr,
     offset: TextSize,
+    loop_index: bool,
 ) -> Option<LuaType> {
     let prefix = index_expr.get_prefix_expr()?;
     let LuaExpr::NameExpr(name_expr) = &prefix else {
         // `for i = 1, #t.list do t.list[i]`: the same bound on a field path.
-        if let Some(emmylua_parser::LuaIndexKey::Expr(key_expr)) = index_expr.get_index_key()
-            && numeric_for_loop_index(model, &key_expr, &prefix)
-        {
+        if loop_index {
             return match model.type_of_expr_at(prefix.get_syntax_id(), offset) {
                 LuaType::Array(array) => Some(array.get_base().clone()),
                 LuaType::Union(union) => union.into_vec().into_iter().find_map(|ty| match ty {
@@ -1307,9 +1309,9 @@ fn array_index_with_known_len(
 
     let index_key = index_expr.get_index_key()?;
     match index_key {
-        emmylua_parser::LuaIndexKey::Expr(key_expr) => {
+        emmylua_parser::LuaIndexKey::Expr(_) => {
             // Inside a numeric for loop body, `i` is guaranteed to be in `1..#arr`.
-            if numeric_for_loop_index(model, &key_expr, &prefix) {
+            if loop_index {
                 for component in &components {
                     if let LuaType::Array(array) = component {
                         return Some(array.get_base().clone());
@@ -2689,10 +2691,9 @@ enum Narrowing {
     ArrayMinLen(i64),
 }
 
-/// After hitting a base type, apply the path state: first apply guard narrowing in "far → near" order,
-/// then apply `---@cast +T` widening last — casts are cumulative widening on the declaration and narrowing cannot erase them.
+/// After hitting a base type, apply the path state in program order, earliest guard or cast first:
+/// each cast's `narrowings.len()` mark splits the guards met before it from those met after.
 fn finalize(model: &SemanticModel, mut base: LuaType, path: &PathState) -> LuaType {
-    // Program order: earliest guard or cast first.
     let mut later = path.narrowings.len();
     for (met_at, cast) in path.casts.iter().rev() {
         for narrowing in path.narrowings[*met_at..later].iter().rev() {
