@@ -842,6 +842,19 @@ fn check_arg_pairs(
         if function_arg_compatible(semantic_model, &call_arg_ty, &param_ty, bindings) {
             continue;
         }
+        // A function argument's `---@overload`s are candidates as when it is called:
+        // `fold(0, fun.succ)` fits through `fun(n: integer): integer`.
+        if matches!(
+            call_arg_ty,
+            LuaType::DocFunction(_) | LuaType::Signature(_) | LuaType::Union(_)
+        ) && matches!(arg, LuaExpr::NameExpr(_) | LuaExpr::IndexExpr(_))
+            && callable_candidates(semantic_model, arg).iter().any(|fun| {
+                let fun = LuaType::DocFunction(Rc::new(fun.clone()));
+                function_arg_compatible(semantic_model, &fun, &param_ty, bindings)
+            })
+        {
+            continue;
+        }
         if call_arg_ty == param_ty {
             continue;
         }

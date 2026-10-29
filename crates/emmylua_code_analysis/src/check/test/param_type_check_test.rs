@@ -1780,6 +1780,62 @@ mod test {
     }
 
     #[test]
+    fn test_required_module_function_overload_as_callback() {
+        const FUN: &str = r#"
+            local M = {}
+            ---@param n number
+            ---@return number
+            ---@overload fun(n: integer): integer
+            function M.succ(n) return n + 1 end
+            return M
+        "#;
+        const CALLERS: &str = r#"
+            ---@param f fun(acc: integer): integer
+            local function plain(f) end
+            ---@generic A
+            ---@param init A
+            ---@param f fun(acc: A): A
+            ---@return A
+            local function fold(init, f) return f(init) end
+        "#;
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file("fun.lua", FUN);
+
+        // A function's `---@overload` answers a callback param whether the function is a member of
+        // this file's module or of a `require`d one.
+        let local = format!("{}{}", FUN.replace("return M", ""), CALLERS)
+            + "plain(M.succ)\nlocal _ = fold(0, M.succ)\n";
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &local));
+        let required = format!("local M = require 'fun'\n{CALLERS}")
+            + "plain(M.succ)\nlocal _ = fold(0, M.succ)\n";
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &required));
+        let direct = format!("{CALLERS}local _ = fold(0, require('fun').succ)\n");
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &direct));
+        let local_function = format!(
+            "{}{CALLERS}plain(succ)\nlocal _ = fold(0, succ)\n",
+            FUN.replace("local M = {}", "")
+                .replace("function M.succ", "local function succ")
+                .replace("return M", "")
+        );
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &local_function));
+
+        // No signature fits: still a mismatch.
+        ws.def_file(
+            "name.lua",
+            r#"
+            local M = {}
+            ---@param s string
+            ---@return string
+            ---@overload fun(s: string, n: integer): string
+            function M.name(s) return s end
+            return M
+        "#,
+        );
+        let unfit = format!("local N = require 'name'\n{CALLERS}plain(N.name)\n");
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, &unfit));
+    }
+
+    #[test]
     fn test_required_module_field_as_argument() {
         let mut ws = VirtualWorkspace::new();
         ws.def_file(
