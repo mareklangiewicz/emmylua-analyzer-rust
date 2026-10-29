@@ -1132,17 +1132,32 @@ impl<'a> InferVm<'a> {
             if type_has_member {
                 continue;
             }
-            // Cross-file member association.
+            // Cross-file member association. A member with a declared `---@type` wins over plain
+            // assignments of the same key (`sp.state = {…}` in a spec file), as in `resolve_member`;
+            // otherwise the first one in discovery order.
             let members = self.model.members_of_owner(&owner_id);
-            if let Some(member) = members.into_iter().find(|m| match key {
-                LuaMemberKey::Name(name) => &m.name == name,
-                LuaMemberKey::Integer(_) => self
-                    .model
+            let matching: Vec<_> = members
+                .into_iter()
+                .filter(|m| match key {
+                    LuaMemberKey::Name(name) => &m.name == name,
+                    LuaMemberKey::Integer(_) => self
+                        .model
+                        .file_facts_of(m.file_id)
+                        .and_then(|facts| facts.member_by_id(&m.id))
+                        .is_some_and(|member| &member.key == key),
+                    _ => false,
+                })
+                .collect();
+            let declared = matching.iter().position(|m| {
+                self.model
                     .file_facts_of(m.file_id)
                     .and_then(|facts| facts.member_by_id(&m.id))
-                    .is_some_and(|member| &member.key == key),
-                _ => false,
-            }) {
+                    .is_some_and(|member| member.doc_type_syntax.is_some())
+            });
+            if let Some(member) = declared
+                .or((!matching.is_empty()).then_some(0))
+                .map(|index| matching[index].clone())
+            {
                 if self.computing.contains(&member.id) {
                     return Value::plain(LuaType::Unknown);
                 }

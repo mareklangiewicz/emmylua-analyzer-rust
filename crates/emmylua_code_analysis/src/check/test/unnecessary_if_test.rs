@@ -422,6 +422,49 @@ mod test {
             "#
         ));
     }
+
+    /// A test that swaps a module's state table wholesale (`sp.state = { active = true }`) from
+    /// another file must not replace the member's declared `---@type`: every other reader of
+    /// `sp.state.active` still sees `boolean` (myhypr stickysuper.lua vs stickysuper_spec.lua).
+    /// Both file orders, so "first member wins" cannot pass by luck of the file ids.
+    #[test]
+    fn test_declared_member_type_wins_over_cross_file_literal_assign() {
+        let module = (
+            "sp.lua",
+            r#"
+            local M = {}
+            ---@type { active: boolean, prev: string? }
+            M.state = { active = false, prev = nil }
+            return M
+            "#,
+        );
+        let spec = (
+            "spec.lua",
+            r#"
+            local sp = require 'sp'
+            sp.state = { active = true, prev = nil }
+            "#,
+        );
+        for files in [vec![module, spec], vec![spec, module]] {
+            let order: Vec<_> = files.iter().map(|(name, _)| *name).collect();
+            let mut ws = VirtualWorkspace::new();
+            ws.def_files(files);
+            let ty = ws.expr_ty("require('sp').state.active");
+            assert_eq!(ws.humanize_type(ty), "boolean", "{order:?}");
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::UnnecessaryIf,
+                    r#"
+                    local sp = require 'sp'
+                    local function leave()
+                        if sp.state.active then print 'y' end
+                    end
+                    "#
+                ),
+                "{order:?}"
+            );
+        }
+    }
 }
 
 #[googletest::gtest]

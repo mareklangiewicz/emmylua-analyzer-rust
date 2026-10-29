@@ -916,7 +916,10 @@ fn collect_members(
                     &mut component_members,
                     filter,
                 );
-                for info in component_members {
+                // A declared `---@type` member is the whole answer for its key within a component:
+                // a module is `Ref(M) | TableConst`, so `sp.state = {…}` in a spec must not union into
+                // the declared `M.state`. Undeclared duplicates still merge (`---@meta` overloads).
+                for info in keep_declared_by_key(model, component_members) {
                     if let Some(existing) = out.iter_mut().find(|existing| existing.key == info.key)
                     {
                         if existing.typ != info.typ {
@@ -1221,6 +1224,38 @@ pub(super) fn projected_member_type(
 }
 
 /// Deduplicate by key (keep first: collection order = this class's @field → parent → runtime values).
+/// For each key that has a member with a declared `---@type`, drop that key's other members.
+fn keep_declared_by_key(model: &SemanticModel, infos: Vec<MemberInfo>) -> Vec<MemberInfo> {
+    let is_declared = |info: &MemberInfo| {
+        let (Some(id), Some(file_id)) = (&info.id, info.file_id) else {
+            return false;
+        };
+        model
+            .file_facts_of(file_id)
+            .and_then(|facts| facts.member_by_id(id))
+            .is_some_and(|member| member.doc_type_syntax.is_some())
+    };
+    let declared: Vec<LuaMemberKey> = infos
+        .iter()
+        .filter(|info| is_declared(info))
+        .map(|info| info.key.clone())
+        .collect();
+    let mut kept: Vec<LuaMemberKey> = Vec::new();
+    infos
+        .into_iter()
+        .filter(|info| {
+            if !declared.contains(&info.key) {
+                return true;
+            }
+            if kept.contains(&info.key) || !is_declared(info) {
+                return false;
+            }
+            kept.push(info.key.clone());
+            true
+        })
+        .collect()
+}
+
 pub(super) fn dedup_by_key(infos: Vec<MemberInfo>) -> Vec<MemberInfo> {
     let mut seen: Vec<LuaMemberKey> = Vec::new();
     let mut out = Vec::new();
