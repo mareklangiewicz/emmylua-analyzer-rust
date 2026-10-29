@@ -949,4 +949,35 @@ mod test {
         "#
         ));
     }
+    #[test]
+    fn test_method_keyof_owner_class_generic_on_call_receiver() {
+        // The receiver is a call's result (`Box.from(roots):get(k)`): its first value binds `T`.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Root
+            ---@field root string
+
+            ---@class Box<T>
+            local Box = {}
+
+            ---@generic K: keyof T
+            ---@param k K
+            ---@return std.RawGet<T, K>
+            function Box:get(k) end
+
+            ---@generic T
+            ---@param t T[]
+            ---@return Box<T>
+            function Box.from(t) end
+        "#,
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::GenericConstraintMismatch,
+            r#"
+            local roots = {} ---@type Root[]
+            local typo = Box.from(roots):get('roott')
+        "#
+        ));
+    }
 }

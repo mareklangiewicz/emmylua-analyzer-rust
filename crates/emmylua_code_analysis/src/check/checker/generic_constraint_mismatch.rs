@@ -22,6 +22,7 @@ use crate::{
     LuaType, LuaUnionType,
 };
 
+use super::check_field::static_member_key;
 use super::param_count::{call_arg_param_index, first_param_is_self};
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
@@ -345,10 +346,22 @@ fn signature_docs_of_callee(
             Some((decl.file_id, decl.value_expr_syntax?))
         }
         LuaExpr::IndexExpr(index_expr) => {
-            let resolved = semantic_model.resolve_member(index_expr)?;
-            let member_file = resolved.file_id?;
+            let (member_file, member_id) = match semantic_model.resolve_member(index_expr) {
+                Some(resolved) => (resolved.file_id?, resolved.member_id?),
+                // A call's result has no syntactic owner (`Box.from(t):get`): find the member
+                // through the prefix's type.
+                None => {
+                    let prefix = index_expr.get_prefix_expr()?;
+                    let prefix_ty = semantic_model
+                        .type_of_expr(prefix.get_syntax_id())
+                        .get_result_slot_type(0)?;
+                    let key = static_member_key(semantic_model, &index_expr.get_index_key()?)?;
+                    let info = semantic_model.member_info(&prefix_ty, &key)?;
+                    (info.file_id?, info.id?)
+                }
+            };
             let facts = semantic_model.file_facts_of(member_file)?;
-            let member = facts.member_by_id(&resolved.member_id?)?;
+            let member = facts.member_by_id(&member_id)?;
             Some((member_file, member.value_syntax?))
         }
         _ => None,
