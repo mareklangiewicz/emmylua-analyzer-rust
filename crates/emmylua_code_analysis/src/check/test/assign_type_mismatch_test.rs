@@ -3511,6 +3511,42 @@ return t
     }
 
     #[test]
+    fn test_member_reassignment_checks_against_the_declared_field() {
+        // A second write to a declared field is checked against the declaration, not against the
+        // type the first write gave it.
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Ans
+                ---@class Acc : Ans
+                ---@class Dec : Ans
+
+                ---@param acc Acc
+                ---@param dec Dec
+                local function f(acc, dec)
+                    local seen = {} ---@type { request: any, answer: any }
+                    seen.answer = acc
+                    print(seen.answer)
+                    seen.answer = dec
+                    local s3 = {} ---@type { answer: any }
+                    s3.answer = 1
+                    s3.answer = 'x'
+                end
+                return f
+            "#
+        ));
+        assert!(!ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                local s = {} ---@type { answer: integer }
+                s.answer = 1
+                s.answer = 'x'
+            "#
+        ));
+    }
+
+    #[test]
     fn test_cross_file_runtime_member_priority_survives_reload() {
         let meta = r#"
             ---@meta

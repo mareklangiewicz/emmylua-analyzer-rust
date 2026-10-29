@@ -15,7 +15,8 @@ use crate::semantic_model::infer::unify::{TplBindings, substitute};
 use crate::semantic_model::infer::vm::bind_signature_generics;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
 use crate::{
-    Decl, GenericTpl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind,
+    Decl, GenericTpl, LuaMemberKey, LuaType, LuaTypeNode, MemberInfo, SemanticId, TypeDef,
+    TypeDefKind,
 };
 
 use super::param_count::call_arg_param_index;
@@ -440,29 +441,43 @@ fn check_member_assign(
         member_id,
         semantic_model.type_of_member_at(member_id, target_offset),
     );
-    // `t.x = value`: resolve_member first returns the synthesized member for this assignment; prefer the same-named member on the prefix's declared type.
+    // `t.x = value`: resolve_member returns a member some assignment synthesized (this one, or an
+    // earlier `t.x = ...`, whose value would otherwise become the contract); prefer the same-named
+    // member on the prefix's declared type.
     if let Some(facts) = semantic_model.file_facts()
         && let Some(member) = facts.member_by_id(member_id)
     {
-        if member.value_syntax == Some(value_expr.get_syntax_id()) {
-            let SemanticId::Decl(owner) = &member.owner else {
-                return check_value_against_target(context, semantic_model, &target, value_expr);
-            };
-            let prefix_ty = semantic_model
-                .type_of_decl_unwidened_at(&SemanticId::Decl(owner.clone()), target_offset);
-            let key = member.key.clone();
-            let infos = semantic_model.member_infos_with_key(&prefix_ty, &key);
-            let declared_ty = infos
-                .into_iter()
-                .find(|info| info.id.as_ref() != Some(member_id))
-                .map(|info| match info.id {
-                    Some(id) => semantic_model.member_assignment_type(&id, info.typ),
-                    None => info.typ,
-                })
-                .or_else(|| semantic_model.member_type(&prefix_ty, &key));
-            if let Some(declared_ty) = declared_ty {
-                target = declared_ty;
+        let own = member.value_syntax == Some(value_expr.get_syntax_id());
+        match &member.owner {
+            SemanticId::Decl(owner) if own || member.doc_type_syntax.is_none() => {
+                let prefix_ty = semantic_model
+                    .type_of_decl_unwidened_at(&SemanticId::Decl(owner.clone()), target_offset);
+                let key = member.key.clone();
+                let infos = semantic_model.member_infos_with_key(&prefix_ty, &key);
+                // For an earlier write's member, only a field the prefix declares can stand in:
+                // an untyped `local M = {}` has none, and its first write stays the contract.
+                let declared = |info: &MemberInfo| match &info.id {
+                    None => true,
+                    Some(id) => facts
+                        .member_by_id(id)
+                        .is_some_and(|member| member.doc_type_syntax.is_some()),
+                };
+                let declared_ty = infos
+                    .into_iter()
+                    .find(|info| info.id.as_ref() != Some(member_id) && (own || declared(info)))
+                    .map(|info| match info.id {
+                        Some(id) => semantic_model.member_assignment_type(&id, info.typ),
+                        None => info.typ,
+                    })
+                    .or_else(|| own.then(|| semantic_model.member_type(&prefix_ty, &key))?);
+                if let Some(declared_ty) = declared_ty {
+                    target = declared_ty;
+                }
             }
+            _ if own => {
+                return check_value_against_target(context, semantic_model, &target, value_expr);
+            }
+            _ => {}
         }
     }
     let value_ty =
