@@ -4078,7 +4078,11 @@ pub(crate) fn unify_call_bindings(
                                 .saturating_sub(trailing)
                         };
                         let consume = consume.min(arg_params.len().saturating_sub(arg_index));
-                        let remaining: Vec<LuaType> = arg_params[arg_index..arg_index + consume]
+                        // `arg_index` can be past the end: the ordinary params before this
+                        // slot advance it even when the callback declares fewer params.
+                        let remaining: Vec<LuaType> = arg_params
+                            .get(arg_index..arg_index + consume)
+                            .unwrap_or_default()
                             .iter()
                             .filter_map(|p| p.1.clone())
                             .collect();

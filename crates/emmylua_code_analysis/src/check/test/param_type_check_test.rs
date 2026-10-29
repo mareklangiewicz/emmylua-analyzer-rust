@@ -3267,4 +3267,23 @@ mod test {
             "{diagnostics:#?}"
         );
     }
+
+    /// A callback with fewer params than the expected function's fixed prefix, where a
+    /// variadic follows that prefix. The variadic's slice of the callback's params started
+    /// past their end and panicked (one gate file per run, its diagnostics lost).
+    #[test]
+    fn test_short_callback_against_variadic_tail_does_not_panic() {
+        let diagnostics = check_source(
+            r#"
+            ---@param f fun(x: integer, ...: string)
+            local function g(f) end
+            g(function() end)
+        "#,
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+            0,
+            "{diagnostics:#?}"
+        );
+    }
 }
