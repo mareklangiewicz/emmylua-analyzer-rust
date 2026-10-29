@@ -79,6 +79,20 @@ pub(crate) fn check_source_with_emmyrc(source: &str, emmyrc: Emmyrc) -> Vec<Diag
     check_file(&model, config)
 }
 
+/// Each `(source, clean)` case: whether `prefix + source` has no `code` diagnostic, as claimed.
+/// Lists every wrong case.
+#[cfg(test)]
+pub(crate) fn assert_clean_cases(code: DiagnosticCode, prefix: &str, cases: &[(&str, bool)]) {
+    let wrong: Vec<_> = cases
+        .iter()
+        .filter(|(src, clean)| {
+            crate::VirtualWorkspace::new().has_no_diagnostic(code, &format!("{prefix}{src}"))
+                != *clean
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 /// Count diagnostics for the specified code.
 pub(crate) fn count_by_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> usize {
     diagnostics.iter().filter(|d| d.code == code).count()

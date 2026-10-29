@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::check::test::check_source;
+    use crate::check::test::{assert_clean_cases, check_source};
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
@@ -1047,10 +1047,6 @@ mod tests {
                 true,
             ),
         ];
-        let wrong: Vec<_> = cases
-            .iter()
-            .filter(|(src, clean)| VirtualWorkspace::new().has_no_diagnostic(code, src) != *clean)
-            .collect();
-        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert_clean_cases(code, "", &cases);
     }
 }

@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::check::test::{check_source, check_source_with_emmyrc};
+    use crate::check::test::{
+        assert_clean_cases, check_source, check_source_with_emmyrc, count_by_code,
+    };
     use crate::{DiagnosticCode, Emmyrc, LuaMemberKey, LuaType, VirtualWorkspace};
     use tokio_util::sync::CancellationToken;
 
@@ -3758,11 +3760,7 @@ return t
                 true,
             ),
         ];
-        let wrong: Vec<_> = cases
-            .iter()
-            .filter(|(src, clean)| VirtualWorkspace::new().has_no_diagnostic(code, src) != *clean)
-            .collect();
-        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert_clean_cases(code, "", &cases);
     }
 
     /// Overloads are alternatives: a table literal's fields are reported only when no candidate
@@ -3770,17 +3768,15 @@ return t
     #[test]
     fn test_table_literal_fields_follow_the_overload_that_takes_the_call() {
         let assign_mismatches = |call: &str| {
-            check_source(&format!(
+            let diagnostics = check_source(&format!(
                 r#"
                 ---@param o {{a: integer}}
                 ---@overload fun(o: {{a: string}})
                 local function f(o) end
                 {call}
                 "#
-            ))
-            .iter()
-            .filter(|d| d.code == DiagnosticCode::AssignTypeMismatch)
-            .count()
+            ));
+            count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch)
         };
         assert_eq!(assign_mismatches("f({a = 'x'})"), 0);
         assert_eq!(assign_mismatches("f({a = true})"), 1);
@@ -3802,15 +3798,7 @@ return t
             ("---@type integer[]\nlocal x = { 'a', range() }", false),
             ("---@type string[]\nlocal x = { range() }", false),
         ];
-        let wrong: Vec<_> = cases
-            .iter()
-            .filter(|(src, clean)| {
-                VirtualWorkspace::new()
-                    .has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!("{pre}{src}"))
-                    != *clean
-            })
-            .collect();
-        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert_clean_cases(DiagnosticCode::AssignTypeMismatch, pre, &cases);
     }
 
     /// An undocumented closure field is checked by its `return`s (return-type-mismatch,
@@ -3841,6 +3829,11 @@ return t
                 "---@return Drv\nlocal function mk() return {{ {narrowed} }} end"
             )),
             []
+        );
+        // not a function field: the closure itself is the mismatch
+        assert_eq!(
+            codes("---@type {a: integer}\nlocal x = { a = function() end }"),
+            [DiagnosticCode::AssignTypeMismatch]
         );
         assert_eq!(
             codes("---@type Drv\nlocal x = { read = function(p) return 1 end }"),

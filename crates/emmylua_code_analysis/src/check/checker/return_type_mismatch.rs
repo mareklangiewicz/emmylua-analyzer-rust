@@ -11,7 +11,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::is_compatible;
 use crate::{DiagnosticCode, SemanticId, SignatureDoc, TypeDef};
 
-use super::assign_type_mismatch::{check_value_against, is_structured_table_target};
+use super::assign_type_mismatch::{check_table_fields, is_structured_table_target};
 use super::{CheckContext, Checker, own_return_stats};
 use crate::semantic_model::render::humanize_type;
 
@@ -71,11 +71,11 @@ fn check_return_stat(
     for expr in ret.get_expr_list() {
         // The primitive check takes any table literal for a structured type; its fields are
         // checked one by one, as for an assignment.
-        if let LuaExpr::TableExpr(_) = expr
+        if let LuaExpr::TableExpr(table) = &expr
             && is_structured_table_target(semantic_model, expected)
         {
             context.reporting_as(DiagnosticCode::ReturnTypeMismatch, |context| {
-                check_value_against(context, semantic_model, expected, &expr)
+                check_table_fields(context, semantic_model, expected, table)
             });
             continue;
         }

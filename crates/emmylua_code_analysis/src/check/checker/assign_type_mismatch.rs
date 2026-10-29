@@ -154,7 +154,6 @@ fn check_call_args(
     if call.get_prefix_expr().is_none() {
         return;
     }
-    let analysis = semantic_model.call_site_analysis(call);
     let Some(args) = call.get_args_list() else {
         return;
     };
@@ -162,52 +161,50 @@ fn check_call_args(
     if !args.iter().any(|arg| matches!(arg, LuaExpr::TableExpr(_))) {
         return;
     }
-    let [candidate] = analysis.candidates.as_slice() else {
-        // Overloads are alternatives: a candidate that takes the whole call (arguments and
-        // literal fields) reports nothing; else the one that rejects the least is reported.
-        let mut ranked: Vec<_> = analysis
-            .candidates
-            .iter()
-            .filter_map(|candidate| {
-                candidate_rejections(semantic_model, &analysis, candidate, &args)
-                    .map(|rejected| (candidate, rejected))
-            })
-            .collect();
-        // As in param_type_check: when none takes every argument, they all compete.
-        if ranked.is_empty() {
-            ranked = analysis.candidates.iter().map(|c| (c, 0)).collect();
-        }
-        let mut best: Option<(usize, Vec<_>)> = None;
-        for (candidate, rejected) in ranked {
-            let fields = context.collect(|context| {
-                check_call_table_args(
-                    context,
-                    semantic_model,
-                    candidate,
-                    &args,
-                    analysis.colon_call,
-                )
-            });
-            let rank = rejected + fields.len();
-            if rank == 0 {
-                return;
-            }
-            if best.as_ref().is_none_or(|(current, _)| rank < *current) {
-                best = Some((rank, fields));
-            }
-        }
-        if let Some((_, fields)) = best {
-            context.extend_diagnostics(fields);
-        }
+    let analysis = semantic_model.call_site_analysis(call);
+    let colon_call = analysis.colon_call;
+    if let [candidate] = analysis.candidates.as_slice() {
+        check_call_table_args(context, semantic_model, candidate, &args, colon_call);
         return;
-    };
-    check_call_table_args(
-        context,
-        semantic_model,
-        candidate,
-        &args,
-        analysis.colon_call,
-    );
+    }
+    // Overloads are alternatives: a candidate that takes the whole call (arguments and literal
+    // fields) reports nothing; else the one that rejects the least is reported.
+    let mut ranked: Vec<_> = analysis
+        .candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate_rejections(semantic_model, &analysis, candidate, &args)
+                .map(|rejected| (candidate, rejected))
+        })
+        .collect();
+    // As in param_type_check: when none takes every argument, they all compete.
+    if ranked.is_empty() {
+        ranked = analysis.candidates.iter().map(|c| (c, 0)).collect();
+    }
+    let best = least_rejected(ranked.into_iter().map(|(candidate, rejected)| {
+        let fields = context.collect(|context| {
+            check_call_table_args(context, semantic_model, candidate, &args, colon_call)
+        });
+        (rejected + fields.len(), fields)
+    }));
+    if let Some(fields) = best {
+        context.extend_diagnostics(fields);
+    }
+}
+
+/// Among alternatives ranked by how much they reject: `None` when one rejects nothing (the
+/// rest are not tried), else the payload of the first least-rejecting one.
+fn least_rejected<T>(alternatives: impl IntoIterator<Item = (usize, T)>) -> Option<T> {
+    let mut best: Option<(usize, T)> = None;
+    for (rank, payload) in alternatives {
+        if rank == 0 {
+            return None;
+        }
+        if best.as_ref().is_none_or(|(current, _)| rank < *current) {
+            best = Some((rank, payload));
+        }
+    }
+    best.map(|(_, payload)| payload)
 }
 
 fn check_call_table_args(
@@ -553,7 +550,10 @@ fn check_value_against_target(
 }
 
 pub(super) fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
-    if map_params(ty).is_some() {
+    if ty
+        .table_generic_params()
+        .is_some_and(|params| params.len() == 2)
+    {
         return true;
     }
     match ty {
@@ -585,7 +585,7 @@ pub(super) fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty:
     }
 }
 
-pub(super) fn check_value_against(
+fn check_value_against(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
@@ -674,7 +674,7 @@ fn resolve_unbound_generic(semantic_model: &SemanticModel<'_>, ty: LuaType) -> L
     ty
 }
 
-fn check_table_fields(
+pub(super) fn check_table_fields(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
@@ -684,56 +684,38 @@ fn check_table_fields(
     // literal fits if one reports nothing; else the one with the fewest errors is reported, with
     // the array component tried first for a sequence literal.
     if let LuaType::Union(union) = target {
-        let components = union_array_for_sequence(union, table).into_iter().chain(
-            union
-                .into_vec()
-                .into_iter()
-                .filter(|component| is_structured_table_target(semantic_model, component)),
-        );
-        let mut best: Option<Vec<_>> = None;
-        for component in components {
+        let first = union_array_for_sequence(union, table);
+        let components = first
+            .clone()
+            .into_iter()
+            .chain(union.into_vec().into_iter().filter(|component| {
+                Some(component) != first.as_ref()
+                    && is_structured_table_target(semantic_model, component)
+            }));
+        let best = least_rejected(components.map(|component| {
             let found = context
                 .collect(|context| check_table_fields(context, semantic_model, &component, table));
-            if found.is_empty() {
-                return;
-            }
-            if best
-                .as_ref()
-                .is_none_or(|current| found.len() < current.len())
-            {
-                best = Some(found);
-            }
-        }
+            (found.len(), found)
+        }));
         if let Some(found) = best {
             context.extend_diagnostics(found);
         }
         return;
     }
     // Map target `table<K, V>`: every key fits K and every value fits V.
-    if let Some((key_ty, value_ty)) = map_params(target) {
-        for (field, key) in table.get_fields_with_keys() {
-            if !check_table_key(context, semantic_model, &field, &key, key_ty) {
-                continue;
-            }
-            let Some(value_expr) = field.get_value_expr() else {
-                continue;
-            };
-            check_table_value(context, semantic_model, &value_expr, value_ty);
-        }
+    if let Some([key_ty, value_ty]) = target.table_generic_params() {
+        check_keyed_fields(context, semantic_model, table, key_ty, value_ty);
         return;
     }
     // Array target: integer keys, and every element against the element type.
     if let LuaType::Array(array) = target {
-        let expected = array.get_base();
-        for (field, key) in table.get_fields_with_keys() {
-            if !check_table_key(context, semantic_model, &field, &key, &LuaType::Integer) {
-                continue;
-            }
-            let Some(value_expr) = field.get_value_expr() else {
-                continue;
-            };
-            check_table_value(context, semantic_model, &value_expr, expected);
-        }
+        check_keyed_fields(
+            context,
+            semantic_model,
+            table,
+            &LuaType::Integer,
+            array.get_base(),
+        );
         return;
     }
     // Projection form where the `array<T>` alias / `T[]` is not expanded into `Array`.
@@ -751,6 +733,16 @@ fn check_table_fields(
     }
     // Object target: static fields first, then `{[string]: string}` index signatures.
     if let LuaType::Object(object) = target {
+        // An extra field is fine on a plain object, not on one with index signatures.
+        let index_keys = (!object.get_index_access().is_empty()).then(|| {
+            LuaType::from_vec(
+                object
+                    .get_index_access()
+                    .iter()
+                    .map(|(key, _)| key.clone())
+                    .collect(),
+            )
+        });
         for (field, key) in table.get_fields_with_keys() {
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
@@ -764,29 +756,13 @@ fn check_table_fields(
                 continue;
             }
             let key_ty = index_key_type(semantic_model, &key);
-            match semantic_model.applicable_index_infos(target, &key_ty) {
-                Ok(infos) => match infos.first() {
-                    Some(info) => {
-                        check_table_value(context, semantic_model, &value_expr, &info.value_type)
-                    }
-                    // An extra field is fine on a plain object, not on one with index signatures.
-                    None if !object.get_index_access().is_empty() => {
-                        let index_keys = object
-                            .get_index_access()
-                            .iter()
-                            .map(|(key, _)| key.clone())
-                            .collect();
-                        check_table_key(
-                            context,
-                            semantic_model,
-                            &field,
-                            &key,
-                            &LuaType::from_vec(index_keys),
-                        );
-                    }
-                    None => {}
-                },
-                Err(_) => {}
+            let Ok(infos) = semantic_model.applicable_index_infos(target, &key_ty) else {
+                continue;
+            };
+            if let Some(info) = infos.first() {
+                check_table_value(context, semantic_model, &value_expr, &info.value_type);
+            } else if let Some(index_keys) = &index_keys {
+                check_table_key(context, semantic_model, &field, &key, index_keys);
             }
         }
         return;
@@ -878,16 +854,18 @@ fn check_table_fields(
         let expands_from = match fields.last() {
             Some((field, LuaIndexKey::Idx(index), _)) => field
                 .get_value_expr()
-                .map(|value| semantic_model.type_of_expr(value.get_syntax_id()))
+                .map(|value| {
+                    semantic_model.type_of_expr_at(value.get_syntax_id(), value.get_range().start())
+                })
                 .filter(LuaType::is_multi_return)
                 .map(|_| *index as i64),
             _ => None,
         };
         for (key, required_ty) in &required_members {
-            let filled = match (key, expands_from) {
-                (LuaMemberKey::Integer(slot), Some(from)) => *slot >= from,
-                _ => false,
-            };
+            let filled = matches!(
+                (key, expands_from),
+                (LuaMemberKey::Integer(slot), Some(from)) if *slot >= from
+            );
             if !filled && !field_names.contains(key.to_path().as_str()) {
                 if let Some((first_field, _, _)) = fields.first()
                     && let Some(value_expr) = first_field.get_value_expr()
@@ -918,6 +896,7 @@ fn check_table_value(
     // each of its `return`s against the field, flow-narrowed. Its inferred signature has no
     // narrowing (`return type(n) == 'string' and n or nil` infers `n`'s whole type).
     if let LuaExpr::ClosureExpr(closure) = value_expr
+        && accepts_functions(semantic_model, expected)
         && semantic_model
             .file_facts()
             .and_then(|facts| facts.signature_by_closure(closure.get_syntax_id()))
@@ -939,20 +918,38 @@ fn check_table_value(
     add_mismatch(context, value_expr.get_range(), expected, &value_ty);
 }
 
-/// `table<K, V>` (either spelling) -> `(K, V)`.
-fn map_params(ty: &LuaType) -> Option<(&LuaType, &LuaType)> {
-    match ty {
-        LuaType::TableGeneric(params) => match params.as_slice() {
-            [key, value] => Some((key, value)),
-            _ => None,
-        },
-        LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
-            match generic.get_params().as_slice() {
-                [key, value] => Some((key, value)),
-                _ => None,
-            }
+/// Every field's key against `key_ty` and, when it fits, its value against `value_ty`.
+fn check_keyed_fields(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    table: &LuaTableExpr,
+    key_ty: &LuaType,
+    value_ty: &LuaType,
+) {
+    for (field, key) in table.get_fields_with_keys() {
+        if !check_table_key(context, semantic_model, &field, &key, key_ty) {
+            continue;
         }
-        _ => None,
+        let Some(value_expr) = field.get_value_expr() else {
+            continue;
+        };
+        check_table_value(context, semantic_model, &value_expr, value_ty);
+    }
+}
+
+/// Whether some function fits `ty` (a function type, possibly optional or through an alias).
+fn accepts_functions(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
+    match ty {
+        LuaType::DocFunction(_) | LuaType::Signature(_) | LuaType::Function => true,
+        LuaType::Union(union) => union
+            .into_vec()
+            .iter()
+            .any(|component| accepts_functions(semantic_model, component)),
+        LuaType::Ref(_) | LuaType::Def(_) => named_def(semantic_model, ty)
+            .filter(|def| def.kind == TypeDefKind::Alias)
+            .and_then(|def| semantic_model.alias_target(&def))
+            .is_some_and(|target| accepts_functions(semantic_model, &target)),
+        _ => false,
     }
 }
 
