@@ -144,7 +144,7 @@ function string.format(fmt, ...) end
 --- an anchor, as this would prevent the iteration.
 --- @param s       string
 --- @param pattern string
---- @return fun(): string?...
+--- @return fun(): string?, string...
 function string.gmatch(s, pattern) end
 
 ---
@@ -177,7 +177,7 @@ function string.gmatch(s, pattern) end
 --- @param s       string
 --- @param pattern string
 --- @param init?   integer
---- @return fun():string?...
+--- @return fun(): string?, string...
 function string.gmatch(s, pattern, init) end
 
 ---

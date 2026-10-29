@@ -119,7 +119,7 @@ function string.format(fmt, ...) end
 --- 注意：对该函数而言，模式开头的插入符 '`^`' 不会作为锚点使用，因为那会阻止迭代。
 --- @param s       string
 --- @param pattern string
---- @return fun(): string?...
+--- @return fun(): string?, string...
 function string.gmatch(s, pattern) end
 
 --- 返回一个迭代器函数：每次调用时，它都会在字符串 `s` 上返回 `pattern` 的下一组捕获结果。
@@ -150,7 +150,7 @@ function string.gmatch(s, pattern) end
 --- @param s       string
 --- @param pattern string
 --- @param init?   integer
---- @return fun():string?...
+--- @return fun(): string?, string...
 function string.gmatch(s, pattern, init) end
 
 --- 返回 `s` 的一个副本，其中所有（或前 `n` 个，如果给出）匹配 `pattern` 的内容都会被 `repl` 替换。

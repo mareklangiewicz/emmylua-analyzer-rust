@@ -658,4 +658,28 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_gmatch_captures_after_the_first_are_strings() {
+        // The loop ends when the first capture is nil; while it runs, every capture matched.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            local src = 'a=b'
+            for k, v in src:gmatch '(%w+)=(%w+)' do
+                print(k:upper(), v:upper())
+            end
+        "#
+        ));
+        // A single call outside a loop still yields a possibly-nil first capture.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            local src = 'a=b'
+            local k = src:gmatch '(%w+)'()
+            print(k:upper())
+        "#
+        ));
+    }
 }
