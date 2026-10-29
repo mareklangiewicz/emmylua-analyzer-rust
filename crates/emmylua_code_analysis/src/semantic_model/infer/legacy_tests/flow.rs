@@ -160,6 +160,28 @@ mod test {
     }
 
     #[test]
+    fn test_inline_as_on_a_binary_operand_types_the_local() {
+        let mut ws = VirtualWorkspace::new();
+        // The local's own type reads the operand's cast, as the expression's flow query does.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param n integer
+            local function take(n) end
+            ---@param maybe integer?
+            ---@param delta integer
+            local function f(maybe, delta)
+                local l = maybe --[[@as integer]] + delta
+                local r = delta + maybe --[[@as integer]]
+                take(l)
+                take(r)
+            end
+            return f
+            "#
+        ));
+    }
+
+    #[test]
     fn test_inline_as_call_assignment_keeps_the_cast_result() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
         let file = ws.def(

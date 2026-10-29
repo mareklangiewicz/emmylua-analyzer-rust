@@ -191,6 +191,7 @@ pub fn compile(expr: LuaExpr, file_id: FileId, out: &mut Vec<Instr>) {
                     left_syntax,
                     right_syntax: Some(right.get_syntax_id()),
                 });
+                stack.push(CTask::ApplyAsCasts(right.get_syntax_id()));
                 stack.push(CTask::Expr(right));
             }
             CTask::EmitBinary {
@@ -327,6 +328,8 @@ fn compile_expr(expr: &LuaExpr, file_id: FileId, out: &mut Vec<Instr>, stack: &m
                     right,
                     left_syntax: Some(left.get_syntax_id()),
                 });
+                // `x --[[@as T]] + 1`: the cast types its operand, as it does a parenthesized value.
+                stack.push(CTask::ApplyAsCasts(left.get_syntax_id()));
                 stack.push(CTask::Expr(left));
             } else {
                 out.push(Instr::PushUnknown);
