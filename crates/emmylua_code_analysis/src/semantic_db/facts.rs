@@ -142,6 +142,7 @@ pub struct FileFacts {
     decl_by_value_syntax: HashMap<LuaSyntaxId, usize>,
     decl_by_value_range: HashMap<TextRange, usize>,
     decls_by_owner_syntax: HashMap<LuaSyntaxId, Vec<usize>>,
+    members_by_owner_syntax: HashMap<LuaSyntaxId, Vec<usize>>,
     signature_by_closure: HashMap<LuaSyntaxId, usize>,
     signature_by_position: HashMap<TextSize, usize>,
     /// `setmetatable(table, meta)` calls in declaration or member initializers:
@@ -361,6 +362,18 @@ impl FileFacts {
             .flat_map(move |indices| indices.iter().filter_map(|&index| self.decls.get(index)))
     }
 
+    /// Members assigned by the statement `owner_syntax` (`a.b = v` -> `b`), the runtime side of a
+    /// `---@class` on that statement.
+    pub fn members_by_owner_syntax(
+        &self,
+        owner_syntax: LuaSyntaxId,
+    ) -> impl Iterator<Item = &Member> {
+        self.members_by_owner_syntax
+            .get(&owner_syntax)
+            .into_iter()
+            .flat_map(move |indices| indices.iter().filter_map(|&index| self.members.get(index)))
+    }
+
     /// Finds the first declaration by name (any kind, in this file).
     pub fn decl_named(&self, name: &str) -> Option<&Decl> {
         let indices = find_bucket(&self.decl_by_name, &SmolStr::new(name))?;
@@ -538,6 +551,8 @@ pub struct FactsBuilder {
     usings: Vec<SmolStr>,
     /// Current statement being processed (for doc comment ownership).
     current_owner_syntax: Option<LuaSyntaxId>,
+    /// Index-expression members by their assigning statement (see `FileFacts::members_by_owner_syntax`).
+    members_by_owner_syntax: HashMap<LuaSyntaxId, Vec<usize>>,
     /// Whether the comment block right after the statement contains `---@deprecated` (consumed by runtime members `T.x = v`; reset after statement processing).
     current_comment_deprecated: bool,
     /// `---@type` annotations: owner statement position → type nodes.
@@ -812,6 +827,7 @@ impl FactsBuilder {
             namespace: None,
             usings: Vec::new(),
             current_owner_syntax: None,
+            members_by_owner_syntax: HashMap::new(),
             current_comment_deprecated: false,
             doc_type_map: HashMap::new(),
             doc_module_map: HashMap::new(),
@@ -1103,6 +1119,7 @@ impl FactsBuilder {
             decl_by_value_syntax,
             decl_by_value_range,
             decls_by_owner_syntax,
+            members_by_owner_syntax: self.members_by_owner_syntax,
             signature_by_closure,
             signature_by_position,
             operator_by_owner_name,
@@ -1929,6 +1946,12 @@ impl FactsBuilder {
             member.doc_type_syntax = type_syntaxes.first().copied();
         }
         self.mark_member(&mut member);
+        if let Some(owner_syntax) = self.current_owner_syntax {
+            self.members_by_owner_syntax
+                .entry(owner_syntax)
+                .or_default()
+                .push(self.members.len());
+        }
         self.members.push(member);
     }
 

@@ -1020,6 +1020,61 @@ return items
         ws.analysis.update_file_by_uri(&uri, Some(good.to_string()));
         assert_eq!(inject_count(&ws), 0);
     }
+
+    #[test]
+    fn test_indexed_global_class_field_assigned_in_function() {
+        // Neovim's runtime shape: `vim.bo` is a class declared in a meta file (`vim.bo = vim.bo`,
+        // fields as `vim.bo.filetype = ...`), and another file assigns `vim.bo = acc()` typed
+        // `vim.bo`. `vim.bo[n].filetype = v` is a declared field, not an injection; `zzz` is one.
+        // Load order matters: the gap showed only when the `acc()` file loads before the meta file.
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+        let use_file = ws.def_file(
+            "use.lua",
+            r#"
+            local function f()
+                vim.bo[3].filetype = "t"
+                vim.bo[3].zzz = 1
+            end
+            "#,
+        );
+        ws.def_file(
+            "opts.lua",
+            r#"
+            ---@return vim.bo
+            local function acc() return setmetatable({}, {}) end
+            vim.bo = acc()
+            "#,
+        );
+        ws.def_file(
+            "meta.lua",
+            r#"
+            ---@meta _
+            ---@class vim.bo
+            ---@field [integer] vim.bo
+            vim.bo = vim.bo
+
+            ---@type string
+            vim.bo.filetype = ""
+            "#,
+        );
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(use_file, tokio_util::sync::CancellationToken::new())
+            .unwrap_or_default();
+        let inject = Some(lsp_types::NumberOrString::String(
+            DiagnosticCode::InjectField.get_name().to_string(),
+        ));
+        let injected: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == inject)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            injected,
+            ["Fields cannot be injected into the reference of `vim.bo` for `zzz`. "]
+        );
+    }
 }
 
 // These tests load the standard library because its `table` declaration is

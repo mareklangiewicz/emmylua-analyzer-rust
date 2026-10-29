@@ -11,8 +11,8 @@ use super::SemanticDatabase;
 use super::def::Decl;
 use super::def::{
     ChangedKeys, ConstructorAttribute, DeclKind, DependencyKey, DocGenericParam, ExportKey,
-    MemberRef, ModuleExport, ModuleInfo, ModuleNode, ModuleNodeId, ModuleVisibility, OwnerId,
-    SemanticId, TypeDef, TypeDefKind,
+    LuaMemberKey, MemberRef, ModuleExport, ModuleInfo, ModuleNode, ModuleNodeId, ModuleVisibility,
+    OwnerId, SemanticId, TypeDef, TypeDefKind,
 };
 use super::exports::{
     FileExports, GlobalExport, MemberExport, module_export_owner_file, owner_id_from_semantic_id,
@@ -1809,6 +1809,22 @@ fn push_type_associated_owner_ids(
                     for decl in facts.decls_by_owner_syntax(owner_syntax) {
                         if let Some(decl_owner) = canonical_owner_id(db, &decl.id) {
                             push_unique_owner_id(out, decl_owner);
+                        }
+                    }
+                    // A `---@meta` file's `---@class a.b` + `a.b = v` binds the class to the global
+                    // path `a.b`, whose fields are declared as `a.b.x = ...` under `Name("a.b")`
+                    // (Neovim's `vim.bo`). Like the global-table case above, only a meta file's
+                    // binding makes that path the class surface.
+                    if facts.is_meta {
+                        for member in facts.members_by_owner_syntax(owner_syntax) {
+                            if let (SemanticId::Name(head), LuaMemberKey::Name(tail)) =
+                                (&member.owner, &member.key)
+                            {
+                                push_unique_owner_id(
+                                    out,
+                                    OwnerId::Global(SmolStr::new(format!("{head}.{tail}"))),
+                                );
+                            }
                         }
                     }
                 }
