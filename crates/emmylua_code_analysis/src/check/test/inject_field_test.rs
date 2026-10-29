@@ -378,6 +378,8 @@ return items
                 accept({'a'}, 'a')
                 accept({count = 1}, 1)
                 accept({count = 1}, 'a')
+                local ints ---@type table<integer, string>
+                accept(ints, 1)
                 "#,
                 &[ParamTypeMismatch],
             );

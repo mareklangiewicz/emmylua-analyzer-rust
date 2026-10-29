@@ -2711,18 +2711,42 @@ impl<'a> InferVm<'a> {
         let docs = signature.docs.as_ref()?;
         let generic_params = docs.generic_params.clone();
 
-        let mut out = Vec::new();
-        for overload_syntax in &overload_syntaxes {
-            if let Some(fun) =
-                self.doc_func_from_syntax(file_id, *overload_syntax, &generic_params, false)
-            {
-                out.push(fun);
-            }
-        }
+        let mut out = self.overload_functions(file_id, &overload_syntaxes, &generic_params);
         if let Some(main_fun) = self.main_signature_function(file_id, signature, &generic_params) {
             out.push(main_fun);
         }
         Some(out)
+    }
+
+    /// Only the `---@overload`s of a declaration's function value (no main signature).
+    pub(crate) fn overload_candidates_for_decl(&self, owner: &SemanticId) -> Vec<LuaFunctionType> {
+        let SemanticId::Decl(key) = owner else {
+            return Vec::new();
+        };
+        let Some(facts) = self.model.file_facts_of(key.file_id) else {
+            return Vec::new();
+        };
+        let Some(docs) = facts
+            .decl_by_id(owner)
+            .and_then(|decl| decl.value_expr_syntax)
+            .and_then(|syntax| facts.signature_by_closure(syntax))
+            .and_then(|sig| sig.docs.as_ref())
+        else {
+            return Vec::new();
+        };
+        self.overload_functions(key.file_id, &docs.overloads, &docs.generic_params)
+    }
+
+    fn overload_functions(
+        &self,
+        file_id: FileId,
+        overload_syntaxes: &[LuaSyntaxId],
+        generic_params: &[DocGenericParam],
+    ) -> Vec<LuaFunctionType> {
+        overload_syntaxes
+            .iter()
+            .filter_map(|syntax| self.doc_func_from_syntax(file_id, *syntax, generic_params, false))
+            .collect()
     }
 
     /// Build `GenericTpl`s with default/constraint metadata from `DocGenericParam`.

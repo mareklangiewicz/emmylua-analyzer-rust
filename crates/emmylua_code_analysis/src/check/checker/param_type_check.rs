@@ -14,7 +14,7 @@ use emmylua_parser::{
 use crate::semantic_model::infer::callable::CallableCandidateSet;
 use crate::semantic_model::infer::function_solver::functions_compatible;
 use crate::semantic_model::infer::unify;
-use crate::semantic_model::infer::vm::unify_call_bindings;
+use crate::semantic_model::infer::vm::{InferVm, unify_call_bindings};
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::type_check::is_compatible;
 use crate::semantic_model::{SemanticModel, type_eval};
@@ -154,6 +154,19 @@ pub(crate) fn callable_candidates_uncached(
     {
         candidates.push(func);
     }
+    // A name callee's value type is its main signature only; its `---@overload`s are candidates
+    // too, as in the VM's call selection.
+    if !candidates.is_empty()
+        && let LuaExpr::NameExpr(name_expr) = callee
+        && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
+    {
+        let vm = InferVm::new(semantic_model, &[]);
+        for overload in vm.overload_candidates_for_decl(&decl) {
+            if !candidates.contains(&overload) {
+                candidates.push(overload);
+            }
+        }
+    }
     candidates
 }
 
@@ -199,8 +212,7 @@ fn index_expr_callable_candidates(
             .iter()
         {
             if let Some(functions) =
-                crate::semantic_model::infer::vm::InferVm::new(semantic_model, &[])
-                    .callable_candidates_for_owner_single(&member.id)
+                InferVm::new(semantic_model, &[]).callable_candidates_for_owner_single(&member.id)
             {
                 candidates.extend(functions);
             }
@@ -274,10 +286,18 @@ fn check_call(
     let receiver_ty = analysis.receiver_ty;
     let explicit_generics = &analysis.explicit_generics;
 
+    // Extra arguments are param_count's concern, but a candidate that cannot take them all
+    // (`fun(): number` for `test(x)`) must not accept the call when another candidate can.
+    let mut ordered: Vec<&LuaFunctionType> = candidates.iter().collect();
+    if ordered
+        .iter()
+        .any(|func| !takes_too_many_args(func, args.len(), colon_call))
+    {
+        ordered.retain(|func| !takes_too_many_args(func, args.len(), colon_call));
+    }
     // Cheap candidate ordering: check likely overloads first so the common
     // “one candidate matches” case returns before running the expensive
     // parameter-by-parameter check on every other overload.
-    let mut ordered: Vec<&LuaFunctionType> = candidates.iter().collect();
     ordered.sort_by_key(|func| {
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });

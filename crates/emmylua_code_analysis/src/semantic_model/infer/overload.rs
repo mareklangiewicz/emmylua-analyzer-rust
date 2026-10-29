@@ -521,6 +521,7 @@ fn match_call_candidate_impl(
     // `fun(_: T1..., _: T2...)` can be sliced correctly.
     prebind_variadic_generics(fun, args, param_start, arg_start, &mut bindings);
 
+    let mut takes_rest = fun.is_variadic();
     for (param_index, (name, param_ty)) in params.iter().enumerate().skip(param_start) {
         let index = arg_start + (param_index - param_start);
         let Some(param_ty) = param_ty else {
@@ -550,6 +551,7 @@ fn match_call_candidate_impl(
             param_ty = type_eval::eval_conditionals(model, &expanded);
         }
         if name == "..." || matches!(param_ty, LuaType::Variadic(_)) {
+            takes_rest = true;
             let base = variadic_base_type(&param_ty).unwrap_or(LuaType::Unknown);
             // `T...` variadic generic (param itself is Variadic): bind the remaining args
             // as a whole tuple instead of binding T one arg at a time.
@@ -702,6 +704,14 @@ fn match_call_candidate_impl(
         } else {
             -50
         };
+    }
+    // Args past the last param cost more than any missing or loosely matched ones, so `fun()`
+    // never beats a signature that takes them (`f:seek('end')` vs `fun(whence?, offset?)`).
+    if !takes_rest {
+        let surplus = args
+            .len()
+            .saturating_sub(arg_start + params.len().saturating_sub(param_start));
+        score -= 10_000 * surplus as i32;
     }
 
     Some((bindings, score))

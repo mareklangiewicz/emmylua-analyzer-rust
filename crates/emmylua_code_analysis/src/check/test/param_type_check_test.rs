@@ -3134,4 +3134,47 @@ mod test {
             "#
         ));
     }
+
+    #[test]
+    fn test_name_callee_overload_is_a_candidate() {
+        let mut ws = VirtualWorkspace::new();
+
+        // A local / global / local-closure name callee: the `---@overload` accepts the call.
+        for source in [
+            r#"
+            ---@overload fun(x: integer): integer
+            ---@param a string
+            local function f(a) end
+            f(1)
+            "#,
+            r#"
+            ---@overload fun(x: integer): integer
+            ---@param a string
+            function G(a) end
+            G(1)
+            "#,
+            r#"
+            ---@overload fun(x: integer): integer
+            ---@param a string
+            local f = function(a) end
+            f(1)
+            "#,
+        ] {
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, source),
+                "{source}"
+            );
+        }
+
+        // Control: an argument neither signature accepts still reports.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@overload fun(x: integer): integer
+            ---@param a string
+            local function h(a) end
+            h(true)
+        "#
+        ));
+    }
 }

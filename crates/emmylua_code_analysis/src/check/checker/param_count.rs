@@ -66,22 +66,6 @@ fn check_call(
     {
         candidates = generic_callee_fallback(semantic_model, &callee, generic);
     }
-    // `---@overload` candidates: fun(...) in the signature docs are explicitly added to the argument count.
-    if let LuaExpr::NameExpr(name_expr) = &callee
-        && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
-        && let SemanticId::Decl(decl_key) = decl
-        && let Some(facts) = semantic_model.file_facts_of(decl_key.file_id)
-        && let Some(decl) = facts.decl_by_id(&SemanticId::Decl(decl_key))
-        && let Some(closure_syntax) = decl.value_expr_syntax
-        && let Some(signature) = facts.signature_by_closure(closure_syntax)
-        && let Some(docs) = signature.docs.as_ref()
-    {
-        for syntax in &docs.overloads {
-            if let Some(func) = doc_func_from_syntax(semantic_model, decl.file_id, *syntax) {
-                candidates.push(func);
-            }
-        }
-    }
     // `A.foo`: VM only gives Function; prefer the declared member type from member resolution.
     if candidates.is_empty()
         && let Some(index_expr) = LuaIndexExpr::cast(callee.syntax().clone())
@@ -529,18 +513,6 @@ fn fixed_param_len(func: &LuaFunctionType) -> Option<usize> {
         return None;
     }
     Some(func.get_params().len())
-}
-
-fn doc_func_from_syntax(
-    semantic_model: &SemanticModel<'_>,
-    file_id: FileId,
-    syntax: LuaSyntaxId,
-) -> Option<LuaFunctionType> {
-    // The shared doc-type conversion keeps `...` (name + variadic flag) and `x?` (nullable).
-    match semantic_model.doc_type_lua_rich_in(file_id, syntax) {
-        LuaType::DocFunction(func) => Some(func.as_ref().clone()),
-        _ => None,
-    }
 }
 
 /// Call-side argument slot count range: trailing multi-return calls expand per `Variadic`;

@@ -72,4 +72,31 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_overload_that_cannot_take_the_args_loses() {
+        // `fun()` takes no args; the main signature takes `'end'` and only misses the
+        // optional `offset`, so its return wins.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Fh
+            local Fh = {}
+            ---@overload fun()
+            ---@param whence? string
+            ---@param offset? integer
+            ---@return integer?
+            function Fh:seek(whence, offset) end
+            ---@type Fh
+            F = {}
+            "#,
+        );
+        let ty = ws.expr_ty("F:seek('end')");
+        assert_eq!(ws.humanize_type(ty), "integer?");
+
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def("F = assert(io.open('x'))");
+        let ty = ws.expr_ty("F:seek('end')");
+        assert_eq!(ws.humanize_type(ty), "integer?");
+    }
 }
