@@ -31,6 +31,15 @@ impl<'db> SemanticModel<'db> {
     pub fn strict_array_index(&self) -> bool {
         self.db().strict_array_index()
     }
+    /// The type of an array element read by an index: `base | nil` under a strict array index,
+    /// unless `base` already admits nil (`any`, `unknown`, `T?`).
+    pub fn array_index_element(&self, base: LuaType) -> LuaType {
+        if self.strict_array_index() && !base.is_optional() {
+            LuaType::from_vec(vec![base, LuaType::Nil])
+        } else {
+            base
+        }
+    }
     pub fn file_ids(&self) -> Vec<FileId> {
         self.db().file_ids()
     }

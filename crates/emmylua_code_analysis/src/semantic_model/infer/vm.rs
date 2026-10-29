@@ -514,12 +514,7 @@ impl<'a> InferVm<'a> {
                 if let LuaMemberKey::Integer(_) = &key
                     && let LuaType::Array(array) = &owner_value.ty
                 {
-                    let base = array.get_base().clone();
-                    let ty = if self.model.strict_array_index() {
-                        LuaType::from_vec(vec![base, LuaType::Nil])
-                    } else {
-                        base
-                    };
+                    let ty = self.model.array_index_element(array.get_base().clone());
                     self.stack.push(Value::plain(ty));
                 } else {
                     let value = self.index_member(owner_value, &key);
@@ -814,12 +809,7 @@ impl<'a> InferVm<'a> {
             }
             LuaType::IntegerConst(i) | LuaType::DocIntegerConst(i) => {
                 if let LuaType::Array(array) = &owner.ty {
-                    let base = array.get_base().clone();
-                    return Value::plain(if self.model.strict_array_index() {
-                        LuaType::from_vec(vec![base, LuaType::Nil])
-                    } else {
-                        base
-                    });
+                    return Value::plain(self.model.array_index_element(array.get_base().clone()));
                 }
                 self.index_member(owner, &LuaMemberKey::Integer(*i))
             }
@@ -861,10 +851,7 @@ impl<'a> InferVm<'a> {
                             .iter()
                             .any(|ty| matches!(ty, LuaType::Nil) || ty == array.get_base())
                     {
-                        types.push(array.get_base().clone());
-                        if self.model.strict_array_index() {
-                            types.push(LuaType::Nil);
-                        }
+                        types.push(self.model.array_index_element(array.get_base().clone()));
                     }
                 }
                 if any_string && !types.is_empty() {
@@ -913,16 +900,12 @@ impl<'a> InferVm<'a> {
             LuaType::String => self.index_member_dynamic_string(owner),
             LuaType::Number | LuaType::Integer | LuaType::FloatConst(_) => {
                 if let LuaType::Array(array) = &owner.ty {
-                    let base = array.get_base().clone();
-                    return Value::plain(if self.model.strict_array_index() {
-                        LuaType::from_vec(vec![base, LuaType::Nil])
-                    } else {
-                        base
-                    });
+                    return Value::plain(self.model.array_index_element(array.get_base().clone()));
                 }
                 // Dynamic integer key on a table literal: return the union of all
-                // integer-keyed fields plus nil. This preserves exact shapes for runtime
-                // integer indexing like `Pos[cur]` or `points[index]`.
+                // integer-keyed fields plus nil (unless one of them already admits nil, like the
+                // `unknown` of `{ ... }`). This preserves exact shapes for runtime integer
+                // indexing like `Pos[cur]` or `points[index]`.
                 if let LuaType::TableConst(_) = &owner.ty {
                     let mut types = Vec::new();
                     for info in self.model.member_infos(&owner.ty) {
@@ -932,7 +915,7 @@ impl<'a> InferVm<'a> {
                             types.push(info.typ.clone());
                         }
                     }
-                    if !types.contains(&LuaType::Nil) {
+                    if !types.iter().any(LuaType::is_optional) {
                         types.push(LuaType::Nil);
                     }
                     return Value::plain(LuaType::from_vec(types));

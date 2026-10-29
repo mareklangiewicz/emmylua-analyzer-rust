@@ -585,4 +585,39 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_strict_array_index_of_any_or_unknown_elements_is_not_nullable() {
+        // `any` and `unknown` already admit nil, so a strict array index adds nothing to them: a
+        // call through `{ ... }` of unannotated varargs is not "may be nil".
+        let mut ws = VirtualWorkspace::new();
+        let mut emmyrc = ws.get_emmyrc();
+        emmyrc.strict.array_index = true;
+        ws.update_emmyrc(emmyrc);
+        for body in [
+            "---@type any[]\nlocal a = {}\na[n]()\nprint(a[n].x)",
+            "---@type unknown[]\nlocal u = {}\nu[n]()\nprint(u[n].x)",
+            "local ps = { ... }\nlocal last = ps[n]\nlast()\nps[n]()",
+            "local ps = { ... }\nps[1]()",
+        ] {
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::NeedCheckNil,
+                    &format!("local function f(n, ...)\n---@cast n integer\n{body}\nend"),
+                ),
+                "{body}"
+            );
+        }
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@param n integer
+            local function f(n)
+                ---@type string[]
+                local s = {}
+                print(s[n]:upper())
+            end
+        "#
+        ));
+    }
 }

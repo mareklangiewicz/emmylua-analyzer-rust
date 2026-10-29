@@ -1319,8 +1319,9 @@ mod test {
         emmyrc.strict.array_index = false;
         ws.analysis.update_config(Arc::new(emmyrc));
 
-        // With no arguments, callback stays nil; event(callback) must warn.
-        assert!(!ws.has_no_diagnostic(
+        // `extra_args[nargs]` is the `unknown` of `{ ... }`, which already admits nil, so it adds no
+        // `nil` of its own; and the declared-but-unassigned `callback` reads as its declared type.
+        assert!(ws.has_no_diagnostic(
             DiagnosticCode::ParamTypeMismatch,
             r#"
                 ---@class Trigger
