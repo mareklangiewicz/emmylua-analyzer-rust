@@ -17,7 +17,7 @@ use crate::semantic_model::infer::unify;
 use crate::semantic_model::infer::vm::{InferVm, unify_call_bindings};
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::type_check::is_compatible;
-use crate::semantic_model::{SemanticModel, type_eval};
+use crate::semantic_model::{CallSiteAnalysis, SemanticModel, type_eval};
 use crate::{
     DiagnosticCode, LuaFunctionType, LuaMemberKey, LuaTupleStatus, LuaTupleType, LuaType,
     LuaTypeNode, TypeDefKind, VariadicType,
@@ -424,6 +424,30 @@ fn table_literal_mismatch(
         }
         _ => None,
     }
+}
+
+/// How many of the call's arguments `func` rejects; `None` when it cannot take them all.
+pub(super) fn candidate_rejections(
+    semantic_model: &SemanticModel<'_>,
+    analysis: &CallSiteAnalysis,
+    func: &LuaFunctionType,
+    args: &[LuaExpr],
+) -> Option<usize> {
+    if takes_too_many_args(func, args.len(), analysis.colon_call) {
+        return None;
+    }
+    Some(
+        check_candidate(
+            semantic_model,
+            func,
+            args,
+            analysis.colon_call,
+            &analysis.receiver_ty,
+            &analysis.explicit_generics,
+            Some(&analysis.arg_types),
+        )
+        .len(),
+    )
 }
 
 /// More call arguments than the candidate has parameters (after the receiver rules), and no varargs.

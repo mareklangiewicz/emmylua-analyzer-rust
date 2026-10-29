@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use emmylua_parser::{
     LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaIndexExpr,
-    LuaIndexKey, LuaLiteralToken, LuaLocalStat, LuaTableExpr, LuaVarExpr, NumberResult,
+    LuaIndexKey, LuaLiteralToken, LuaLocalStat, LuaTableExpr, LuaTableField, LuaVarExpr,
+    NumberResult,
 };
 
 use super::check_field::is_optional;
@@ -15,11 +16,12 @@ use crate::semantic_model::infer::unify::{TplBindings, substitute};
 use crate::semantic_model::infer::vm::bind_signature_generics;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
 use crate::{
-    Decl, GenericTpl, LuaMemberKey, LuaType, LuaTypeNode, MemberInfo, SemanticId, TypeDef,
-    TypeDefKind,
+    Decl, GenericTpl, LuaFunctionType, LuaMemberKey, LuaType, LuaTypeNode, MemberInfo, SemanticId,
+    TypeDef, TypeDefKind,
 };
 
 use super::param_count::call_arg_param_index;
+use super::param_type_check::candidate_rejections;
 use super::{
     CheckContext, Checker,
     check_field::{static_member_key, union_array_for_sequence},
@@ -153,35 +155,84 @@ fn check_call_args(
         return;
     }
     let analysis = semantic_model.call_site_analysis(call);
-    let candidates = analysis.candidates;
-    if candidates.is_empty() {
-        return;
-    }
     let Some(args) = call.get_args_list() else {
         return;
     };
-    for candidate in &candidates {
-        let params = candidate.get_params();
-        for (index, arg) in args.get_args().enumerate() {
-            let Some(param_index) = call_arg_param_index(candidate, index, analysis.colon_call)
-            else {
-                continue;
-            };
-            let Some((_, Some(param_ty))) = params.get(param_index) else {
-                break;
-            };
-            if !matches!(arg, LuaExpr::TableExpr(_)) {
-                continue;
+    let args: Vec<_> = args.get_args().collect();
+    if !args.iter().any(|arg| matches!(arg, LuaExpr::TableExpr(_))) {
+        return;
+    }
+    let [candidate] = analysis.candidates.as_slice() else {
+        // Overloads are alternatives: a candidate that takes the whole call (arguments and
+        // literal fields) reports nothing; else the one that rejects the least is reported.
+        let mut ranked: Vec<_> = analysis
+            .candidates
+            .iter()
+            .filter_map(|candidate| {
+                candidate_rejections(semantic_model, &analysis, candidate, &args)
+                    .map(|rejected| (candidate, rejected))
+            })
+            .collect();
+        // As in param_type_check: when none takes every argument, they all compete.
+        if ranked.is_empty() {
+            ranked = analysis.candidates.iter().map(|c| (c, 0)).collect();
+        }
+        let mut best: Option<(usize, Vec<_>)> = None;
+        for (candidate, rejected) in ranked {
+            let fields = context.collect(|context| {
+                check_call_table_args(
+                    context,
+                    semantic_model,
+                    candidate,
+                    &args,
+                    analysis.colon_call,
+                )
+            });
+            let rank = rejected + fields.len();
+            if rank == 0 {
+                return;
             }
-            let LuaExpr::TableExpr(table) = arg else {
-                continue;
-            };
-            // Signature params keep a `---@generic V` as `Ref("V")`; bind it before checking.
-            let param_ty = bind_signature_generics(param_ty, candidate.get_generic_params());
-            let param_ty = instantiate_by_constraints(&param_ty, candidate.get_generic_params());
-            if is_structured_table_target(semantic_model, &param_ty) {
-                check_table_fields(context, semantic_model, &param_ty, &table);
+            if best.as_ref().is_none_or(|(current, _)| rank < *current) {
+                best = Some((rank, fields));
             }
+        }
+        if let Some((_, fields)) = best {
+            context.extend_diagnostics(fields);
+        }
+        return;
+    };
+    check_call_table_args(
+        context,
+        semantic_model,
+        candidate,
+        &args,
+        analysis.colon_call,
+    );
+}
+
+fn check_call_table_args(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    candidate: &LuaFunctionType,
+    args: &[LuaExpr],
+    colon_call: bool,
+) {
+    let params = candidate.get_params();
+    for (index, arg) in args.iter().enumerate() {
+        let Some(param_index) = call_arg_param_index(candidate, index, colon_call) else {
+            continue;
+        };
+        let Some((_, Some(param_ty))) = params.get(param_index) else {
+            break;
+        };
+        let LuaExpr::TableExpr(table) = arg else {
+            continue;
+        };
+        // Signature params keep a `---@generic V` as `Ref("V")`; bind it before checking.
+        let param_ty = bind_signature_generics(param_ty, candidate.get_generic_params());
+        let param_ty = instantiate_by_constraints(&param_ty, candidate.get_generic_params());
+        if is_structured_table_target(semantic_model, &param_ty) {
+            check_table_fields(context, semantic_model, &param_ty, table);
         }
     }
 }
@@ -502,6 +553,9 @@ fn check_value_against_target(
 }
 
 fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
+    if map_params(ty).is_some() {
+        return true;
+    }
     match ty {
         LuaType::Array(_) | LuaType::Object(_) => true,
         LuaType::Union(union) => union
@@ -539,15 +593,7 @@ fn check_value_against(
 ) {
     if let LuaExpr::TableExpr(table) = value_expr {
         // Plain table target without a declared type: keep old behavior — don't check each field or report a type mismatch (same table identity).
-        if matches!(
-            target,
-            LuaType::Table | LuaType::TableConst(_) | LuaType::TableGeneric(_)
-        ) {
-            return;
-        }
-        if let LuaType::Generic(generic) = target
-            && generic.get_base_type_id().get_name() == "table"
-        {
+        if matches!(target, LuaType::Table | LuaType::TableConst(_)) {
             return;
         }
         if is_structured_table_target(semantic_model, target) {
@@ -634,24 +680,55 @@ fn check_table_fields(
     target: &LuaType,
     table: &LuaTableExpr,
 ) {
-    // Union target: use the first structured component to check the table literal (`Callback | Callback[]` scenario),
-    // or the array component for a sequence literal.
+    // Union target: its structured components are alternatives (`Callback | Callback[]`). The
+    // literal fits if one reports nothing; else the one with the fewest errors is reported, with
+    // the array component tried first for a sequence literal.
     if let LuaType::Union(union) = target {
-        if let Some(array) = union_array_for_sequence(union, table) {
-            check_table_fields(context, semantic_model, &array, table);
-            return;
-        }
-        for component in union.into_vec().iter() {
-            if is_structured_table_target(semantic_model, component) {
-                check_table_fields(context, semantic_model, component, table);
+        let components = union_array_for_sequence(union, table).into_iter().chain(
+            union
+                .into_vec()
+                .into_iter()
+                .filter(|component| is_structured_table_target(semantic_model, component)),
+        );
+        let mut best: Option<Vec<_>> = None;
+        for component in components {
+            let found = context
+                .collect(|context| check_table_fields(context, semantic_model, &component, table));
+            if found.is_empty() {
                 return;
             }
+            if best
+                .as_ref()
+                .is_none_or(|current| found.len() < current.len())
+            {
+                best = Some(found);
+            }
         }
+        if let Some(found) = best {
+            context.extend_diagnostics(found);
+        }
+        return;
     }
-    // Array target: check every table-literal element against the element type.
+    // Map target `table<K, V>`: every key fits K and every value fits V.
+    if let Some((key_ty, value_ty)) = map_params(target) {
+        for (field, key) in table.get_fields_with_keys() {
+            if !check_table_key(context, semantic_model, &field, &key, key_ty) {
+                continue;
+            }
+            let Some(value_expr) = field.get_value_expr() else {
+                continue;
+            };
+            check_table_value(context, semantic_model, &value_expr, value_ty);
+        }
+        return;
+    }
+    // Array target: integer keys, and every element against the element type.
     if let LuaType::Array(array) = target {
         let expected = array.get_base();
-        for (field, _) in table.get_fields_with_keys() {
+        for (field, key) in table.get_fields_with_keys() {
+            if !check_table_key(context, semantic_model, &field, &key, &LuaType::Integer) {
+                continue;
+            }
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
@@ -687,10 +764,29 @@ fn check_table_fields(
                 continue;
             }
             let key_ty = index_key_type(semantic_model, &key);
-            if let Ok(infos) = semantic_model.applicable_index_infos(target, &key_ty)
-                && let Some(info) = infos.first()
-            {
-                check_table_value(context, semantic_model, &value_expr, &info.value_type);
+            match semantic_model.applicable_index_infos(target, &key_ty) {
+                Ok(infos) => match infos.first() {
+                    Some(info) => {
+                        check_table_value(context, semantic_model, &value_expr, &info.value_type)
+                    }
+                    // An extra field is fine on a plain object, not on one with index signatures.
+                    None if !object.get_index_access().is_empty() => {
+                        let index_keys = object
+                            .get_index_access()
+                            .iter()
+                            .map(|(key, _)| key.clone())
+                            .collect();
+                        check_table_key(
+                            context,
+                            semantic_model,
+                            &field,
+                            &key,
+                            &LuaType::from_vec(index_keys),
+                        );
+                    }
+                    None => {}
+                },
+                Err(_) => {}
             }
         }
         return;
@@ -815,6 +911,47 @@ fn check_table_value(
         return;
     }
     add_mismatch(context, value_expr.get_range(), expected, &value_ty);
+}
+
+/// `table<K, V>` (either spelling) -> `(K, V)`.
+fn map_params(ty: &LuaType) -> Option<(&LuaType, &LuaType)> {
+    match ty {
+        LuaType::TableGeneric(params) => match params.as_slice() {
+            [key, value] => Some((key, value)),
+            _ => None,
+        },
+        LuaType::Generic(generic) if generic.get_base_type_id().get_name() == "table" => {
+            match generic.get_params().as_slice() {
+                [key, value] => Some((key, value)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Reports a table-literal key outside `expected`; returns whether the key fits.
+fn check_table_key(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    field: &LuaTableField,
+    key: &LuaIndexKey,
+    expected: &LuaType,
+) -> bool {
+    let key_ty = index_key_type(semantic_model, key);
+    if matches!(key_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)
+        || is_compatible(semantic_model, &key_ty, expected)
+    {
+        return true;
+    }
+    let range = key.get_range().unwrap_or_else(|| field.get_range());
+    let message = t!(
+        "table key: expected `%{target}` but found `%{value}`",
+        target = humanize_type(semantic_model, expected),
+        value = humanize_type(semantic_model, &key_ty)
+    );
+    context.add_diagnostic(DiagnosticCode::AssignTypeMismatch, range, message);
+    false
 }
 
 pub(super) fn index_key_type(semantic_model: &SemanticModel<'_>, key: &LuaIndexKey) -> LuaType {

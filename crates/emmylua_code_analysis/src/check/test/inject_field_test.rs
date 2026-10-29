@@ -369,8 +369,9 @@ return items
 
         #[test]
         fn test_generic_table_overload_requires_the_whole_call_to_match() {
-            assert_diagnostics(
-                r#"
+            // Each of the first two calls fits one signature. The last two mix them: a table
+            // literal's keys for one, the second argument for the other.
+            let source = r#"
                 ---@param values table<integer, string>
                 ---@param mode string
                 ---@overload fun(values: table<string, integer>, mode: integer)
@@ -380,8 +381,27 @@ return items
                 accept({count = 1}, 'a')
                 local ints ---@type table<integer, string>
                 accept(ints, 1)
-                "#,
-                &[ParamTypeMismatch],
+                "#;
+            let reported: Vec<_> = check_source(source)
+                .iter()
+                .map(|d| {
+                    let start = usize::from(d.range.start());
+                    let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+                    let line_end = source[start..]
+                        .find('\n')
+                        .map_or(source.len(), |i| start + i);
+                    (d.code, source[line_start..line_end].trim().to_string())
+                })
+                .collect();
+            assert_eq!(
+                reported,
+                [
+                    (ParamTypeMismatch, "accept(ints, 1)".to_string()),
+                    (
+                        DiagnosticCode::AssignTypeMismatch,
+                        "accept({count = 1}, 'a')".to_string()
+                    ),
+                ]
             );
         }
     }

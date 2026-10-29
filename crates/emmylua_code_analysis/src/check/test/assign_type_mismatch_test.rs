@@ -3646,4 +3646,143 @@ return t
         assert_eq!(changed.0, expected.0);
         assert_eq!(changed.1.len(), 1, "{changed:?}");
     }
+
+    /// A table literal against a map type: every key fits the key type and every value the
+    /// value type. A key no index signature covers is an error, unlike an extra object field.
+    #[test]
+    fn test_table_literal_keys_and_values_against_map_types() {
+        let code = DiagnosticCode::AssignTypeMismatch;
+        let cases = [
+            // `table<K, V>` param
+            (
+                "---@param t table<integer, string>\nlocal function f(t) end\nf({count = 1})",
+                false,
+            ),
+            (
+                "---@param t table<integer, string>\nlocal function f(t) end\nf({[1] = 2})",
+                false,
+            ),
+            (
+                "---@param t table<integer, string>\nlocal function f(t) end\nf({'a', [3] = 'c'})",
+                true,
+            ),
+            (
+                "---@param t table<string, integer>\nlocal function f(t) end\nf({1, 2})",
+                false,
+            ),
+            (
+                "---@param t table<string, integer>\nlocal function f(t) end\nf({a = 1, ['b'] = 2})",
+                true,
+            ),
+            // `table<K, V>` local
+            (
+                "---@type table<integer, string>\nlocal v = {count = 'x'}",
+                false,
+            ),
+            (
+                "---@type table<integer, string>\nlocal v = {[1] = 2}",
+                false,
+            ),
+            (
+                "---@type table<integer, string>\nlocal v = {'ok', 'fine'}",
+                true,
+            ),
+            (
+                "---@type table<string|integer, string>\nlocal v = {'a', b = 'c'}",
+                true,
+            ),
+            (
+                "---@type table<string, string[]>\nlocal v = {a = {'x'}}",
+                true,
+            ),
+            (
+                "---@type table<string, string[]>\nlocal v = {a = {1}}",
+                false,
+            ),
+            ("---@type table<integer, string>\nlocal v = {}", true),
+            // an index signature object
+            (
+                "---@param m {[string]: integer}\nlocal function d(m) end\nd({[1] = 5})",
+                false,
+            ),
+            (
+                "---@param m {[string]: integer}\nlocal function d(m) end\nd({a = 1})",
+                true,
+            ),
+            (
+                "---@param m {a: integer, [integer]: string}\nlocal function d(m) end\nd({a = 1, 'x'})",
+                true,
+            ),
+            (
+                "---@param m {a: integer, [integer]: string}\nlocal function d(m) end\nd({a = 1, b = 'x'})",
+                false,
+            ),
+            // a plain object still takes extra fields
+            (
+                "---@param m {a: integer}\nlocal function d(m) end\nd({a = 1, b = 'x'})",
+                true,
+            ),
+            // arrays take integer keys only
+            (
+                "---@param s string[]\nlocal function e(s) end\ne({x = 'y'})",
+                false,
+            ),
+            (
+                "---@param s string[]\nlocal function e(s) end\ne({'y', [5] = 'z'})",
+                true,
+            ),
+            // union components are alternatives (`lsp.LSPAny` shape)
+            (
+                "---@alias Any Obj|Any[]|string\n---@alias Obj table<string, Any>\n---@type Obj\nlocal s = {bash = {path = 'x', list = {'a'}}}",
+                true,
+            ),
+            (
+                "---@type {[string]: integer}|string[]\nlocal v = {a = 1}",
+                true,
+            ),
+            (
+                "---@type {[string]: integer}|string[]\nlocal v = {'x'}",
+                true,
+            ),
+            (
+                "---@type {[string]: integer}|string[]\nlocal v = {a = 'x'}",
+                false,
+            ),
+            // a dynamic key is checked by its type
+            (
+                "---@param k string\nlocal function g(k)\n---@type table<integer, string>\nlocal v = {[k] = 'x'}\nend",
+                false,
+            ),
+            (
+                "---@param k integer\nlocal function g(k)\n---@type table<integer, string>\nlocal v = {[k] = 'x'}\nend",
+                true,
+            ),
+        ];
+        let wrong: Vec<_> = cases
+            .iter()
+            .filter(|(src, clean)| VirtualWorkspace::new().has_no_diagnostic(code, src) != *clean)
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// Overloads are alternatives: a table literal's fields are reported only when no candidate
+    /// takes the call, and then for one candidate.
+    #[test]
+    fn test_table_literal_fields_follow_the_overload_that_takes_the_call() {
+        let assign_mismatches = |call: &str| {
+            check_source(&format!(
+                r#"
+                ---@param o {{a: integer}}
+                ---@overload fun(o: {{a: string}})
+                local function f(o) end
+                {call}
+                "#
+            ))
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+            .count()
+        };
+        assert_eq!(assign_mismatches("f({a = 'x'})"), 0);
+        assert_eq!(assign_mismatches("f({a = true})"), 1);
+    }
 }

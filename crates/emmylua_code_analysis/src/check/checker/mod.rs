@@ -161,6 +161,17 @@ impl<'a> CheckContext<'a> {
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
         self.diagnostics
     }
+
+    /// Runs `check` and returns what it reported instead of keeping it.
+    pub(crate) fn collect(&mut self, check: impl FnOnce(&mut Self)) -> Vec<Diagnostic> {
+        let mark = self.diagnostics.len();
+        check(self);
+        self.diagnostics.split_off(mark)
+    }
+
+    pub(crate) fn extend_diagnostics(&mut self, diagnostics: Vec<Diagnostic>) {
+        self.diagnostics.extend(diagnostics);
+    }
 }
 
 /// Runs all registered checks on a single file (filtered by config).
