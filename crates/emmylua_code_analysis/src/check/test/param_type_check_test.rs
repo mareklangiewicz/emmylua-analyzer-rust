@@ -3234,4 +3234,37 @@ mod test {
         "#
         ));
     }
+
+    /// A method call on a closure param: the receiver (`Box<string>`, from the callback's
+    /// expected type) binds the class generic `T`. The param used to read as `unknown`
+    /// inside the body, so the call went unchecked.
+    #[test]
+    fn test_closure_param_receiver_binds_class_generic() {
+        let diagnostics = check_source(
+            r#"
+            ---@class Box<T>
+            local Box = {}
+            ---@param v T
+            ---@return Box<T>
+            function Box:add(v) return self end
+            ---@param f fun(acc: Box<string>, v: integer): Box<string>
+            local function fold1(f) end
+            fold1(function(stack, part)
+                stack:add('ok')
+                return stack:add(part)
+            end)
+        "#,
+        );
+        let mismatches: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+            .collect();
+        assert_eq!(mismatches.len(), 1, "{diagnostics:#?}");
+        assert!(
+            mismatches[0]
+                .message
+                .starts_with("expected `string` but found `integer`"),
+            "{diagnostics:#?}"
+        );
+    }
 }

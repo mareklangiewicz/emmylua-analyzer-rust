@@ -18,6 +18,32 @@ mod test {
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
+    /// With every checker on, param-type-mismatch types the closure argument first. Its
+    /// return inference read `w`, which answered `unknown` while that return was in
+    /// progress; the answer was cached, so the later checkers saw an untyped `w`.
+    #[test]
+    fn test_closure_arg_param_typed_after_param_type_check() {
+        let diagnostics = crate::check::test::check_source(
+            r#"
+            ---@param f fun(prev: integer): integer?
+            local function plain(f) return f(1) end
+            plain(function(w) w() return w end)
+
+            ---@generic V
+            ---@param seed V
+            ---@param f fun(prev: V): V?
+            ---@return V
+            local function iterate(seed, f) return f(seed) or seed end
+            iterate(1, function(want) want() return want end)
+        "#,
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
+            2,
+            "{diagnostics:#?}"
+        );
+    }
+
     #[test]
     fn test_vararg_first_function_checks_arguments() {
         let diagnostics = crate::check::test::check_source(

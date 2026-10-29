@@ -52,12 +52,11 @@ pub fn closure_param_lua(
     closure_syntax: LuaSyntaxId,
     param_index: usize,
 ) -> LuaType {
-    // Prevent recompiling the wrapping call during closure-return inference
-    // (`closure_return_type_with_env` evaluating `f(x)` may resolve a same-named param
-    // declaration back to the same call site, causing infinite recursion).
-    if model.is_closure_return_in_progress(closure_syntax) {
-        return LuaType::Unknown;
-    }
+    // No guard for a closure whose return is being inferred: its body's param reads still
+    // compile the wrapping call, and the cycle stops one step later, where that call's
+    // closure argument asks for the same return (`closure_return_type_with_env`'s guard).
+    // Answering `unknown` here instead was cached for the read and left the param untyped
+    // for every later query.
     vm::closure_param_vm(model, closure_syntax, param_index)
 }
 

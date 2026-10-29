@@ -4391,9 +4391,6 @@ pub fn closure_param_vm(
     let Some(closure) = LuaClosureExpr::cast(node) else {
         return LuaType::Unknown;
     };
-    if model.is_closure_return_in_progress(closure_syntax) {
-        return LuaType::Unknown;
-    }
     // Find the wrapping call.
     let Some(call_expr) = closure.ancestors::<LuaCallExpr>().next() else {
         return LuaType::Unknown;
