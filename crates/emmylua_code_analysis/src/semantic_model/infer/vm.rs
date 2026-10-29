@@ -26,12 +26,13 @@ use crate::semantic_db::facts::member_key_from_index_key;
 use crate::semantic_db::types::PrimitiveType;
 use crate::semantic_model::flow::{ExprCastMode, apply_expr_casts, type_of_expr_with_cast};
 use crate::semantic_model::member::{
-    MemberInfo, index_signature_type, table_const_class_type, table_metatable_type,
+    MemberInfo, attached_global_table_member, index_signature_type, table_const_class_type,
+    table_metatable_type,
 };
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
-    sanitize_unresolved_generics, sanitize_unresolved_generics_with_model,
-    settle_sub_calls, substitute_named_refs,
+    sanitize_unresolved_generics, sanitize_unresolved_generics_with_model, settle_sub_calls,
+    substitute_named_refs,
 };
 use crate::{
     AsyncState, FileId, GenericTpl, GenericTplId, InFiled, LuaAliasCallKind, LuaArrayType,
@@ -1292,15 +1293,16 @@ impl<'a> InferVm<'a> {
         }
 
         // Members of global tables (`math` / `table`) often hang on the global Name owner:
-        // look up the Name owner from the TableConst's corresponding Decl name.
-        if let LuaType::TableConst(_table) = &owner.ty
+        // look up the Name owner from the TableConst's corresponding Decl name, or, for a
+        // value of the class attached to such a table (`local b = bit`), from that class.
+        let name_owner_member = if let LuaType::TableConst(_table) = &owner.ty
             && let Some(SemanticId::Decl(decl_key)) = &owner.owner
             && let Some(facts) = self.model.file_facts_of(decl_key.file_id)
             && let Some(decl) = facts.decl_by_id(&SemanticId::Decl(decl_key.clone()))
         {
             let name_owner = SemanticId::Name(decl.name.clone().into());
             let members = self.model.members_of_owner(&name_owner);
-            let member = match key {
+            match key {
                 LuaMemberKey::Name(name) => members.into_iter().find(|m| &m.name == name),
                 LuaMemberKey::Integer(_) => members.into_iter().find(|m| {
                     self.model
@@ -1309,26 +1311,29 @@ impl<'a> InferVm<'a> {
                         .is_some_and(|member| &member.key == key)
                 }),
                 _ => None,
-            };
-            if let Some(member) = member {
-                let mut ty = self
-                    .model
-                    .type_of_member(&member.id)
-                    .unwrap_or(LuaType::Unknown);
-                if matches!(ty, LuaType::Unknown | LuaType::Function)
-                    && let Some(facts) = self.model.file_facts_of(member.file_id)
-                    && let Some(member_def) = facts.member_by_id(&member.id)
-                    && let Some(value_syntax) = member_def.value_syntax
-                {
-                    ty = self.type_of_expr_inherit(value_syntax);
-                }
-                return Value {
-                    ty,
-                    owner: Some(member.id.clone()),
-                    closure_syntax: None,
-                    receiver: receiver_ty.clone(),
-                };
             }
+            .cloned()
+        } else {
+            attached_global_table_member(self.model, &owner.ty, key)
+        };
+        if let Some(member) = name_owner_member {
+            let mut ty = self
+                .model
+                .type_of_member(&member.id)
+                .unwrap_or(LuaType::Unknown);
+            if matches!(ty, LuaType::Unknown | LuaType::Function)
+                && let Some(facts) = self.model.file_facts_of(member.file_id)
+                && let Some(member_def) = facts.member_by_id(&member.id)
+                && let Some(value_syntax) = member_def.value_syntax
+            {
+                ty = self.type_of_expr_inherit(value_syntax);
+            }
+            return Value {
+                ty,
+                owner: Some(member.id.clone()),
+                closure_syntax: None,
+                receiver: receiver_ty.clone(),
+            };
         }
         if let Some(ty) = member_type_fallback {
             return Value {

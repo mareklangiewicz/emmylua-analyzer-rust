@@ -1609,3 +1609,48 @@ fn call_result_prefix_is_checked_by_type() {
         eq(true)
     );
 }
+
+/// A `---@class` global table whose members are `function lib.f()` (the std `bit` shape):
+/// a value of that class reaches the members through the global, from any file.
+#[googletest::gtest]
+fn class_global_table_members_via_a_value() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    let lib = r#"
+        ---@class globlib
+        globlib = {}
+
+        ---@return integer
+        function globlib.f() return 1 end
+    "#;
+    let use_it = "local a = globlib\nlocal b = rawget(_G, 'globlib')\nreturn a.f, b.f";
+    assert_that!(
+        ws.has_no_diagnostic(DiagnosticCode::UndefinedField, &format!("{lib}\n{use_it}")),
+        eq(true)
+    );
+    ws.def_file("globlib.lua", lib);
+    assert_that!(
+        ws.has_no_diagnostic(DiagnosticCode::UndefinedField, use_it),
+        eq(true)
+    );
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            "local a = globlib\nreturn a.typo"
+        ),
+        eq(false)
+    );
+    // Assigned in another file: an injection on the global, not the class surface.
+    ws.def_file("inject.lua", "globlib.extra = 1");
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            "local a = globlib\nreturn a.extra"
+        ),
+        eq(false)
+    );
+    // The member types as declared, so `a.f()` is not a call of a possibly-nil field.
+    ws.def("local a = globlib\nR = a.f()");
+    assert_that!(ws.expr_ty("R"), eq(&ws.ty("integer")));
+}

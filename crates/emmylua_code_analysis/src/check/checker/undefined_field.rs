@@ -17,6 +17,7 @@ use crate::semantic_db::def::{
     Decl, DeclKind, ModuleExport, SemanticId, TypeDef, TypeDefKind, TypeVisibility,
 };
 use crate::semantic_model::SemanticModel;
+use crate::semantic_model::member::attached_global_table_member;
 use crate::semantic_model::type_check::is_compatible;
 use crate::{FileId, InFiled, LuaMemberKey, LuaType, LuaTypeDeclId};
 
@@ -318,7 +319,8 @@ fn valid_named_member(
 
     // Static members are checked directly against the member surface.
     if let Some(key) = static_member_key(semantic_model, index_key)
-        && semantic_model.member_info(&prefix_ty, &key).is_some()
+        && (semantic_model.member_info(&prefix_ty, &key).is_some()
+            || attached_global_table_member(semantic_model, &prefix_ty, &key).is_some())
     {
         return true;
     }

@@ -149,6 +149,43 @@ fn find_type_def_member(
     None
 }
 
+/// A `---@class` doc attached to a global table (std's `---@class bitlib` + `bit = {}`) keeps
+/// its `function bit.f()` members under `Name("bit")`, which the class owners do not reach, so
+/// a value of the class (`local b = bit; b.bor`) finds nothing by type. This is that member.
+/// Only members written in the class's own file count: a `bit.typo = 1` elsewhere is an
+/// injection, not the surface. Kept out of `member_info`: the std call paths read the global
+/// itself (`math.min`) by its name owner and rely on the type route finding nothing there.
+pub(crate) fn attached_global_table_member(
+    model: &SemanticModel,
+    prefix_type: &LuaType,
+    key: &LuaMemberKey,
+) -> Option<MemberRef> {
+    let (LuaType::Ref(id) | LuaType::Def(id)) = prefix_type else {
+        return None;
+    };
+    let def = model.type_def_of(id)?;
+    if def.kind != TypeDefKind::Class {
+        return None;
+    }
+    let name = key.name()?;
+    let facts = model.file_facts_of(def.file_id)?;
+    let decls = facts.decls_by_owner_syntax(def.owner_syntax?);
+    for decl in decls.filter(|decl| matches!(decl.kind, DeclKind::Global)) {
+        let owner = SemanticId::name(decl.name.clone());
+        let found = model
+            .members_of_owner_named(&owner, name)
+            .iter()
+            .find(|member| {
+                member.file_id == def.file_id && member_ref_matches_key(model, member, key)
+            })
+            .cloned();
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 /// 按各基类型的声明替换实参.
 pub(super) fn inherited_base_types(
     model: &SemanticModel,
