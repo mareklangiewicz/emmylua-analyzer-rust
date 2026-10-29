@@ -225,6 +225,8 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) flow_decl: HashMap<(FileId, SemanticId, FlowId), LuaType>,
     /// A captured local's value inside closures (`flow::captured_local_type`), per declaration.
     pub(crate) captured_local: HashMap<(FileId, SemanticId), Option<LuaType>>,
+    /// A member's value read from another closure (`flow::captured_member_type`), per member.
+    pub(crate) captured_member: HashMap<(FileId, SemanticId), Option<LuaType>>,
     /// Whole-function, syntax-only check for the local-table last-element proof.
     pub(crate) array_length_stable: HashMap<(FileId, SemanticId), bool>,
     /// Memoized declaration/member-trace states for loop-free flow graphs. See

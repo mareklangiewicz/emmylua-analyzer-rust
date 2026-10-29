@@ -472,3 +472,73 @@ fn closure_local_from_annotated_member_table_keeps_declared_type() {
         eq(true)
     );
 }
+
+#[googletest::gtest]
+fn closure_read_of_field_sees_its_writes_in_other_closures() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            local st = { active = false }
+            local function go() st.active = true end
+            local function leave() if st.active then return 1 end end
+
+            local M = {}
+            M.state = { done = false }
+            function M.go() M.state.done = not M.state.done end
+            function M.stop() M.state.done = true end
+            function M.leave() if M.state.done then return 1 end end
+
+            local direct = {}
+            direct.on = false
+            local function go2() direct.on = true end
+            local function leave2() if direct.on then return 1 end end
+            return go, leave, M, go2, leave2
+            "#
+        ),
+        eq(true)
+    );
+}
+
+#[googletest::gtest]
+fn closure_read_of_never_rewritten_field_keeps_its_value() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            local st = { active = false }
+            local function leave() if st.active then return 1 end end
+            return leave
+            "#
+        ),
+        eq(false)
+    );
+}
+
+#[googletest::gtest]
+fn closure_read_after_its_own_write_keeps_the_written_value() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            local st = { active = false }
+            local function stop() st.active = false end
+            local function go()
+              st.active = true
+              if st.active then return 1 end
+            end
+            return stop, go
+            "#
+        ),
+        eq(false)
+    );
+}

@@ -36,7 +36,14 @@ fn check_condition(
     semantic_model: &SemanticModel<'_>,
     condition: &emmylua_parser::LuaExpr,
 ) {
-    let mut expr_type = semantic_model.type_of_expr(condition.get_syntax_id());
+    // An index condition is read by flow, as a name condition already is: `if st.active` in one
+    // closure sees `st.active = true` in another (`flow::captured_member_type`).
+    let mut expr_type = match condition {
+        emmylua_parser::LuaExpr::IndexExpr(_) => {
+            semantic_model.type_of_expr_at(condition.get_syntax_id(), condition.get_range().start())
+        }
+        _ => semantic_model.type_of_expr(condition.get_syntax_id()),
+    };
     // A condition tests truthiness like an `and`/`or` operand: add back the nil an optional
     // function/class field's projection omits.
     if let Some(nil) = logical_left_nullable_extra(semantic_model, condition.get_syntax_id()) {

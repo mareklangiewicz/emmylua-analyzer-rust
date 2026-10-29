@@ -414,7 +414,126 @@ fn member_entry_type(
             return Some(ty);
         }
     }
+    if let Some(access) = access
+        && let Some(ty) = captured_member_type(model, member, access)
+    {
+        return Some(ty);
+    }
     flow_member_value_type(model, member)
+}
+
+/// A member read inside a closure (or from another file) whose path holds none of its writes
+/// there, as `captured_local_type` for a local: the closure may run after any write. A declared
+/// member (a `---@field`, a `---@type` on it or on one of its writes, an annotated table's
+/// field) keeps its declared type as the contract. Otherwise its value and every value its key is
+/// assigned on the same table in its file, widened; unknown when one of those is. A value
+/// reading the same key (`t.n = t.n + 1`) adds nothing. None when it is never reassigned.
+fn captured_member_type(
+    model: &SemanticModel,
+    member: &SemanticId,
+    access: &emmylua_parser::LuaIndexExpr,
+) -> Option<LuaType> {
+    let SemanticId::Member(member_key) = member else {
+        return None;
+    };
+    if member_key.file_id == model.file_id()
+        && access
+            .syntax()
+            .ancestors()
+            .find_map(emmylua_parser::LuaClosureExpr::cast)
+            .is_none()
+    {
+        return None;
+    }
+    let member_model = model.model_for(member_key.file_id);
+    let key = (member_key.file_id, member.clone());
+    if let Some(ty) = member_model.cache.borrow().captured_member.get(&key) {
+        return ty.clone();
+    }
+    let revision = member_model.cache.borrow().revision();
+    let ty = captured_member_type_uncached(&member_model, member);
+    member_model.cache.publish_if_complete(revision, |cache| {
+        cache.captured_member.insert(key, ty.clone());
+    });
+    ty
+}
+
+fn captured_member_type_uncached(model: &SemanticModel, member: &SemanticId) -> Option<LuaType> {
+    let facts = model.file_facts()?;
+    let def = facts.member_by_id(member)?;
+    if matches!(def.owner, SemanticId::TypeDef(_)) || def.doc_type_syntax.is_some() {
+        return model.type_of_member(member);
+    }
+    if let Some(declared) = annotated_table_field_type(model, def) {
+        return Some(declared);
+    }
+    // A table literal's field is written through whatever holds the table (`st.x = v` on
+    // `local st = { x = 1 }`, `M.st.x = v` on `M.st = { x = 1 }`).
+    let mut owners = vec![def.owner.clone()];
+    match &def.owner {
+        SemanticId::Member(table) => {
+            if let Some(decl) = facts.decl_by_value_range(table.key_range) {
+                owners.push(decl.id.clone());
+            } else if let Some(holder) = facts.member_by_value_range(table.key_range) {
+                owners.push(holder.id.clone());
+            }
+        }
+        SemanticId::Decl(_) => {}
+        _ => return None,
+    }
+    let tree = model.flow_tree()?;
+    let root = model.syntax_tree()?.get_red_root();
+    let reads_key = |value_syntax: &emmylua_parser::LuaSyntaxId| {
+        value_syntax.to_node_from_root(&root).is_some_and(|node| {
+            node.descendants()
+                .filter_map(emmylua_parser::LuaIndexExpr::cast)
+                .any(|index| member_key_from_index_expr(model, &index).as_ref() == Some(&def.key))
+        })
+    };
+    let mut writes = Vec::new();
+    for (_, flow_id) in tree.assignments_between(TextSize::default(), TextSize::from(u32::MAX)) {
+        for effect in tree.get_flow_effects(flow_id) {
+            if let FlowEffect::AssignMember {
+                owner,
+                key,
+                member: assigned,
+                value_syntax,
+            } = effect
+                && assigned != member
+                && key == &def.key
+                && owners.contains(owner)
+            {
+                writes.push((assigned, *value_syntax));
+            }
+        }
+    }
+    if writes.is_empty() {
+        return None;
+    }
+    if let Some((declared, _)) = writes.iter().find(|(assigned, _)| {
+        facts
+            .member_by_id(assigned)
+            .is_some_and(|write| write.doc_type_syntax.is_some())
+    }) {
+        return model.type_of_member(declared);
+    }
+    let mut types = vec![widen_variadic_const(&model.type_of_member(member)?)];
+    for (_, value_syntax) in writes {
+        if reads_key(&value_syntax) {
+            continue;
+        }
+        let ty = widen_variadic_const(&model.type_of_expr(value_syntax));
+        // A value of unknown (or any) type makes the whole capture that, not narrower.
+        for top in [LuaType::Unknown, LuaType::Any] {
+            if ty == top || matches!(&ty, LuaType::Union(u) if u.into_vec().contains(&top)) {
+                return Some(top);
+            }
+        }
+        if !types.contains(&ty) {
+            types.push(ty);
+        }
+    }
+    Some(LuaType::from_vec(types))
 }
 
 /// `---@type { panel: string? }` + `local st = { panel = nil }` (or `M.st = { panel = nil }`): with no
@@ -801,7 +920,11 @@ pub(crate) fn type_of_expr_at_node(
                             // Through the same declaration the projection can only refine the value
                             // (a generic default, say): nil stays flow's call, and `type_of_member`
                             // drops an optional function/class field's nil. Guards still apply below.
+                            // A literal is no refinement of the type flow widened it to: the
+                            // projection of `{ active = false }` is the initial value, not what
+                            // `st.active = true` elsewhere left there.
                             if !matches!(member_ty, LuaType::Nil | LuaType::Never)
+                                && widen_variadic_const(&info.typ) != member_ty
                                 && (is_generic
                                     || member_type_more_specific(
                                         model,
@@ -2532,7 +2655,23 @@ fn trace_member_uncached(
         }
         let node = tree.get_flow_node(current)?;
         match &node.kind {
-            FlowNodeKind::Assignment(_) => {
+            FlowNodeKind::Assignment(assign_ptr) => {
+                // A write found after the path left the read's closure: the closure may run after
+                // any write, as for a captured local.
+                let captured = || {
+                    let access = access?;
+                    let closure = access
+                        .syntax()
+                        .ancestors()
+                        .find_map(emmylua_parser::LuaClosureExpr::cast)?;
+                    if closure
+                        .get_range()
+                        .contains_range(assign_ptr.get_syntax_id().get_range())
+                    {
+                        return None;
+                    }
+                    captured_member_type(model, member, access)
+                };
                 for effect in tree.get_flow_effects(current) {
                     if let FlowEffect::AssignMember {
                         member: assigned_member,
@@ -2540,14 +2679,20 @@ fn trace_member_uncached(
                         ..
                     } = effect
                     {
-                        match member_write_match(
+                        let write = member_write_match(
                             model,
                             tree,
                             current,
                             member,
                             access,
                             Some(assigned_member),
-                        ) {
+                        );
+                        if write != MemberWrite::Unrelated
+                            && let Some(ty) = captured()
+                        {
+                            return Some(finalize(model, ty, path));
+                        }
+                        match write {
                             MemberWrite::Unrelated => continue,
                             MemberWrite::Invalidates => {
                                 // Replacing an owner or writing through a dynamic key removes

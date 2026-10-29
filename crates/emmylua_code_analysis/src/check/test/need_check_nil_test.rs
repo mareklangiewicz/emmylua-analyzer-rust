@@ -114,9 +114,19 @@ mod test {
 
     #[test]
     fn test_class_array_element_guard_preserves_assignment_type() {
+        // The guard right after a truthy write is itself always truthy, as for a local.
         for (value, expected) in [
-            ("'hello'", &[] as &[DiagnosticCode]),
-            ("1", &[DiagnosticCode::AssignTypeMismatch]),
+            (
+                "'hello'",
+                &[DiagnosticCode::UnnecessaryIf] as &[DiagnosticCode],
+            ),
+            (
+                "1",
+                &[
+                    DiagnosticCode::AssignTypeMismatch,
+                    DiagnosticCode::UnnecessaryIf,
+                ],
+            ),
         ] {
             check_class_array_guard(
                 "(string|number)",
