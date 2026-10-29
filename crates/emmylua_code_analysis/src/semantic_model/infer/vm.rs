@@ -919,6 +919,10 @@ impl<'a> InferVm<'a> {
                             types.push(info.typ.clone());
                         }
                     }
+                    // An empty `{}` has no known shape, as for a string key.
+                    if !Self::table_literal_has_members(self.model, &owner.ty) {
+                        return Value::plain(LuaType::Unknown);
+                    }
                     if !types.iter().any(LuaType::is_optional) {
                         types.push(LuaType::Nil);
                     }

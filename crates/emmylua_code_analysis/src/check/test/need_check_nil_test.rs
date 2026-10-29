@@ -854,4 +854,24 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_integer_key_read_of_an_empty_table_literal_is_unknown_not_nil() {
+        let mut ws = VirtualWorkspace::new();
+        // Dynamic-key writes record no member, so an empty `{}` has no known shape: the string-key
+        // read already says `unknown`; the integer-key read said `nil`.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            local g = {}
+            for y = 1, 3 do
+                g[y] = {}
+                for x = 1, 3 do
+                    g[y][x] = ' '
+                end
+            end
+            return g
+        "#
+        ));
+    }
 }
