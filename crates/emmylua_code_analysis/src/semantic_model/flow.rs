@@ -221,11 +221,12 @@ fn captured_local_type_uncached(
                 && !reads_itself(value_syntax)
             {
                 let ty = widen_variadic_const(&model.type_of_expr(*value_syntax));
-                // A value of unknown type makes the whole capture unknown, not narrower.
-                if ty.is_unknown()
-                    || matches!(&ty, LuaType::Union(u) if u.into_vec().iter().any(|t| t.is_unknown()))
-                {
-                    return Some(LuaType::Unknown);
+                // A value of unknown (or any) type makes the whole capture that, not narrower.
+                for top in [LuaType::Unknown, LuaType::Any] {
+                    if ty == top || matches!(&ty, LuaType::Union(u) if u.into_vec().contains(&top))
+                    {
+                        return Some(top);
+                    }
                 }
                 if !types.contains(&ty) {
                     types.push(ty);

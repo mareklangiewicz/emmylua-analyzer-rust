@@ -3547,6 +3547,28 @@ return t
     }
 
     #[test]
+    fn test_captured_local_with_an_any_value_reads_as_any() {
+        // `i` is written in its closure, so it reads as any of its values; one is the `any` of
+        // `#s`, and `integer | any` must not become `number` through `i + 1`.
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@param s any
+                local function f(s)
+                    local i, n = 0, #s
+                    return function()
+                        i = i + 1
+                        if s then i = n end
+                        return i
+                    end
+                end
+                return f
+            "#
+        ));
+    }
+
+    #[test]
     fn test_cross_file_runtime_member_priority_survives_reload() {
         let meta = r#"
             ---@meta
