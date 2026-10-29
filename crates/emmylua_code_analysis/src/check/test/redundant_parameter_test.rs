@@ -375,4 +375,56 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_overload_dots_and_optional_params() {
+        let mut ws = VirtualWorkspace::new();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::RedundantParameter,
+            r#"
+            ---@overload fun(...: integer): integer
+            ---@param ... number
+            ---@return number
+            local function mx(...) return 0 end
+
+            mx(1, 2, 3)
+        "#
+        ));
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::RedundantParameter,
+            r#"
+            ---@overload fun(x: string, ...: integer)
+            ---@param a string
+            local function f(a) end
+
+            f('a', 1, 2)
+        "#
+        ));
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::MissingParameter,
+            r#"
+            ---@overload fun(x?: integer)
+            ---@param a string
+            ---@param b string
+            local function g(a, b) end
+
+            g()
+        "#
+        ));
+
+        // Control: a fixed-arity overload still reports extra arguments.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::RedundantParameter,
+            r#"
+            ---@overload fun(x: integer)
+            ---@param a string
+            local function h(a) end
+
+            h(1, 2)
+        "#
+        ));
+    }
 }

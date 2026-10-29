@@ -536,30 +536,11 @@ fn doc_func_from_syntax(
     file_id: FileId,
     syntax: LuaSyntaxId,
 ) -> Option<LuaFunctionType> {
-    let tree = semantic_model.syntax_tree_of(file_id)?;
-    let node = syntax.to_node_from_root(&tree.get_red_root())?;
-    let LuaDocType::Func(func) = LuaDocType::cast(node)? else {
-        return None;
-    };
-    let params = func
-        .get_params()
-        .map(|param| {
-            (
-                String::new(),
-                param
-                    .get_type()
-                    .map(|ty| semantic_model.doc_type_lua_rich_in(file_id, ty.get_syntax_id())),
-            )
-        })
-        .collect();
-    Some(LuaFunctionType::new(
-        AsyncState::None,
-        false,
-        false,
-        params,
-        LuaType::Unknown,
-        None,
-    ))
+    // The shared doc-type conversion keeps `...` (name + variadic flag) and `x?` (nullable).
+    match semantic_model.doc_type_lua_rich_in(file_id, syntax) {
+        LuaType::DocFunction(func) => Some(func.as_ref().clone()),
+        _ => None,
+    }
 }
 
 /// Call-side argument slot count range: trailing multi-return calls expand per `Variadic`;
