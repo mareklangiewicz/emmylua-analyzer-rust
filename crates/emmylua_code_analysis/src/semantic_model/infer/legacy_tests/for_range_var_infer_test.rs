@@ -323,4 +323,26 @@ mod test {
         assert_eq!(ws.expr_ty("d2"), LuaType::Integer);
         assert_eq!(ws.expr_ty("d3"), ws.ty("B"));
     }
+
+    #[test]
+    fn test_standard_iterators_never_yield_a_nil_value() {
+        // `pairs` skips nil values and `ipairs` stops at the first one, so a nullable element
+        // type reaches the loop body without its nil.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+
+        ws.def(
+            r#"
+            ---@type table<string, string[]?>
+            local map = {}
+            ---@type (integer?)[]
+            local arr = {}
+
+            for _, v in pairs(map) do pairs_out = v end
+            for _, v in ipairs(arr) do ipairs_out = v end
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("pairs_out"), ws.ty("string[]"));
+        assert_eq!(ws.expr_ty("ipairs_out"), LuaType::Integer);
+    }
 }

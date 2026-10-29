@@ -502,7 +502,10 @@ impl<'db> SemanticModel<'db> {
                 }
             }
             // 2. Standard global pairs/ipairs: bind K/V from the parameter structure, then take the return function slot.
-            return self.infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index);
+            // `pairs`/`next` skip nil values and `ipairs` stops at the first, so no slot is nil.
+            return self
+                .infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index)
+                .map(remove_nil_from_type);
         }
 
         // Generic iterator functions: `for k in test()` / `for k in iter_fn`.
