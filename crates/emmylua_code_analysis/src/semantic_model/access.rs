@@ -637,8 +637,8 @@ impl<'db> SemanticModel<'db> {
     /// so all rendering paths share one candidate list.
     pub fn callable_candidates_for_expr(&self, callee: &LuaExpr) -> Vec<LuaFunctionType> {
         let mut out = callable_candidates_uncached(self, callee);
-        // The diagnostic path may only project the callee value type; append the
-        // full signature candidates (main + `---@overload`) for name callees.
+        // The diagnostic path holds the value type's main projection + `---@overload`s; append
+        // the VM's own main-signature projection (and cross-file globals) for name callees.
         if let LuaExpr::NameExpr(name_expr) = callee
             && let Some(owner) = self.resolve_name(name_expr.get_position())
         {

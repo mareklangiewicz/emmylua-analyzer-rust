@@ -145,6 +145,15 @@ impl LuaFunctionType {
         self.is_variadic
     }
 
+    /// Whether the last param takes every remaining arg: the variadic flag, or a last param
+    /// named `...` / typed `T...` (projections that don't set the flag).
+    pub fn takes_rest(&self) -> bool {
+        self.is_variadic
+            || self.params.last().is_some_and(|(name, ty)| {
+                name == "..." || ty.as_ref().is_some_and(LuaType::is_variadic)
+            })
+    }
+
     /// Parameter slots, including the receiver and any expanding or repeated tail.
     pub fn get_variadic_params(&self) -> VariadicType {
         let mut types: Vec<_> = self

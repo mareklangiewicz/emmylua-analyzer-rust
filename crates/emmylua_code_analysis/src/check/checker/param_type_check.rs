@@ -147,19 +147,19 @@ pub(crate) fn callable_candidates_uncached(
     {
         candidates = index_expr_callable_candidates(semantic_model, index_expr);
     }
-    if candidates.is_empty()
-        && let LuaExpr::NameExpr(name_expr) = callee
-        && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
-        && let Some(func) = semantic_model.type_of_decl_signature(&decl)
-    {
-        candidates.push(func);
-    }
-    // A name callee's value type is its main signature only; its `---@overload`s are candidates
-    // too, as in the VM's call selection.
-    if !candidates.is_empty()
-        && let LuaExpr::NameExpr(name_expr) = callee
+    if let LuaExpr::NameExpr(name_expr) = callee
         && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
     {
+        if candidates.is_empty()
+            && let Some(func) = semantic_model.type_of_decl_signature(&decl)
+        {
+            candidates.push(func);
+        }
+        if candidates.is_empty() {
+            return candidates;
+        }
+        // A name callee's value type is its main signature only; its `---@overload`s are
+        // candidates too, as in the VM's call selection.
         let vm = InferVm::new(semantic_model, &[]);
         for overload in vm.overload_candidates_for_decl(&decl) {
             if !candidates.contains(&overload) {
@@ -287,14 +287,12 @@ fn check_call(
     let explicit_generics = &analysis.explicit_generics;
 
     // Extra arguments are param_count's concern, but a candidate that cannot take them all
-    // (`fun(): number` for `test(x)`) must not accept the call when another candidate can.
-    let mut ordered: Vec<&LuaFunctionType> = candidates.iter().collect();
-    if ordered
+    // (`fun(): number` for `test(x)`, `fun(emit)` for `log('x', data)`) neither accepts the call
+    // nor is reported when another candidate can take them.
+    let (fits, too_many): (Vec<&LuaFunctionType>, Vec<_>) = candidates
         .iter()
-        .any(|func| !takes_too_many_args(func, args.len(), colon_call))
-    {
-        ordered.retain(|func| !takes_too_many_args(func, args.len(), colon_call));
-    }
+        .partition(|func| !takes_too_many_args(func, args.len(), colon_call));
+    let mut ordered = if fits.is_empty() { too_many } else { fits };
     // Cheap candidate ordering: check likely overloads first so the common
     // “one candidate matches” case returns before running the expensive
     // parameter-by-parameter check on every other overload.
@@ -302,9 +300,8 @@ fn check_call(
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });
 
-    // When every candidate fails, report the one with the fewest mismatches; on a tie, prefer one
-    // that takes all the arguments (`log('x', data)` against `fun(level, data)`, not `fun(emit)`).
-    let mut best: Option<((usize, bool), Vec<Mismatch>)> = None;
+    // When every candidate fails, report the one with the fewest mismatches.
+    let mut best: Option<(usize, Vec<Mismatch>)> = None;
     for candidate in ordered {
         let mismatches = check_candidate(
             semantic_model,
@@ -318,10 +315,7 @@ fn check_call(
         if mismatches.is_empty() {
             return;
         }
-        let rank = (
-            mismatches.len(),
-            takes_too_many_args(candidate, args.len(), colon_call),
-        );
+        let rank = mismatches.len();
         if best.as_ref().is_none_or(|(current, _)| rank < *current) {
             best = Some((rank, mismatches));
         }
@@ -434,7 +428,7 @@ fn table_literal_mismatch(
 
 /// More call arguments than the candidate has parameters (after the receiver rules), and no varargs.
 fn takes_too_many_args(func: &LuaFunctionType, arg_count: usize, colon_call: bool) -> bool {
-    !func.is_variadic()
+    !func.takes_rest()
         && arg_count
             .checked_sub(1)
             .and_then(|last| call_arg_param_index(func, last, colon_call))

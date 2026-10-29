@@ -502,17 +502,7 @@ fn function_types(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Vec<LuaFu
 
 /// Fixed-length function parameter count (last parameter variadic -> None).
 fn fixed_param_len(func: &LuaFunctionType) -> Option<usize> {
-    if func.is_variadic()
-        || func.get_params().last().is_some_and(|(name, ty)| {
-            name == "..."
-                || ty
-                    .as_ref()
-                    .is_some_and(|ty| matches!(ty, LuaType::Variadic(_)))
-        })
-    {
-        return None;
-    }
-    Some(func.get_params().len())
+    (!func.takes_rest()).then(|| func.get_params().len())
 }
 
 /// Call-side argument slot count range: trailing multi-return calls expand per `Variadic`;

@@ -521,7 +521,8 @@ fn match_call_candidate_impl(
     // `fun(_: T1..., _: T2...)` can be sliced correctly.
     prebind_variadic_generics(fun, args, param_start, arg_start, &mut bindings);
 
-    let mut takes_rest = fun.is_variadic();
+    // Also set in the loop: an alias param can expand to `T...`.
+    let mut takes_rest = fun.takes_rest();
     for (param_index, (name, param_ty)) in params.iter().enumerate().skip(param_start) {
         let index = arg_start + (param_index - param_start);
         let Some(param_ty) = param_ty else {
