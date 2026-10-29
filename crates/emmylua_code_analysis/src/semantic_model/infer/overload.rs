@@ -5,6 +5,7 @@
 //! diagnostics/completions should reuse this instead of maintaining their own argument
 //! matching.
 
+use std::cmp::Reverse;
 use std::rc::Rc;
 
 use emmylua_parser::{LuaAstNode, LuaExpr, LuaSyntaxId};
@@ -290,6 +291,15 @@ fn call_operator_self_type_inner(
     }
 }
 
+/// How well a candidate fits a call; greater is better. Args past the last param outrank any
+/// score, so `fun()` never beats a signature that takes them (`f:seek('end')` vs
+/// `fun(whence?, offset?)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CallRank {
+    surplus: Reverse<usize>,
+    score: i32,
+}
+
 /// Candidate selection: among candidates where all params unify successfully, take the
 /// highest score (literal/function structural exact matches are preferred).
 pub fn select_callable(
@@ -299,17 +309,17 @@ pub fn select_callable(
     colon_call: bool,
     receiver: Option<&LuaType>,
 ) -> Option<(LuaFunctionType, TplBindings)> {
-    let mut best: Option<(LuaFunctionType, TplBindings, i32)> = None;
+    let mut best: Option<(LuaFunctionType, TplBindings, CallRank)> = None;
     for candidate in candidates {
-        if let Some((bindings, score)) =
+        if let Some((bindings, rank)) =
             match_call_candidate(model, candidate, args, colon_call, receiver)
         {
             let replace = match &best {
-                Some((_, _, best_score)) => score > *best_score,
+                Some((_, _, best_rank)) => rank > *best_rank,
                 None => true,
             };
             if replace {
-                best = Some((candidate.clone(), bindings, score));
+                best = Some((candidate.clone(), bindings, rank));
             }
         }
     }
@@ -325,20 +335,20 @@ pub fn select_callable_all(
     colon_call: bool,
     receiver: Option<&LuaType>,
 ) -> Vec<(LuaFunctionType, TplBindings)> {
-    let mut best: Vec<(LuaFunctionType, TplBindings, i32)> = Vec::new();
+    let mut best: Vec<(LuaFunctionType, TplBindings, CallRank)> = Vec::new();
     for candidate in candidates {
-        if let Some((bindings, score)) =
+        if let Some((bindings, rank)) =
             match_call_candidate(model, candidate, args, colon_call, receiver)
         {
-            if let Some((_, _, best_score)) = best.first() {
-                if score < *best_score {
+            if let Some((_, _, best_rank)) = best.first() {
+                if rank < *best_rank {
                     continue;
                 }
-                if score > *best_score {
+                if rank > *best_rank {
                     best.clear();
                 }
             }
-            best.push((candidate.clone(), bindings, score));
+            best.push((candidate.clone(), bindings, rank));
         }
     }
     best.into_iter()
@@ -354,7 +364,7 @@ pub fn match_call_candidate(
     args: &[CallArg],
     colon_call: bool,
     receiver: Option<&LuaType>,
-) -> Option<(TplBindings, i32)> {
+) -> Option<(TplBindings, CallRank)> {
     match_call_candidate_impl(model, fun, args, colon_call, false, receiver)
 }
 
@@ -367,17 +377,17 @@ pub fn select_callable_partial(
     colon_call: bool,
     receiver: Option<&LuaType>,
 ) -> Option<(LuaFunctionType, TplBindings)> {
-    let mut best: Option<(LuaFunctionType, TplBindings, i32)> = None;
+    let mut best: Option<(LuaFunctionType, TplBindings, CallRank)> = None;
     for candidate in candidates {
-        if let Some((bindings, score)) =
+        if let Some((bindings, rank)) =
             match_call_candidate_impl(model, candidate, args, colon_call, true, receiver)
         {
             let replace = match &best {
-                Some((_, _, best_score)) => score > *best_score,
+                Some((_, _, best_rank)) => rank > *best_rank,
                 None => true,
             };
             if replace {
-                best = Some((candidate.clone(), bindings, score));
+                best = Some((candidate.clone(), bindings, rank));
             }
         }
     }
@@ -466,7 +476,7 @@ fn match_call_candidate_impl(
     colon_call: bool,
     allow_partial_variadic: bool,
     receiver: Option<&LuaType>,
-) -> Option<(TplBindings, i32)> {
+) -> Option<(TplBindings, CallRank)> {
     let mut bindings = TplBindings::new();
     let mut score = 0i32;
     let params = fun.get_params().to_vec();
@@ -706,16 +716,20 @@ fn match_call_candidate_impl(
             -50
         };
     }
-    // Args past the last param cost more than any missing or loosely matched ones, so `fun()`
-    // never beats a signature that takes them (`f:seek('end')` vs `fun(whence?, offset?)`).
-    if !takes_rest {
-        let surplus = args
-            .len()
-            .saturating_sub(arg_start + params.len().saturating_sub(param_start));
-        score -= 10_000 * surplus as i32;
-    }
+    let surplus = if takes_rest {
+        0
+    } else {
+        args.len()
+            .saturating_sub(arg_start + params.len().saturating_sub(param_start))
+    };
 
-    Some((bindings, score))
+    Some((
+        bindings,
+        CallRank {
+            surplus: Reverse(surplus),
+            score,
+        },
+    ))
 }
 
 /// Prebind T from call-site variadic generic params (`... T...`).
