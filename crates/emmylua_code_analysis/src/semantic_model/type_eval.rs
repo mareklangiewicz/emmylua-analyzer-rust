@@ -1205,11 +1205,10 @@ fn infer_from_class_to_object(
 }
 
 fn infer_fixed_param_count(function: &LuaFunctionType) -> usize {
-    let params = function.get_params();
-    let has_variadic = params
-        .last()
-        .is_some_and(|(name, ty)| name == "..." || ty.as_ref().is_some_and(|ty| ty.is_variadic()));
-    params.len() - usize::from(has_variadic)
+    function
+        .get_params()
+        .len()
+        .saturating_sub(usize::from(function.takes_rest()))
 }
 
 fn collect_infer_from_function(

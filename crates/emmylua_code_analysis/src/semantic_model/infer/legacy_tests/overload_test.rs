@@ -99,4 +99,22 @@ mod test {
         let ty = ws.expr_ty("F:seek('end')");
         assert_eq!(ws.humanize_type(ty), "integer?");
     }
+
+    #[test]
+    fn test_overload_with_alias_variadic_param_takes_the_rest() {
+        // `xs: Ints` expands to `integer...`, so it takes all three args. Counted as one fixed
+        // param, it would lose to the bare main signature `fun(...)`, which returns `unknown`.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@alias Ints integer...
+            ---@overload fun(a?: integer, b?: integer): string
+            ---@overload fun(xs: Ints): boolean
+            local function k(...) end
+            E = k(1, 2, 3)
+            "#,
+        );
+        let ty = ws.expr_ty("E");
+        assert_eq!(ws.humanize_type(ty), "boolean");
+    }
 }
