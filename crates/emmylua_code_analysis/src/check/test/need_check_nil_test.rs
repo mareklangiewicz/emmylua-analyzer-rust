@@ -543,4 +543,46 @@ mod test {
         "#
         ));
     }
+    #[test]
+    fn test_guard_narrows_field_written_in_another_function() {
+        // `init` writes the field, so the read takes the runtime member's type; the `and`
+        // guard must still narrow it, through `Store.x` and through a method's `self.x`.
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Checks
+            ---@field safe boolean?
+
+            ---@class Store
+            ---@field checks Checks?
+            local Store = {}
+
+            ---@param checks Checks?
+            function Store.init(checks) Store.checks = checks end
+
+            function Store.use()
+                if Store.checks and Store.checks.safe then return 1 end
+            end
+        "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Checks2
+            ---@field safe boolean?
+
+            ---@class Store2
+            ---@field checks Checks2?
+            local Store2 = {}
+
+            ---@param checks Checks2?
+            function Store2:init(checks) self.checks = checks end
+
+            function Store2:use()
+                if self.checks and self.checks.safe then return 1 end
+            end
+        "#
+        ));
+    }
 }

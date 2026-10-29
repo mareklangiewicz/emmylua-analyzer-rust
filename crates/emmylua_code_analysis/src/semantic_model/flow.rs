@@ -618,6 +618,9 @@ pub(crate) fn type_of_expr_at_node(
             apply_casts(model.type_of_expr_node(&expr), AsOnly)
         }
         LuaExpr::IndexExpr(index_expr) => {
+            // A guard (`if t.x then`) narrows every member read, whichever source typed it.
+            let guarded =
+                |ty: LuaType| guarded_index_type(model, index_expr, offset, &ty).unwrap_or(ty);
             if let Some(ty) = array::last_element_type(model, index_expr, offset) {
                 return apply_casts(ty, All);
             }
@@ -708,7 +711,7 @@ pub(crate) fn type_of_expr_at_node(
                         } else {
                             prefix_member_ty
                         };
-                        return apply_casts(ty, All);
+                        return apply_casts(guarded(ty), All);
                     }
                 }
                 // Computed-key fields in table literals (`[key] = 1`) keep literal values in type queries:
@@ -740,7 +743,7 @@ pub(crate) fn type_of_expr_at_node(
                         }
                     }
                     if let Some(ty) = model.member_type(&prefix_ty, &member_def.key) {
-                        return apply_casts(ty, All);
+                        return apply_casts(guarded(ty), All);
                     }
                 }
                 if !resolved_is_runtime {
@@ -767,7 +770,7 @@ pub(crate) fn type_of_expr_at_node(
                     {
                         let runtime_ty = type_of_member_at(model, &runtime_member.id, offset);
                         if !matches!(runtime_ty, LuaType::Unknown) {
-                            return apply_casts(runtime_ty, All);
+                            return apply_casts(guarded(runtime_ty), All);
                         }
                     }
                 }
@@ -785,7 +788,7 @@ pub(crate) fn type_of_expr_at_node(
                         if info.id.as_ref() != Some(&member_id) {
                             if is_generic || member_type_more_specific(model, &info.typ, &member_ty)
                             {
-                                return apply_casts(info.typ, All);
+                                return apply_casts(guarded(info.typ), All);
                             }
                         } else {
                             // Through the same declaration the projection can only refine the value
@@ -808,8 +811,7 @@ pub(crate) fn type_of_expr_at_node(
                         }
                     }
                 }
-                let member_ty =
-                    guarded_index_type(model, index_expr, offset, &member_ty).unwrap_or(member_ty);
+                let member_ty = guarded(member_ty);
                 return apply_casts(member_ty, AsOnly);
             }
             // Inside a `#d == n` branch, `d[1]` no longer carries nil when the array length is known.
