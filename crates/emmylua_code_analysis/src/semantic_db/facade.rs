@@ -10,12 +10,12 @@ use emmylua_parser::{LuaChunk, LuaParseError, LuaSyntaxId, LuaSyntaxTree};
 use rowan::{TextRange, TextSize};
 use smol_str::SmolStr;
 
-use crate::{LuaMemberKey, LuaObjectType};
 use crate::semantic_db::types::LiteralShell;
 use crate::{
     GenericTpl, GenericTplId, LuaAliasCallKind, LuaAliasCallType, LuaArrayType, LuaStringTplType,
     LuaTupleStatus, LuaTupleType, VariadicType,
 };
+use crate::{LuaMemberKey, LuaObjectType};
 
 use super::SemanticDatabase;
 use super::def::{

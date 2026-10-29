@@ -276,17 +276,11 @@ impl<'db> SemanticModel<'db> {
                             );
                         }
                         LuaDocObjectFieldKey::String(str) => {
-                            fields.insert(
-                                LuaMemberKey::Name(SmolStr::new(str.get_value())),
-                                value,
-                            );
+                            fields.insert(LuaMemberKey::Name(SmolStr::new(str.get_value())), value);
                         }
                         LuaDocObjectFieldKey::Integer(num) => {
                             if let NumberResult::Int(i) = num.get_number_value() {
-                                fields.insert(
-                                    LuaMemberKey::Integer(i),
-                                    value,
-                                );
+                                fields.insert(LuaMemberKey::Integer(i), value);
                             }
                         }
                         LuaDocObjectFieldKey::Type(key_ty) => {

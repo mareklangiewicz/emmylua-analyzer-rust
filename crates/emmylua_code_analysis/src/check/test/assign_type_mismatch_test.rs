@@ -3887,11 +3887,15 @@ return t
         let ab = "---@class IA\n---@field a integer\n---@class IB\n---@field b string\n";
         for target in ["{a: integer} & {b: string}", "IA & IB"] {
             assert_eq!(
-                reported(&format!("{ab}---@type {target}\nlocal x = {{ a = 1, b = 'x' }}")),
+                reported(&format!(
+                    "{ab}---@type {target}\nlocal x = {{ a = 1, b = 'x' }}"
+                )),
                 []
             );
             assert_eq!(
-                reported(&format!("{ab}---@type {target}\nlocal x = {{ a = 1, b = 2 }}")),
+                reported(&format!(
+                    "{ab}---@type {target}\nlocal x = {{ a = 1, b = 2 }}"
+                )),
                 [(AssignTypeMismatch, "2".to_string())]
             );
         }
