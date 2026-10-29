@@ -825,7 +825,15 @@ pub(crate) fn type_of_expr_at_node(
             if let Some(known_ty) = array_index_with_known_len(model, &index_expr, offset) {
                 return apply_casts(known_ty, All);
             }
-            let ty = model.type_of_expr_node(&expr);
+            let mut ty = model.type_of_expr_node(&expr);
+            // `for i = 1, #t do t[i]`: within `t`'s border whatever `t` is (a `{ ... }` literal, say).
+            if let Some(prefix) = index_expr.get_prefix_expr()
+                && let Some(emmylua_parser::LuaIndexKey::Expr(key_expr)) =
+                    index_expr.get_index_key()
+                && numeric_for_loop_index(model, &key_expr, &prefix)
+            {
+                ty = remove_type(ty, &LuaType::Nil);
+            }
             let ty = guarded_index_type(model, index_expr, offset, &ty).unwrap_or(ty);
             apply_casts(ty, All)
         }

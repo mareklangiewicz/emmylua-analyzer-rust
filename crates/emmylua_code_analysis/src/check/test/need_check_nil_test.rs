@@ -874,4 +874,38 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_numeric_for_len_bound_covers_a_vararg_table_literal() {
+        let mut ws = VirtualWorkspace::new();
+        // `{ ... }` is a table literal, not an array type; the `#targets` bound holds all the same.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@param ... fun(a: integer)
+            local function tee(...)
+                local targets = { ... }
+                for i = 1, #targets do
+                    targets[i](1)
+                end
+            end
+            return tee
+        "#
+        ));
+        // Outside such a bound the read still may be nil.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@param n integer
+            ---@param ... fun(a: integer)
+            local function tee(n, ...)
+                local targets = { ... }
+                for i = 1, n do
+                    targets[i](1)
+                end
+            end
+            return tee
+        "#
+        ));
+    }
 }
