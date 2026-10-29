@@ -552,7 +552,7 @@ fn check_value_against_target(
     check_value_against(context, semantic_model, target, value_expr);
 }
 
-fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
+pub(super) fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
     if map_params(ty).is_some() {
         return true;
     }
@@ -585,7 +585,7 @@ fn is_structured_table_target(semantic_model: &SemanticModel<'_>, ty: &LuaType) 
     }
 }
 
-fn check_value_against(
+pub(super) fn check_value_against(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     target: &LuaType,
@@ -807,7 +807,7 @@ fn check_table_fields(
         return;
     }
     let mut members = HashMap::new();
-    let mut required_members: Vec<(String, LuaType)> = Vec::new();
+    let mut required_members: Vec<(LuaMemberKey, LuaType)> = Vec::new();
     for info in semantic_model.member_infos(target) {
         let declaration = info.id.as_ref().and_then(|id| {
             semantic_model
@@ -821,7 +821,7 @@ fn check_table_fields(
         let required = declaration.is_some_and(|member| !member.is_nullable)
             && !is_optional(semantic_model, &info.typ);
         if required {
-            required_members.push((info.key.to_path(), info.typ.clone()));
+            required_members.push((info.key.clone(), info.typ.clone()));
         }
         members.insert(info.key, info.typ);
     }
@@ -874,8 +874,21 @@ fn check_table_fields(
                     .unwrap_or_else(|| key.get_path_part())
             })
             .collect();
-        for (name, required_ty) in &required_members {
-            if !field_names.contains(name.as_str()) {
+        // A multi-value call (or `...`) as the last positional field fills every slot from its own.
+        let expands_from = match fields.last() {
+            Some((field, LuaIndexKey::Idx(index), _)) => field
+                .get_value_expr()
+                .map(|value| semantic_model.type_of_expr(value.get_syntax_id()))
+                .filter(LuaType::is_multi_return)
+                .map(|_| *index as i64),
+            _ => None,
+        };
+        for (key, required_ty) in &required_members {
+            let filled = match (key, expands_from) {
+                (LuaMemberKey::Integer(slot), Some(from)) => *slot >= from,
+                _ => false,
+            };
+            if !filled && !field_names.contains(key.to_path().as_str()) {
                 if let Some((first_field, _, _)) = fields.first()
                     && let Some(value_expr) = first_field.get_value_expr()
                 {
@@ -901,8 +914,21 @@ fn check_table_value(
         check_value_against(context, semantic_model, expected, value_expr);
         return;
     }
-    let value_ty =
-        semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
+    // An undocumented closure takes its params from the field, and return-type-mismatch checks
+    // each of its `return`s against the field, flow-narrowed. Its inferred signature has no
+    // narrowing (`return type(n) == 'string' and n or nil` infers `n`'s whole type).
+    if let LuaExpr::ClosureExpr(closure) = value_expr
+        && semantic_model
+            .file_facts()
+            .and_then(|facts| facts.signature_by_closure(closure.get_syntax_id()))
+            .is_some_and(|signature| signature.docs.is_none())
+    {
+        return;
+    }
+    // A call fills its own slot with its first value (a last one also fills the slots after).
+    let value_ty = semantic_model
+        .type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start())
+        .into_first_value();
     // Nil omits an entry from a table constructor.
     let expected_or_absent = LuaType::from_vec(vec![expected.clone(), LuaType::Nil]);
     if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)

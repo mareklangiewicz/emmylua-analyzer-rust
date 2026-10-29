@@ -993,4 +993,64 @@ mod tests {
             "#
         ));
     }
+
+    /// A returned table literal is checked field by field, like an assigned one.
+    #[test]
+    fn test_returned_table_literal_fields() {
+        let code = DiagnosticCode::ReturnTypeMismatch;
+        let cases = [
+            (
+                "---@return {a: integer}\nlocal function f() return {a = 'x'} end",
+                false,
+            ),
+            (
+                "---@return {a: integer}\nlocal function f() return {a = 1} end",
+                true,
+            ),
+            (
+                "---@return integer[]\nlocal function f() return {'s'} end",
+                false,
+            ),
+            (
+                "---@return integer[]\nlocal function f() return {1, 2} end",
+                true,
+            ),
+            (
+                "---@return table<integer, string>\nlocal function f() return {count = 'x'} end",
+                false,
+            ),
+            (
+                "---@return table<integer, string>\nlocal function f() return {[1] = 2} end",
+                false,
+            ),
+            (
+                "---@return table<integer, string>\nlocal function f() return {'ok'} end",
+                true,
+            ),
+            (
+                "---@return {a: integer}|string[]\nlocal function f() return {'s'} end",
+                true,
+            ),
+            // one of two returns: each value is checked against every declared slot
+            (
+                "---@return integer\n---@return {a: integer}\nlocal function f() return 1, {a = 'x'} end",
+                false,
+            ),
+            (
+                "---@return integer\n---@return {a: integer}\nlocal function f() return 1, {a = 2} end",
+                true,
+            ),
+            // not a structured target: the whole literal
+            ("---@return string\nlocal function f() return {} end", false),
+            (
+                "---@return table\nlocal function f() return {a = 1} end",
+                true,
+            ),
+        ];
+        let wrong: Vec<_> = cases
+            .iter()
+            .filter(|(src, clean)| VirtualWorkspace::new().has_no_diagnostic(code, src) != *clean)
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
 }

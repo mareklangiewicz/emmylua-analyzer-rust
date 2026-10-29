@@ -3785,4 +3785,72 @@ return t
         assert_eq!(assign_mismatches("f({a = 'x'})"), 0);
         assert_eq!(assign_mismatches("f({a = true})"), 1);
     }
+
+    /// A call in a table constructor fills its own slot with its first value; the last one
+    /// also fills the slots after it.
+    #[test]
+    fn test_table_literal_call_fields_fill_slots() {
+        let pre = "---@return integer, integer\nlocal function range() return 0, 0 end\n---@class Pair\n---@field [1] integer\n---@field [2] integer\n";
+        let cases = [
+            ("---@type Pair\nlocal x = { range() }", true),
+            (
+                "---@param p Pair\nlocal function take(p) end\ntake({ range() })",
+                true,
+            ),
+            ("---@type Pair\nlocal x = { range(), 'a' }", false),
+            ("---@type integer[]\nlocal x = { range(), range() }", true),
+            ("---@type integer[]\nlocal x = { 'a', range() }", false),
+            ("---@type string[]\nlocal x = { range() }", false),
+        ];
+        let wrong: Vec<_> = cases
+            .iter()
+            .filter(|(src, clean)| {
+                VirtualWorkspace::new()
+                    .has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &format!("{pre}{src}"))
+                    != *clean
+            })
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// An undocumented closure field is checked by its `return`s (return-type-mismatch,
+    /// flow-narrowed), not by its inferred signature; a named function by its signature.
+    #[test]
+    fn test_table_literal_closure_fields() {
+        let pre = "---@class Drv\n---@field read fun(path: string): string?\n---@return string|table|nil\nlocal function nodeat(path) end\n";
+        let codes = |src: &str| -> Vec<DiagnosticCode> {
+            check_source(&format!("{pre}{src}"))
+                .iter()
+                .map(|d| d.code)
+                .filter(|code| {
+                    matches!(
+                        code,
+                        DiagnosticCode::AssignTypeMismatch | DiagnosticCode::ReturnTypeMismatch
+                    )
+                })
+                .collect()
+        };
+        let narrowed =
+            "read = function(p) local n = nodeat(p) return type(n) == 'string' and n or nil end";
+        assert_eq!(
+            codes(&format!("---@type Drv\nlocal x = {{ {narrowed} }}")),
+            []
+        );
+        assert_eq!(
+            codes(&format!(
+                "---@return Drv\nlocal function mk() return {{ {narrowed} }} end"
+            )),
+            []
+        );
+        assert_eq!(
+            codes("---@type Drv\nlocal x = { read = function(p) return 1 end }"),
+            [DiagnosticCode::ReturnTypeMismatch]
+        );
+        assert_eq!(
+            codes(
+                "---@return integer\nlocal function r(p) return 1 end\n---@type Drv\nlocal x = { read = r }"
+            ),
+            [DiagnosticCode::AssignTypeMismatch]
+        );
+    }
 }

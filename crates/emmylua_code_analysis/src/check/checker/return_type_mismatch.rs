@@ -4,13 +4,14 @@
 //! Supports multiple return values (union components checked individually), generic parameters (uninstantiated `Ref("T")` skipped),
 //! class inheritance alias function types, and `return expr ---@as type` inline assertions.
 
-use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaReturnStat};
+use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaExpr, LuaReturnStat};
 
 use crate::LuaType;
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_check::is_compatible;
 use crate::{DiagnosticCode, SemanticId, SignatureDoc, TypeDef};
 
+use super::assign_type_mismatch::{check_value_against, is_structured_table_target};
 use super::{CheckContext, Checker, own_return_stats};
 use crate::semantic_model::render::humanize_type;
 
@@ -68,6 +69,16 @@ fn check_return_stat(
     docs: &SignatureDoc,
 ) {
     for expr in ret.get_expr_list() {
+        // The primitive check takes any table literal for a structured type; its fields are
+        // checked one by one, as for an assignment.
+        if let LuaExpr::TableExpr(_) = expr
+            && is_structured_table_target(semantic_model, expected)
+        {
+            context.reporting_as(DiagnosticCode::ReturnTypeMismatch, |context| {
+                check_value_against(context, semantic_model, expected, &expr)
+            });
+            continue;
+        }
         let raw = semantic_model.type_of_expr_at(expr.get_syntax_id(), expr.get_range().start());
         // Uninstantiated function generic argument `Ref("T")`: check against the constraint when present, otherwise skip.
         if is_unresolved_generic_ref(semantic_model, &raw, docs) {
