@@ -333,15 +333,25 @@ fn eval_sub_call(model: &SemanticModel, call: &LuaAliasCallType) -> Option<LuaTy
         return None;
     };
     let left = expand_alias_branches(model, left)?;
-    if left.contain_tpl() {
+    if left.contain_tpl() || holds_generic_placeholder(model, &left) {
         return None;
     }
     Some(subtract(&left, right))
 }
 
-/// Settle the `L - R` calls a finished call result still holds: their `T` was left unbound, so
-/// `T -?` becomes `T`, as a bare unbound `T` would be.
-pub(crate) fn settle_unbound_sub_calls(ty: &LuaType) -> LuaType {
+/// A signature keeps its class's `---@class C<T>` / `---@generic T` as a placeholder `Ref("T")`
+/// with no type behind it until a receiver or call binds it.
+fn holds_generic_placeholder(model: &SemanticModel, ty: &LuaType) -> bool {
+    ty.any_type(|ty| match ty {
+        LuaType::Ref(id) => model.type_def_of(id).is_none(),
+        _ => false,
+    })
+}
+
+/// Settle the `L - R` calls a finished call result still holds. One whose `L` a receiver or call
+/// has bound since is evaluated now; one whose `T` was left unbound becomes `T`, as a bare
+/// unbound `T` would be.
+pub(crate) fn settle_sub_calls(model: &SemanticModel, ty: &LuaType) -> LuaType {
     if !ty.any_type(
         |ty| matches!(ty, LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::Sub),
     ) {
@@ -350,9 +360,10 @@ pub(crate) fn settle_unbound_sub_calls(ty: &LuaType) -> LuaType {
     map_type(ty, &mut |ty| match ty {
         LuaType::Call(call) if call.get_call_kind() == LuaAliasCallKind::Sub => {
             match call.get_operands().as_slice() {
-                [left, right] if left.contain_tpl() => {
-                    Some(subtract(&settle_unbound_sub_calls(left), right))
-                }
+                [left, right] => Some(
+                    eval_sub_call(model, call)
+                        .unwrap_or_else(|| subtract(&settle_sub_calls(model, left), right)),
+                ),
                 _ => None,
             }
         }

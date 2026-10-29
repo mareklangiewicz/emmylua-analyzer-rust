@@ -31,7 +31,7 @@ use crate::semantic_model::member::{
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
     sanitize_unresolved_generics, sanitize_unresolved_generics_with_model,
-    settle_unbound_sub_calls, substitute_named_refs,
+    settle_sub_calls, substitute_named_refs,
 };
 use crate::{
     AsyncState, FileId, GenericTpl, GenericTplId, InFiled, LuaAliasCallKind, LuaArrayType,
@@ -2009,7 +2009,7 @@ impl<'a> InferVm<'a> {
         // Unbound generic params in the call result must not leak as bare TplRefs; degrade
         // them all to Unknown.
         let allowed_tpls: HashSet<GenericTplId> = HashSet::new();
-        let ret = settle_unbound_sub_calls(&ret);
+        let ret = settle_sub_calls(self.model, &ret);
         let ret = sanitize_unresolved_generics_with_model(self.model, &ret, &allowed_tpls);
         // Degrading can make union members equal (`Box<V1>|Box<V2>` -> `Box<unknown>` twice).
         let ret = match ret {

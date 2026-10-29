@@ -23,7 +23,7 @@ use super::type_check::{RequiredChecks, TypeCheckFailReason, TypeCheckResult, ch
 mod alias_expansion;
 use alias_expansion::AliasPath;
 pub(crate) use alias_expansion::{
-    expand_alias_branches, expand_alias_head, settle_unbound_sub_calls, with_expanded_alias,
+    expand_alias_branches, expand_alias_head, settle_sub_calls, with_expanded_alias,
 };
 
 #[cfg(test)]

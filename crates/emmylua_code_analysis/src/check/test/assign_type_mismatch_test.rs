@@ -3462,6 +3462,55 @@ return t
     }
 
     #[test]
+    fn test_not_null_of_a_class_generic_strips_nil_once_bound() {
+        // `std.NotNull<B>` is `B -?`; on a method of `Pairs<A, B>` it must wait for the receiver
+        // to bind `B`, not collapse to `B` first and get `string?` back.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Pairs<A, B>
+                local Pairs = {}
+
+                ---@return table<A, std.NotNull<B>>
+                function Pairs:tomap() return {} end
+
+                ---@return std.NotNull<B>
+                function Pairs:second() return nil end
+
+                ---@param p Pairs<string, string?>
+                local function f(p)
+                    ---@type table<string, string>
+                    local m = p:tomap()
+                    ---@type string
+                    local s = p:second()
+                    return m, s
+                end
+                return f
+            "#
+        ));
+        // It strips only nil.
+        assert!(!ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@class Pairs2<A, B>
+                local Pairs2 = {}
+
+                ---@return std.NotNull<B>
+                function Pairs2:second() return nil end
+
+                ---@param p Pairs2<string, (string|integer)?>
+                local function f(p)
+                    ---@type string
+                    local s = p:second()
+                    return s
+                end
+                return f
+            "#
+        ));
+    }
+
+    #[test]
     fn test_cross_file_runtime_member_priority_survives_reload() {
         let meta = r#"
             ---@meta
