@@ -1027,8 +1027,8 @@ fn reads_index_target(
         && dynamic_keys(model, expr).as_ref() == Some(&target.1)
 }
 
-/// Require a non-nil guard on every incoming path, with no intervening direct write
-/// (to the access, or to what one of its dynamic keys reads).
+/// Require a guard on every incoming path, with no intervening direct write (to the access, or to
+/// what one of its dynamic keys reads). The result is the union of what each path's guard proves.
 fn guarded_index_type(
     model: &SemanticModel,
     index: &emmylua_parser::LuaIndexExpr,
@@ -1044,23 +1044,22 @@ fn guarded_index_type(
             return None;
         };
         array.get_base().clone()
-    } else if ty.is_nullable() {
+    } else if ty.is_nullable() || matches!(ty, LuaType::Union(_)) {
+        // A non-nullable union can still lose components (`type(t.x) == 'function'`).
         ty.clone()
     } else {
         return None;
     };
     let access = LuaExpr::IndexExpr(index.clone());
     let target = index_target(model, &access)?;
-    let mut narrowing = Narrowing::Truthy;
+    let mut narrowings = Vec::new();
     guarded_on_all_paths(
         model,
         index,
         offset,
         |cond, truthy| {
             if let Some(guard) = narrow_index_condition(model, &target, &access, cond, truthy) {
-                if matches!(guard, Narrowing::NotNil) {
-                    narrowing = guard;
-                }
+                narrowings.push(guard);
                 true
             } else {
                 false
@@ -1080,7 +1079,10 @@ fn guarded_index_type(
             Some(())
         },
     )?;
-    Some(apply_narrowing(model, ty, &narrowing))
+    narrowings
+        .iter()
+        .map(|narrowing| apply_narrowing(model, ty.clone(), narrowing))
+        .reduce(merge_types)
 }
 
 /// Match truthiness and direct nil comparisons without treating a non-nil boolean as a guard.
@@ -1103,7 +1105,8 @@ fn narrow_index_condition(
         {
             return Some(Narrowing::NotNil);
         }
-        // `type(t.x) == 'function'` (any name but `'nil'`) / `type(t.x) ~= 'nil'`.
+        // `type(t.x) == 'function'` keeps the functions (any name but `'nil'`); `type(t.x) ~= 'nil'`
+        // removes nil.
         if let LuaExpr::CallExpr(call) = &value
             && let Some(LuaExpr::NameExpr(callee)) = call.get_prefix_expr()
             && callee.get_name_text().as_deref() == Some("type")
@@ -1113,7 +1116,13 @@ fn narrow_index_condition(
             && branch_is_true == ((op == BinaryOperator::OpEq) != (name.as_str() == "nil"))
             && reads_index_target(model, target, access, &arg)
         {
-            return Some(Narrowing::NotNil);
+            return Some(match primitive_type_from_name(name) {
+                Some(primitive) if name.as_str() != "nil" => Narrowing::FilterPrimitive {
+                    primitive,
+                    keep_matching: true,
+                },
+                _ => Narrowing::NotNil,
+            });
         }
         return None;
     }

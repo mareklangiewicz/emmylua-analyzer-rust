@@ -462,4 +462,58 @@ mod test {
             "#,
         ));
     }
+
+    #[test]
+    fn test_type_guard_narrows_an_access_path_to_its_callable_part() {
+        // An object type's field and a dynamic key have no member declaration: their access path
+        // carries the `type()` guard, which keeps only the functions.
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@param o { x: string|fun(): string }
+            ---@param answers table<string, string|fun(): string>
+            ---@param s string
+            local function f(o, answers, s)
+                if type(o.x) == 'function' then o.x() end
+                if type(answers[s]) == 'function' then return answers[s]() end
+            end
+            return f
+            "#,
+        ));
+        // The other branch, a different key, and a union of guards that lets a string through.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@param answers table<string, string|fun(): string>
+            ---@param s string
+            local function f(answers, s)
+                if type(answers[s]) ~= 'function' then return answers[s]() end
+            end
+            return f
+            "#,
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@param answers table<string, string|fun(): string>
+            ---@param s string
+            ---@param t string
+            local function f(answers, s, t)
+                if type(answers[s]) == 'function' then return answers[t]() end
+            end
+            return f
+            "#,
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@param o { x: string|fun(): string }
+            local function f(o)
+                if type(o.x) == 'function' or type(o.x) == 'string' then o.x() end
+            end
+            return f
+            "#,
+        ));
+    }
 }
