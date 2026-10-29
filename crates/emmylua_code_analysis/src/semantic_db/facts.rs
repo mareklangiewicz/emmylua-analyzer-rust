@@ -130,6 +130,7 @@ pub struct FileFacts {
     decl_by_id: HashMap<SemanticId, usize>,
     member_by_id: HashMap<SemanticId, usize>,
     member_by_value_syntax: HashMap<LuaSyntaxId, usize>,
+    member_by_value_range: HashMap<TextRange, usize>,
     type_def_by_id: HashMap<SemanticId, usize>,
     members_by_owner: HashMap<SemanticId, Vec<usize>>,
     members_by_owner_name: HashMap<(SemanticId, SmolStr), Vec<usize>>,
@@ -226,6 +227,12 @@ impl FileFacts {
 
     pub fn member_by_value_syntax(&self, syntax: LuaSyntaxId) -> Option<&Member> {
         let index = self.member_by_value_syntax.get(&syntax)?;
+        self.members.get(*index)
+    }
+
+    /// Member whose assigned value has `range` (table-literal identity lookup, as `decl_by_value_range`).
+    pub fn member_by_value_range(&self, range: TextRange) -> Option<&Member> {
+        let index = self.member_by_value_range.get(&range)?;
         self.members.get(*index)
     }
 
@@ -925,9 +932,13 @@ impl FactsBuilder {
             .map(|(i, member)| (member.id.clone(), i))
             .collect();
         let mut member_by_value_syntax = HashMap::new();
+        let mut member_by_value_range = HashMap::new();
         for (index, member) in self.members.iter().enumerate() {
             if let Some(syntax) = member.value_syntax {
                 member_by_value_syntax.entry(syntax).or_insert(index);
+                member_by_value_range
+                    .entry(syntax.get_range())
+                    .or_insert(index);
             }
         }
         let type_def_by_id = self
@@ -1080,6 +1091,7 @@ impl FactsBuilder {
             decl_by_id,
             member_by_id,
             member_by_value_syntax,
+            member_by_value_range,
             type_def_by_id,
             members_by_owner,
             members_by_owner_name,

@@ -447,3 +447,28 @@ fn closure_local_from_module_field_keeps_declared_type() {
         eq(true)
     );
 }
+
+#[googletest::gtest]
+fn closure_local_from_annotated_member_table_keeps_declared_type() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            local M = {}
+            ---@type { panel: string? }
+            M.state = { panel = nil }
+            ---@return string? p
+            function M.get()
+              local p = M.state.panel
+              if p then return p end
+              return nil
+            end
+            return M
+            "#
+        ),
+        eq(true)
+    );
+}

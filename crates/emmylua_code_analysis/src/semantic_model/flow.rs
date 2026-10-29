@@ -417,9 +417,9 @@ fn member_entry_type(
     flow_member_value_type(model, member)
 }
 
-/// `---@type { panel: string? }` + `local st = { panel = nil }`: with no assignment on the path (a closure
-/// body reading `st.panel` starts at its own entry), a field of the annotated table is what the annotation
-/// declares, not the literal's initial value.
+/// `---@type { panel: string? }` + `local st = { panel = nil }` (or `M.st = { panel = nil }`): with no
+/// assignment on the path (a closure body reading `st.panel` starts at its own entry), a field of the
+/// annotated table is what the annotation declares, not the literal's initial value.
 fn annotated_table_field_type(
     model: &SemanticModel,
     def: &crate::semantic_db::def::Member,
@@ -428,8 +428,10 @@ fn annotated_table_field_type(
         return None;
     };
     let facts = model.file_facts_of(table.file_id)?;
-    let decl = facts.decl_by_value_range(table.key_range)?;
-    let type_syntax = decl.doc_type_syntax?;
+    let type_syntax = match facts.decl_by_value_range(table.key_range) {
+        Some(decl) => decl.doc_type_syntax?,
+        None => facts.member_by_value_range(table.key_range)?.doc_type_syntax?,
+    };
     // The rich lowering: the shell one projects `{ panel: string? }` to a bare `table`.
     let declared = model.doc_type_lua_rich_in(table.file_id, type_syntax);
     model.member_type(&declared, &def.key)
