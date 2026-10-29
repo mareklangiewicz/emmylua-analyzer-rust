@@ -11,9 +11,12 @@ use super::check_field::is_optional;
 use crate::DiagnosticCode;
 use crate::semantic_db::facts::member_key_from_index_key;
 use crate::semantic_model::SemanticModel;
+use crate::semantic_model::infer::unify::{TplBindings, substitute};
 use crate::semantic_model::infer::vm::bind_signature_generics;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
-use crate::{Decl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind};
+use crate::{
+    Decl, GenericTpl, LuaMemberKey, LuaType, LuaTypeNode, SemanticId, TypeDef, TypeDefKind,
+};
 
 use super::param_count::call_arg_param_index;
 use super::{
@@ -174,11 +177,28 @@ fn check_call_args(
             };
             // Signature params keep a `---@generic V` as `Ref("V")`; bind it before checking.
             let param_ty = bind_signature_generics(param_ty, candidate.get_generic_params());
+            let param_ty = instantiate_by_constraints(&param_ty, candidate.get_generic_params());
             if is_structured_table_target(semantic_model, &param_ty) {
                 check_table_fields(context, semantic_model, &param_ty, &table);
             }
         }
     }
+}
+
+/// At a call site the callee's generics are instantiated by the arguments, so a literal
+/// argument fits a constrained `T` when it fits the constraint; an unconstrained one stays
+/// any-like. (Inside the generic body `T` is rigid; this is only for the call's arguments.)
+fn instantiate_by_constraints(ty: &LuaType, generics: &[GenericTpl]) -> LuaType {
+    let mut constraints = TplBindings::new();
+    for generic in generics {
+        if let Some(constraint) = generic.get_constraint() {
+            constraints.insert(generic.get_tpl_id(), constraint.clone());
+        }
+    }
+    if constraints.is_empty() {
+        return ty.clone();
+    }
+    substitute(ty, &constraints)
 }
 
 fn check_inline_table_fields(

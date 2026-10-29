@@ -3425,6 +3425,43 @@ return t
     }
 
     #[test]
+    fn test_table_arg_elements_fit_a_constrained_generic_by_its_constraint() {
+        // `T[]` with `---@generic T: {...}`: each literal element binds `T`, so it is checked
+        // against the constraint, not reported as "expected `T`".
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@generic T : { at?: { x: number } }
+                ---@param wins T[]?
+                ---@return T?
+                local function rightmost(wins) return wins and wins[1] end
+
+                ---@generic R: { root: string }
+                ---@param roots R[]
+                ---@return R[]
+                local function resolved(roots) return roots end
+
+                local a = rightmost { { address = '0xL', at = { x = 10 } } }
+                local b = resolved { { root = '/l/hypr' } }
+                return a, b
+            "#
+        ));
+        // An element that breaks the constraint is still reported.
+        assert!(!ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+                ---@generic R: { root: string }
+                ---@param roots R[]
+                ---@return R[]
+                local function resolved(roots) return roots end
+
+                return resolved { { root = 1 } }
+            "#
+        ));
+    }
+
+    #[test]
     fn test_cross_file_runtime_member_priority_survives_reload() {
         let meta = r#"
             ---@meta
