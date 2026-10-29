@@ -9,6 +9,8 @@
 //! - `---@async` is attached to a statement/expression containing an anonymous closure (`---@async return function() ...`,
 //!   `---@async name(function() ...)`) → that closure is treated as async;
 //! - a closure is an argument to an async function parameter (`---@param cb async fun()`) → treated as async;
+//! - a closure is a table field whose expected type is an async function (`---@field call async fun()` on the
+//!   table's `---@type`, or on the parameter the table is passed to) → treated as async;
 //! - `pcall/xpcall` callbacks execute immediately in current sync semantics, so skip that closure layer and keep looking outward for an async context.
 
 use std::rc::Rc;
@@ -17,13 +19,14 @@ use std::collections::HashSet;
 
 use emmylua_parser::{
     LuaAst, LuaAstNode, LuaCallArgList, LuaCallExpr, LuaClosureExpr, LuaComment, LuaDocTag,
-    LuaExpr, LuaSyntaxId,
+    LuaExpr, LuaSyntaxId, LuaSyntaxNode,
 };
 
 use crate::DiagnosticCode;
 use crate::semantic_model::SemanticModel;
 use crate::{AsyncState, LuaFunctionType, LuaType, LuaUnionType, SemanticId};
 
+use super::param_count::{closure_table_field_info, table_expected_type};
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 
@@ -47,7 +50,7 @@ impl Checker for AwaitInSyncChecker {
 
 /// Closures under `---@async` comment owners (mirrors legacy `find_owner_closure`):
 /// func stat → its closure; other owners → first closure in the owner subtree.
-fn collect_async_closures(root: &emmylua_parser::LuaSyntaxNode) -> HashSet<LuaSyntaxId> {
+fn collect_async_closures(root: &LuaSyntaxNode) -> HashSet<LuaSyntaxId> {
     let mut set = HashSet::new();
     for comment in root.descendants().filter_map(LuaComment::cast) {
         let is_async = comment
@@ -263,39 +266,50 @@ fn closure_is_async(
         return true;
     }
     // Argument closure: the corresponding outer callee parameter is an async function type.
-    callback_param_is_async(semantic_model, closure)
-}
-
-/// Whether the matching parameter is an async function type when a closure is passed as a call argument.
-fn callback_param_is_async(semantic_model: &SemanticModel<'_>, closure: &LuaClosureExpr) -> bool {
-    let Some((call_expr, param_idx)) = closure_call_arg(&closure) else {
+    if expected_arg_types(semantic_model, closure.syntax())
+        .iter()
+        .any(|ty| param_type_async_state(ty) == Some(AsyncState::Async))
+    {
+        return true;
+    }
+    // Table field closure: the field's type on the table's expected type is an async function type.
+    let Some((table_expr, key)) = closure_table_field_info(closure) else {
         return false;
     };
-    let candidates = callee_candidates(semantic_model, &call_expr);
-    let colon_call = call_expr.is_colon_call();
-    candidates.iter().any(|fun| {
-        let colon_define = fun.is_colon_define();
-        let idx = match (colon_define, colon_call) {
-            (true, false) => param_idx + 1,
-            (false, true) => {
-                if param_idx == 0 {
-                    return false;
-                }
-                param_idx - 1
-            }
-            _ => param_idx,
-        };
-        fun.get_params()
-            .get(idx)
-            .and_then(|(_, ty)| ty.as_ref())
+    let mut table_types = expected_arg_types(semantic_model, table_expr.syntax());
+    table_types.extend(table_expected_type(semantic_model, &table_expr));
+    table_types.iter().any(|table_ty| {
+        semantic_model
+            .member_type(table_ty, &key)
+            .as_ref()
             .and_then(param_type_async_state)
             == Some(AsyncState::Async)
     })
 }
 
+/// The callee parameter types an expression passed directly as a call argument is expected to have
+/// (one per callee candidate that has a parameter at that position).
+fn expected_arg_types(semantic_model: &SemanticModel<'_>, arg: &LuaSyntaxNode) -> Vec<LuaType> {
+    let Some((call_expr, param_idx)) = call_arg_position(arg) else {
+        return Vec::new();
+    };
+    let colon_call = call_expr.is_colon_call();
+    callee_candidates(semantic_model, &call_expr)
+        .iter()
+        .filter_map(|fun| {
+            let idx = match (fun.is_colon_define(), colon_call) {
+                (true, false) => param_idx + 1,
+                (false, true) => param_idx.checked_sub(1)?,
+                _ => param_idx,
+            };
+            fun.get_params().get(idx)?.1.clone()
+        })
+        .collect()
+}
+
 /// Whether the closure is the first argument of `pcall/xpcall` (an immediately executed callback).
 fn is_pcall_callback(closure: &LuaClosureExpr) -> bool {
-    let Some((call_expr, arg_idx)) = closure_call_arg(closure) else {
+    let Some((call_expr, arg_idx)) = call_arg_position(closure.syntax()) else {
         return false;
     };
     if arg_idx != 0 {
@@ -310,11 +324,11 @@ fn is_pcall_callback(closure: &LuaClosureExpr) -> bool {
     )
 }
 
-/// Position of a closure as a call argument (directly inside LuaCallArgList).
-fn closure_call_arg(closure: &LuaClosureExpr) -> Option<(LuaCallExpr, usize)> {
-    let arg_list = closure.get_parent::<LuaCallArgList>()?;
+/// Position of an expression as a call argument (directly inside LuaCallArgList).
+fn call_arg_position(arg: &LuaSyntaxNode) -> Option<(LuaCallExpr, usize)> {
+    let arg_list = LuaCallArgList::cast(arg.parent()?)?;
     let call_expr = arg_list.get_parent::<LuaCallExpr>()?;
-    let position = closure.get_position();
+    let position = arg.text_range().start();
     let index = arg_list
         .get_args()
         .position(|arg| arg.get_position() == position)?;

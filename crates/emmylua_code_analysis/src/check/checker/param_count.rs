@@ -484,7 +484,9 @@ fn closure_call_arg_info(closure_expr: &LuaClosureExpr) -> Option<(LuaCallExpr, 
 }
 
 /// Position of a closure used as a table field value, plus the field name key.
-fn closure_table_field_info(closure_expr: &LuaClosureExpr) -> Option<(LuaTableExpr, LuaMemberKey)> {
+pub(super) fn closure_table_field_info(
+    closure_expr: &LuaClosureExpr,
+) -> Option<(LuaTableExpr, LuaMemberKey)> {
     let field = closure_expr.get_parent::<LuaTableField>()?;
     let table_expr = field.get_parent::<LuaTableExpr>()?;
     let field_key = match field.get_field_key()? {
@@ -496,7 +498,7 @@ fn closure_table_field_info(closure_expr: &LuaClosureExpr) -> Option<(LuaTableEx
 }
 
 /// The `---@type` target type on the assignment containing the table literal (`---@type A local a = { ... }`).
-fn table_expected_type(
+pub(super) fn table_expected_type(
     semantic_model: &SemanticModel<'_>,
     table_expr: &LuaTableExpr,
 ) -> Option<LuaType> {

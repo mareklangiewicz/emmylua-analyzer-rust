@@ -3064,4 +3064,26 @@ mod test {
             .count();
         assert_eq!(mismatches, 2, "{diagnostics:#?}");
     }
+
+    /// A member assigned another member's function (`J.run = M.run`, as `job.runnow = verbs.runnow`)
+    /// keeps its signature: a call through the alias is checked like a call through the original.
+    #[test]
+    fn test_member_alias_keeps_signature() {
+        let diagnostics = check_source(
+            r#"
+                local M = {}
+                ---@param n integer
+                function M.run(n) end
+                local J = {}
+                J.run = M.run
+                M.run('x')
+                J.run('y')
+            "#,
+        );
+        let mismatches = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ParamTypeMismatch)
+            .count();
+        assert_eq!(mismatches, 2, "{diagnostics:#?}");
+    }
 }

@@ -167,4 +167,41 @@ mod test {
         "#
         ));
     }
+
+    /// A closure takes async-ness from the type its context expects: a parameter reached through a
+    /// member alias (`J.run = M.run`), or a table field whose table is typed by `---@type` or by the
+    /// parameter it is passed to.
+    #[test]
+    fn test_closure_async_from_expected_type() {
+        let pre = r#"
+            ---@async
+            local function aw() end
+            local M = {}
+            ---@param fn async fun(): any?
+            function M.run(fn) end
+            local J = {}
+            J.run = M.run
+            ---@class AsyncField
+            ---@field call async fun(a: string): any
+            ---@class SyncField
+            ---@field call fun(a: string): any
+            ---@param c AsyncField
+            local function use(c) end
+            ---@param c SyncField
+            local function use_sync(c) end
+        "#;
+        let ok = |code: &str| {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.has_no_diagnostic(DiagnosticCode::AwaitInSync, &format!("{pre}\n{code}"))
+        };
+        assert!(ok("J.run(function() aw() end)"));
+        assert!(ok("use({ call = function(a) aw() end })"));
+        assert!(ok(
+            "---@type AsyncField\nlocal c = { call = function(a) aw() end }"
+        ));
+        assert!(!ok("use_sync({ call = function(a) aw() end })"));
+        assert!(!ok(
+            "---@type SyncField\nlocal c = { call = function(a) aw() end }"
+        ));
+    }
 }

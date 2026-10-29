@@ -946,6 +946,49 @@ impl<'db> SemanticModel<'db> {
             None
         }
     }
+    /// Signature of the function an alias value names (`M.run = verbs.run`, `local f = M.run`): follow
+    /// member reads and names to the closure at the end of the chain. A closure-valued member reads as
+    /// a broad `Function` and only a call recovers its signature, through the member's identity; storing
+    /// the read elsewhere drops that identity, so the stored member re-derives it here. A closure literal
+    /// at `value_syntax` itself is not an alias (`None`): its member keeps whatever projection it has.
+    pub fn alias_signature_in_file(
+        &self,
+        file_id: FileId,
+        value_syntax: LuaSyntaxId,
+    ) -> Option<LuaFunctionType> {
+        let (mut file_id, mut syntax) = (file_id, value_syntax);
+        // Bounded: an alias cycle (`a.f = b.f; b.f = a.f`) names no closure.
+        for hop in 0..8 {
+            if hop > 0
+                && let Some(fun) = self.type_of_signature_in_file(file_id, syntax)
+            {
+                return Some(fun);
+            }
+            let model = self.model_for(file_id);
+            let root = model.syntax_tree_of(file_id)?.get_red_root();
+            (file_id, syntax) = match LuaExpr::cast(syntax.to_node_from_root(&root)?)? {
+                LuaExpr::IndexExpr(index_expr) => {
+                    let resolved = model.resolve_member(&index_expr)?;
+                    let (member_file, member_id) = (resolved.file_id?, resolved.member_id?);
+                    let member = model.file_facts_of(member_file)?.member_by_id(&member_id)?;
+                    (member_file, member.value_syntax?)
+                }
+                LuaExpr::NameExpr(name_expr) => {
+                    let decl_id = model.resolve_name(name_expr.get_position())?;
+                    let SemanticId::Decl(decl_key) = &decl_id else {
+                        return None;
+                    };
+                    let decl = model
+                        .file_facts_of(decl_key.file_id)?
+                        .decl_by_id(&decl_id)?;
+                    (decl_key.file_id, decl.value_expr_syntax?)
+                }
+                _ => return None,
+            };
+        }
+        None
+    }
+
     /// Signature structure of a closure in any file (used for cross-file member/global function signature resolution).
     pub fn type_of_signature_in_file(
         &self,

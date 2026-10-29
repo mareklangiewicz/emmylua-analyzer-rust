@@ -1133,10 +1133,16 @@ pub(super) fn projected_member_type(
                 && let Some(fun) = model.type_of_signature_in_file(member_ref.file_id, value_syntax)
             {
                 typ = LuaType::DocFunction(Rc::new(fun));
+            } else if matches!(expr_ty, LuaType::Unknown | LuaType::Function)
+                && let Some(fun) = model.alias_signature_in_file(member_ref.file_id, value_syntax)
+            {
+                typ = LuaType::DocFunction(Rc::new(fun));
             } else if !matches!(expr_ty, LuaType::Unknown) {
                 typ = expr_ty;
             }
-        } else if let Some(fun) = model.type_of_signature_in_file(member_ref.file_id, value_syntax)
+        } else if let Some(fun) = model
+            .type_of_signature_in_file(member_ref.file_id, value_syntax)
+            .or_else(|| model.alias_signature_in_file(member_ref.file_id, value_syntax))
         {
             typ = LuaType::DocFunction(Rc::new(fun));
         }
