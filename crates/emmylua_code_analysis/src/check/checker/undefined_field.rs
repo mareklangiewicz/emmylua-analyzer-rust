@@ -67,15 +67,17 @@ pub(crate) fn is_undefined_field(
     semantic_model: &SemanticModel<'_>,
     index_expr: &LuaIndexExpr,
 ) -> bool {
-    let Some(resolved) = semantic_model.resolve_member(index_expr) else {
-        return false;
-    };
-    if resolved.member_id.is_some() {
-        return false;
-    }
     let Some(prefix) = index_expr.get_prefix_expr() else {
         return false;
     };
+    match semantic_model.resolve_member(index_expr) {
+        Some(resolved) if resolved.member_id.is_some() => return false,
+        Some(_) => {}
+        // Only member paths (`a.b.c`) resolve by owner; a call-result prefix (`C.new().x`)
+        // has none, so its field is judged by the prefix type alone.
+        None if has_member_path(&prefix) => return false,
+        None => {}
+    }
     if let LuaExpr::NameExpr(name_expr) = &prefix
         && name_expr.get_name_text().is_some_and(|name| {
             matches!(
@@ -101,6 +103,23 @@ pub(crate) fn is_undefined_field(
         return false;
     };
     !is_valid_member(semantic_model, &prefix_ty, &prefix, index_expr, &index_key)
+}
+
+/// Whether `expr` is a name/index chain, the shape `member_ref_from_index_expr` resolves.
+fn has_member_path(expr: &LuaExpr) -> bool {
+    let mut current = expr.clone();
+    loop {
+        let next = match &current {
+            LuaExpr::NameExpr(_) => return true,
+            LuaExpr::IndexExpr(index) => index.get_prefix_expr(),
+            LuaExpr::ParenExpr(paren) => paren.get_expr(),
+            _ => return false,
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        current = next;
+    }
 }
 
 fn is_invalid_prefix_type(ty: &LuaType) -> bool {

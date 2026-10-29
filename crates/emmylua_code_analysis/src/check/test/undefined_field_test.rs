@@ -1561,3 +1561,51 @@ fn required_module_class_declared_field_is_not_an_injection() {
         eq(false)
     );
 }
+
+/// A call-result prefix (`C.new().x`, `Point(4, 6).x`) has no member path, so the member
+/// cannot resolve by owner; the field is still checked against the call's return type.
+#[googletest::gtest]
+fn call_result_prefix_is_checked_by_type() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    let point = r#"
+        ---@class callres.Point
+        ---@field x integer
+        local Point = {}
+
+        ---@return callres.Point
+        function Point.new()
+            local p = setmetatable({}, { __index = Point })
+            p.x = 1
+            return p
+        end
+
+        ---@return integer
+        function Point:len() return self.x end
+
+        ---@overload fun(x: integer): callres.Point
+        local P = setmetatable({}, { __call = function(_, x) return Point.new() end })
+    "#;
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            &format!("{point}\nreturn Point.new().sum"),
+        ),
+        eq(false)
+    );
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            &format!("{point}\nreturn P(4).sum"),
+        ),
+        eq(false)
+    );
+    assert_that!(
+        ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            &format!("{point}\nreturn Point.new().x, Point.new():len(), Point.new().len, P(4).x"),
+        ),
+        eq(true)
+    );
+}
