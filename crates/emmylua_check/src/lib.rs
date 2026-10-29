@@ -70,18 +70,28 @@ pub async fn run_check(cmd_args: CmdArgs) -> Result<(), Box<dyn Error + Sync + S
     // concurrent diagnose calls on the same database are not safe here; sequential
     // execution is also a more accurate representation of the single-core LS path.
     let sender_for_task = sender.clone();
-    tokio::spawn(async move {
+    let worker = tokio::spawn(async move {
+        let mut panicked = Vec::new();
         for file_id in need_check_files {
             let cancel_token = CancellationToken::new();
-            let diagnostics = if let Some((_, config)) = &profile_task {
-                task_analysis.diagnose_file_with_config(file_id, config.clone())
-            } else {
-                task_analysis.diagnose_file(file_id, cancel_token)
-            };
+            // A checker panic on one file must not end the run: the files after it would be
+            // missing from the output, with exit code 0. Record it and check the rest.
+            let diagnostics = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some((_, config)) = &profile_task {
+                    task_analysis.diagnose_file_with_config(file_id, config.clone())
+                } else {
+                    task_analysis.diagnose_file(file_id, cancel_token)
+                }
+            }))
+            .unwrap_or_else(|_| {
+                panicked.push(file_id);
+                None
+            });
             if sender_for_task.send((file_id, diagnostics)).await.is_err() {
                 break;
             }
         }
+        panicked
     });
     // Drop the original sender so the receiver can detect when the worker has finished.
     drop(sender);
@@ -101,6 +111,19 @@ pub async fn run_check(cmd_args: CmdArgs) -> Result<(), Box<dyn Error + Sync + S
 
     if let Some((collector, _)) = &profile_state {
         print_profile_summary(collector, total_count);
+    }
+
+    let panicked = worker
+        .await
+        .map_err(|err| format!("check worker failed: {err}"))?;
+    if !panicked.is_empty() {
+        for file_id in &panicked {
+            let path = db
+                .file_path(*file_id)
+                .map_or_else(|| format!("{file_id:?}"), |path| path.display().to_string());
+            eprintln!("A checker panicked on {path}; its diagnostics are missing");
+        }
+        return Err(format!("checkers panicked on {} file(s)", panicked.len()).into());
     }
 
     if exit_code != 0 {
