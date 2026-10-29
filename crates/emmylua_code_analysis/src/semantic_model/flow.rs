@@ -430,7 +430,11 @@ fn annotated_table_field_type(
     let facts = model.file_facts_of(table.file_id)?;
     let type_syntax = match facts.decl_by_value_range(table.key_range) {
         Some(decl) => decl.doc_type_syntax?,
-        None => facts.member_by_value_range(table.key_range)?.doc_type_syntax?,
+        None => {
+            facts
+                .member_by_value_range(table.key_range)?
+                .doc_type_syntax?
+        }
     };
     // The rich lowering: the shell one projects `{ panel: string? }` to a bare `table`.
     let declared = model.doc_type_lua_rich_in(table.file_id, type_syntax);
@@ -893,7 +897,7 @@ pub(crate) fn type_of_expr_at_node(
 }
 
 /// A declaration and literal keys identify an access independently of member declarations.
-/// Dynamic keys are wildcards for writes, but cannot establish a guard.
+/// Dynamic keys are wildcards for writes; alone they cannot establish a guard (see `dynamic_keys`).
 fn index_access_path(
     model: &SemanticModel,
     expr: &LuaExpr,
@@ -930,7 +934,101 @@ fn index_access_path(
     }
 }
 
-/// Require a non-nil guard on every incoming path, with no intervening direct write.
+/// What a dynamic key reads: the access path of a name or field (`t[k]`, `t[o.k]`), or the length of
+/// one (`t[#t]`, `#len` set).
+#[derive(Clone, PartialEq, Eq)]
+struct DynamicKey {
+    path: (SemanticId, Vec<LuaMemberKey>),
+    len: bool,
+}
+
+impl DynamicKey {
+    fn of(model: &SemanticModel, key: &LuaExpr) -> Option<Self> {
+        let (inner, len) = match key {
+            LuaExpr::UnaryExpr(unary) if unary.get_op_token()?.get_op() == UnaryOperator::OpLen => {
+                (unary.get_expr()?, true)
+            }
+            LuaExpr::ParenExpr(paren) => return Self::of(model, &paren.get_expr()?),
+            _ => (key.clone(), false),
+        };
+        if !matches!(inner, LuaExpr::NameExpr(_) | LuaExpr::IndexExpr(_)) {
+            return None;
+        }
+        let path = index_access_path(model, &inner)?;
+        (!path.1.iter().any(LuaMemberKey::is_none)).then_some(Self { path, len })
+    }
+
+    /// A write to the path changes the key; for a length, so does a write anywhere below it.
+    fn changed_by(&self, written: &(SemanticId, Vec<LuaMemberKey>)) -> bool {
+        let (owner, keys) = &self.path;
+        &written.0 == owner
+            && (self.len || written.1.len() <= keys.len())
+            && written
+                .1
+                .iter()
+                .zip(keys)
+                .all(|(written, key)| written.is_none() || written == key)
+    }
+}
+
+/// The dynamic keys of an access, outermost access first: `toks[k].sub[j]` gives `[k, j]`. None
+/// when one is not a `DynamicKey`. Literal keys are skipped, so each `None` key in the access path
+/// lines up with one of these (`toks[k] and toks[k].line`).
+fn dynamic_keys(model: &SemanticModel, expr: &LuaExpr) -> Option<Vec<DynamicKey>> {
+    let mut expr = expr.clone();
+    let mut keys = Vec::new();
+    loop {
+        match expr {
+            LuaExpr::NameExpr(_) => {
+                keys.reverse();
+                return Some(keys);
+            }
+            LuaExpr::ParenExpr(paren) => expr = paren.get_expr()?,
+            LuaExpr::IndexExpr(index) => {
+                if let emmylua_parser::LuaIndexKey::Expr(key) = index.get_index_key()? {
+                    keys.push(DynamicKey::of(model, &key)?);
+                }
+                expr = index.get_prefix_expr()?;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// An access identified by its owner, its keys and what its dynamic keys read.
+type IndexTarget = ((SemanticId, Vec<LuaMemberKey>), Vec<DynamicKey>);
+
+/// The access's target. With dynamic keys the access is only matched syntactically (no alias
+/// expansion), so every `None` key lines up with one `DynamicKey`.
+fn index_target(model: &SemanticModel, access: &LuaExpr) -> Option<IndexTarget> {
+    let path = stable_access_path(model, access).or_else(|| index_access_path(model, access))?;
+    if !path.1.iter().any(LuaMemberKey::is_none) {
+        return Some((path, Vec::new()));
+    }
+    let path = index_access_path(model, access)?;
+    let keys = dynamic_keys(model, access)?;
+    (path.1.iter().filter(|key| key.is_none()).count() == keys.len()).then_some((path, keys))
+}
+
+/// Whether `expr` reads the same access as `target` (see `index_target`).
+fn reads_index_target(
+    model: &SemanticModel,
+    target: &IndexTarget,
+    access: &LuaExpr,
+    expr: &LuaExpr,
+) -> bool {
+    if target.1.is_empty() {
+        return stable_access_path_at(model, expr, access)
+            .or_else(|| index_access_path(model, expr))
+            .as_ref()
+            == Some(&target.0);
+    }
+    index_access_path(model, expr).as_ref() == Some(&target.0)
+        && dynamic_keys(model, expr).as_ref() == Some(&target.1)
+}
+
+/// Require a non-nil guard on every incoming path, with no intervening direct write
+/// (to the access, or to what one of its dynamic keys reads).
 fn guarded_index_type(
     model: &SemanticModel,
     index: &emmylua_parser::LuaIndexExpr,
@@ -952,11 +1050,7 @@ fn guarded_index_type(
         return None;
     };
     let access = LuaExpr::IndexExpr(index.clone());
-    let target =
-        stable_access_path(model, &access).or_else(|| index_access_path(model, &access))?;
-    if target.1.iter().any(LuaMemberKey::is_none) {
-        return None;
-    }
+    let target = index_target(model, &access)?;
     let mut narrowing = Narrowing::Truthy;
     guarded_on_all_paths(
         model,
@@ -977,7 +1071,8 @@ fn guarded_index_type(
             for var in assign.get_var_and_expr_list().0 {
                 if let Some(written) = LuaExpr::cast(var.syntax().clone()).and_then(|expr| {
                     stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
-                }) && path_write_affects(&written, &target.0, &target.1)
+                }) && (path_write_affects(&written, &target.0.0, &target.0.1)
+                    || target.1.iter().any(|key| key.changed_by(&written)))
                 {
                     return None;
                 }
@@ -991,7 +1086,7 @@ fn guarded_index_type(
 /// Match truthiness and direct nil comparisons without treating a non-nil boolean as a guard.
 fn narrow_index_condition(
     model: &SemanticModel,
-    target: &(SemanticId, Vec<LuaMemberKey>),
+    target: &IndexTarget,
     access: &LuaExpr,
     cond: LuaExpr,
     branch_is_true: bool,
@@ -1004,10 +1099,7 @@ fn narrow_index_condition(
         if literal.is_nil()
             && matches!(op, BinaryOperator::OpEq | BinaryOperator::OpNe)
             && branch_is_true == (op == BinaryOperator::OpNe)
-            && stable_access_path_at(model, &value, access)
-                .or_else(|| index_access_path(model, &value))
-                .as_ref()
-                == Some(target)
+            && reads_index_target(model, target, access, &value)
         {
             return Some(Narrowing::NotNil);
         }
@@ -1019,21 +1111,14 @@ fn narrow_index_condition(
             && let LuaType::StringConst(name) | LuaType::DocStringConst(name) = &literal
             && matches!(op, BinaryOperator::OpEq | BinaryOperator::OpNe)
             && branch_is_true == ((op == BinaryOperator::OpEq) != (name.as_str() == "nil"))
-            && stable_access_path_at(model, &arg, access)
-                .or_else(|| index_access_path(model, &arg))
-                .as_ref()
-                == Some(target)
+            && reads_index_target(model, target, access, &arg)
         {
             return Some(Narrowing::NotNil);
         }
         return None;
     }
-    (branch_is_true
-        && stable_access_path_at(model, &cond, access)
-            .or_else(|| index_access_path(model, &cond))
-            .as_ref()
-            == Some(target))
-    .then_some(Narrowing::Truthy)
+    (branch_is_true && reads_index_target(model, target, access, &cond))
+        .then_some(Narrowing::Truthy)
 }
 
 /// Infer the VM type, then apply the selected inline casts.
@@ -1711,7 +1796,7 @@ fn path_write_affects(
             .1
             .iter()
             .zip(keys)
-            .all(|(written, key)| written.is_none() || written == key)
+            .all(|(written, key)| written.is_none() || key.is_none() || written == key)
 }
 
 /// Expand initializer aliases without inferring types. Each captured member path

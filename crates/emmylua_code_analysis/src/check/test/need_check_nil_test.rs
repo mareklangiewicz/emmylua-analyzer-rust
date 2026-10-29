@@ -682,4 +682,121 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_dynamic_index_guard_by_local_key() {
+        // A dynamic key named by a local identifies the access: the guard covers the same `toks[k]`.
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Tok
+            ---@field line integer
+
+            ---@param toks Tok[]
+            ---@param k integer
+            local function f(toks, k)
+                local line = toks[k] and toks[k].line
+                while toks[k] and toks[k].line == line do
+                    k = k + 1
+                end
+                if toks[k] ~= nil then return toks[k].line end
+            end
+            return f
+        "#
+        ));
+    }
+
+    #[test]
+    fn test_dynamic_index_guard_lost_on_key_or_slot_write() {
+        let mut ws = VirtualWorkspace::new();
+        // The key moved: `toks[k]` is now another slot.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Tok
+            ---@field line integer
+
+            ---@param toks Tok[]
+            ---@param k integer
+            local function f(toks, k)
+                if toks[k] then
+                    k = k + 1
+                    return toks[k].line
+                end
+            end
+            return f
+        "#
+        ));
+        // A different local key is a different access.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Tok
+            ---@field line integer
+
+            ---@param toks Tok[]
+            ---@param k integer
+            ---@param j integer
+            local function f(toks, k, j)
+                if toks[k] then return toks[j].line end
+            end
+            return f
+        "#
+        ));
+        // A literal-key write may be the same slot.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Tok
+            ---@field line integer
+
+            ---@param toks Tok[]
+            ---@param k integer
+            local function f(toks, k)
+                if toks[k] then
+                    toks[1] = nil
+                    return toks[k].line
+                end
+            end
+            return f
+        "#
+        ));
+    }
+
+    #[test]
+    fn test_dynamic_index_guard_by_length_key() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Stage
+            ---@field final boolean
+
+            ---@param stages Stage[]
+            local function f(stages)
+                return stages[#stages] and stages[#stages].final
+            end
+            return f
+        "#
+        ));
+        // Any write below the length's path may move it.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Stage
+            ---@field final boolean
+
+            ---@param stages Stage[]
+            ---@param other Stage[]
+            local function f(stages, other)
+                if stages[#other] then
+                    other[#other + 1] = stages[1]
+                    return stages[#other].final
+                end
+            end
+            return f
+        "#
+        ));
+    }
 }
