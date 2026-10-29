@@ -1,11 +1,14 @@
 //! # need_check_nil - direct call / member access on a possibly nil prefix
 //!
-//! M0: if the call callee type is nullable or the index prefix is nullable, report NeedCheckNil;
-//! safe navigation (`?.`/`?:`) skips.
+//! M0: if the call callee type is nullable, the index prefix is nullable, or the operand of `#` is
+//! nullable, report NeedCheckNil; safe navigation (`?.`/`?:`) skips.
 
 use std::rc::Rc;
 
-use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, PathTrait};
+use emmylua_parser::{
+    LuaAssignStat, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaUnaryExpr, PathTrait,
+    UnaryOperator,
+};
 
 use crate::LuaUnionType;
 use crate::semantic_model::SemanticModel;
@@ -28,6 +31,7 @@ impl Checker for NeedCheckNilChecker {
             match expr {
                 LuaExpr::CallExpr(call_expr) => check_call(context, semantic_model, &call_expr),
                 LuaExpr::IndexExpr(index_expr) => check_index(context, semantic_model, &index_expr),
+                LuaExpr::UnaryExpr(unary_expr) => check_len(context, semantic_model, &unary_expr),
                 _ => {}
             }
         }
@@ -80,6 +84,31 @@ fn check_index(
             DiagnosticCode::NeedCheckNil,
             prefix.get_range(),
             t!("%{name} may be nil", name = prefix.syntax().text()),
+        );
+    }
+}
+
+/// `#x` raises on a nil `x` just as `x.y` does.
+fn check_len(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    unary_expr: &LuaUnaryExpr,
+) {
+    if unary_expr
+        .get_op_token()
+        .is_none_or(|op| op.get_op() != UnaryOperator::OpLen)
+    {
+        return;
+    }
+    let Some(operand) = unary_expr.get_expr() else {
+        return;
+    };
+    let ty = prefix_type(semantic_model, &operand);
+    if ty.is_nullable() && !is_missing_member(semantic_model, &operand, &ty) {
+        context.add_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            operand.get_range(),
+            t!("%{name} may be nil", name = operand.syntax().text()),
         );
     }
 }

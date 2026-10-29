@@ -275,6 +275,8 @@ mod test {
         ---@type false|fun(...)[]?
         local calls
 
+        -- `#calls` itself may raise; the body read is what this pins.
+        ---@diagnostic disable-next-line: need-check-nil
         for i = 1, #calls do
             calls[i](...)
         end
@@ -795,6 +797,39 @@ mod test {
                     return stages[#other].final
                 end
             end
+            return f
+        "#
+        ));
+    }
+
+    #[test]
+    fn test_length_of_nullable_operand() {
+        let mut ws = VirtualWorkspace::new();
+        // `#nil` raises, as `nil.x` does.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@param w string?
+            local function f(w) return #w end
+            return f
+        "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@param w string?
+            local function f(w) return w and #w end
+            return f
+        "#
+        ));
+        // Where it yields a value, the length is an integer, not the operand's `string?`.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param n integer
+            local function take(n) end
+            ---@param w string?
+            local function f(w) take(#w) take(1 + #w - 1) end
             return f
         "#
         ));
