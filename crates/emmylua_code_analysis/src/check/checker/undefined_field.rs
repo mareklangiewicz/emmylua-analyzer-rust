@@ -43,42 +43,12 @@ fn check_index(
     semantic_model: &SemanticModel<'_>,
     index_expr: &LuaIndexExpr,
 ) {
-    let Some(resolved) = semantic_model.resolve_member(index_expr) else {
-        return;
-    };
-    if resolved.member_id.is_some() {
-        return;
-    }
-    let Some(prefix) = index_expr.get_prefix_expr() else {
-        return;
-    };
-    if let LuaExpr::NameExpr(name_expr) = &prefix
-        && name_expr.get_name_text().is_some_and(|name| {
-            matches!(
-                name.as_str(),
-                "table" | "string" | "math" | "io" | "os" | "coroutine" | "utf8" | "bit32"
-            )
-        })
-    {
-        return;
-    }
-    let prefix_ty = match &prefix {
-        LuaExpr::NameExpr(name_expr) => semantic_model
-            .resolve_name(name_expr.get_position())
-            .map(|decl| semantic_model.type_of_decl_at(&decl, name_expr.get_position()))
-            .unwrap_or_else(|| semantic_model.type_of_expr(prefix.get_syntax_id())),
-        _ => semantic_model.type_of_expr(prefix.get_syntax_id()),
-    };
-    let prefix_ty = resolve_generic_param(semantic_model, &prefix_ty);
-    if is_invalid_prefix_type(&prefix_ty) {
+    if !is_undefined_field(semantic_model, index_expr) {
         return;
     }
     let Some(index_key) = index_expr.get_index_key() else {
         return;
     };
-    if is_valid_member(semantic_model, &prefix_ty, &prefix, index_expr, &index_key) {
-        return;
-    }
     context.add_diagnostic(
         DiagnosticCode::UndefinedField,
         index_key
@@ -89,6 +59,48 @@ fn check_index(
             name = index_key.get_path_part()
         ),
     );
+}
+
+/// Whether `index_expr` reads a member its prefix's type does not have: the site this checker
+/// reports, so other checkers can leave it to undefined-field.
+pub(crate) fn is_undefined_field(
+    semantic_model: &SemanticModel<'_>,
+    index_expr: &LuaIndexExpr,
+) -> bool {
+    let Some(resolved) = semantic_model.resolve_member(index_expr) else {
+        return false;
+    };
+    if resolved.member_id.is_some() {
+        return false;
+    }
+    let Some(prefix) = index_expr.get_prefix_expr() else {
+        return false;
+    };
+    if let LuaExpr::NameExpr(name_expr) = &prefix
+        && name_expr.get_name_text().is_some_and(|name| {
+            matches!(
+                name.as_str(),
+                "table" | "string" | "math" | "io" | "os" | "coroutine" | "utf8" | "bit32"
+            )
+        })
+    {
+        return false;
+    }
+    let prefix_ty = match &prefix {
+        LuaExpr::NameExpr(name_expr) => semantic_model
+            .resolve_name(name_expr.get_position())
+            .map(|decl| semantic_model.type_of_decl_at(&decl, name_expr.get_position()))
+            .unwrap_or_else(|| semantic_model.type_of_expr(prefix.get_syntax_id())),
+        _ => semantic_model.type_of_expr(prefix.get_syntax_id()),
+    };
+    let prefix_ty = resolve_generic_param(semantic_model, &prefix_ty);
+    if is_invalid_prefix_type(&prefix_ty) {
+        return false;
+    }
+    let Some(index_key) = index_expr.get_index_key() else {
+        return false;
+    };
+    !is_valid_member(semantic_model, &prefix_ty, &prefix, index_expr, &index_key)
 }
 
 fn is_invalid_prefix_type(ty: &LuaType) -> bool {

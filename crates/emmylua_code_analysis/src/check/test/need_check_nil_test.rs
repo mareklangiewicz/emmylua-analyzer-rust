@@ -620,4 +620,42 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_call_through_an_undefined_field_is_left_to_undefined_field() {
+        // An undefined member reads as `nil`; undefined-field already names that site, and a
+        // second "may be nil" for it would survive the undefined-field suppression meant for it.
+        let mut ws = VirtualWorkspace::new();
+        let source = r#"
+            ---@class Obj
+            ---@field cls table
+
+            ---@class Cls
+            ---@field new fun(self: Cls): Obj
+
+            ---@param C Cls
+            local function f(C)
+                local p = C:new()
+                p:sum()
+                print(p.sum.x)
+                ---@diagnostic disable-next-line: undefined-field
+                p.other()
+            end
+        "#;
+        assert!(ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, source));
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::UndefinedField, source));
+        // A declared optional member still needs its check.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Obj2
+            ---@field sum (fun(self: Obj2): integer)?
+
+            ---@param p Obj2
+            local function f(p)
+                p:sum()
+            end
+        "#
+        ));
+    }
 }

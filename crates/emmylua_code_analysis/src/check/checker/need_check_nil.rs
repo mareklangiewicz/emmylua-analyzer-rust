@@ -11,6 +11,7 @@ use crate::LuaUnionType;
 use crate::semantic_model::SemanticModel;
 use crate::{DiagnosticCode, LuaType};
 
+use super::undefined_field::is_undefined_field;
 use super::{CheckContext, Checker};
 
 pub struct NeedCheckNilChecker;
@@ -45,7 +46,7 @@ fn check_call(
         return;
     };
     let ty = prefix_type(semantic_model, &prefix);
-    if ty.is_nullable() {
+    if ty.is_nullable() && !is_missing_member(semantic_model, &prefix, &ty) {
         context.add_diagnostic(
             DiagnosticCode::NeedCheckNil,
             prefix.get_range(),
@@ -69,7 +70,7 @@ fn check_index(
         return;
     };
     let ty = prefix_type(semantic_model, &prefix);
-    if ty.is_nullable() {
+    if ty.is_nullable() && !is_missing_member(semantic_model, &prefix, &ty) {
         // An `assert(res[1])` on the RHS of the same assignment can protect the LHS `res[1][1]`;
         // `assert(res[2])` protects a different prefix, so NeedCheckNil is still reported.
         if assign_rhs_asserts_lhs_prefix(&prefix, index_expr) {
@@ -81,6 +82,15 @@ fn check_index(
             t!("%{name} may be nil", name = prefix.syntax().text()),
         );
     }
+}
+
+/// A member the prefix's type does not have reads as `nil`; that is undefined-field's diagnosis,
+/// and repeating it here would outlive a suppression of undefined-field at the same site.
+fn is_missing_member(semantic_model: &SemanticModel<'_>, prefix: &LuaExpr, ty: &LuaType) -> bool {
+    let LuaExpr::IndexExpr(index_expr) = prefix else {
+        return false;
+    };
+    matches!(ty, LuaType::Nil) && is_undefined_field(semantic_model, index_expr)
 }
 
 /// Only accept RHS asserts in the same assignment statement to avoid incorrectly suppressing nil diagnostics across statements.
