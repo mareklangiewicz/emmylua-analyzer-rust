@@ -4,7 +4,7 @@
 //! Nil pass; named types with `---@overload` or `---@operator call` pass, generic instances by
 //! their base type; union passes only if all components are callable).
 
-use emmylua_parser::{LuaAstNode, LuaCallExpr, LuaLocalStat};
+use emmylua_parser::{LuaAstNode, LuaCallExpr};
 
 use crate::DiagnosticCode;
 use crate::LuaType;
@@ -41,20 +41,9 @@ fn check_call(
     let callee_ty = match &prefix_expr {
         emmylua_parser::LuaExpr::NameExpr(name_expr) => semantic_model
             .resolve_name(name_expr.get_position())
-            .map(|decl| {
-                // M0 compatibility: calls in local initializer expressions are checked against the declared target type (preserving legacy
-                // `integer|fun()` still reporting union after assignment); calls in ordinary statements use flow
-                // reads, allowing `i = function() end` followed by `i()`.
-                if call_expr
-                    .syntax()
-                    .ancestors()
-                    .any(|node| LuaLocalStat::cast(node).is_some())
-                {
-                    semantic_model.type_of_decl_unwidened_at(&decl, name_expr.get_position())
-                } else {
-                    semantic_model.type_of_decl_at(&decl, name_expr.get_position())
-                }
-            })
+            // The flow read, in a local initializer too: `i = function() end` makes `i()` callable,
+            // and `type(t) == 'function' and t()` narrows `t`.
+            .map(|decl| semantic_model.type_of_decl_at(&decl, name_expr.get_position()))
             .unwrap_or_else(|| semantic_model.type_of_expr(prefix_expr.get_syntax_id())),
         // The flow read, as for a name: `type(t.x) == 'function' and t.x()` narrows the field.
         emmylua_parser::LuaExpr::IndexExpr(_) => semantic_model

@@ -212,14 +212,21 @@ fn test_call_callable_ok() {
     );
 }
 
-/// Calling a union with a callable component but also a non-callable component → reported (mirrors old call_non_callable semantics).
+/// Calling a union with a callable component but also a non-callable component → reported; after
+/// a function is assigned, the flow read is callable, in a local initializer as in a statement.
 #[test]
 fn test_call_union_callable_ok() {
-    let diagnostics =
-        check_source("---@type integer|fun():string\nlocal i\ni = function() end\nlocal y = i()");
+    let diagnostics = check_source("---@type integer|fun():string\nlocal i\nlocal y = i()");
     assert_eq!(
         count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
         1
+    );
+    let diagnostics = check_source(
+        "---@type integer|fun():string\nlocal i\ni = function() end\nlocal y = i()\n_ = i()",
+    );
+    assert_eq!(
+        count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
+        0
     );
 }
 

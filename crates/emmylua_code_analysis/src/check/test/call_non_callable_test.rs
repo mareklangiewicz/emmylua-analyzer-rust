@@ -533,6 +533,35 @@ mod test {
         ));
     }
 
+    /// A `type()` guard narrows a name called in a local initializer too: the declaration read
+    /// that keeps a callable table's `__call` there must not undo the flow read's narrowing.
+    #[test]
+    fn test_type_guard_narrows_a_name_called_in_a_local_initializer() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@param t? string|fun(): string
+            local function f(t)
+                local x = type(t) == 'function' and t() or t
+                return x
+            end
+            return f
+            "#,
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@param t? string|fun(): string
+            local function f(t)
+                local x = type(t) == 'string' and t() or t
+                return x
+            end
+            return f
+            "#,
+        ));
+    }
+
     #[test]
     fn test_type_guard_narrows_an_access_path_to_its_callable_part() {
         // An object type's field and a dynamic key have no member declaration: their access path
