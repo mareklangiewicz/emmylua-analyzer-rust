@@ -9,7 +9,7 @@ use crate::semantic_db::def::{DeclKind, SemanticId};
 use crate::semantic_db::flow::LuaClosureId;
 
 use super::guards::{
-    guarded_on_all_paths, literal_comparison, normalize_condition, unparenthesized,
+    AssignStep, guarded_on_all_paths, literal_comparison, normalize_condition, unparenthesized,
 };
 use super::{SemanticModel, literal_type};
 
@@ -32,12 +32,17 @@ pub(super) fn last_element_type(
     if name_decl(model, length.get_expr()?)? != decl || !length_is_stable(model, &decl) {
         return None;
     }
+    // Only a condition can guard a length index.
+    if !model.flow_tree()?.has_condition() {
+        return None;
+    }
     guarded_on_all_paths(
         model,
         index,
         offset,
         |cond, truthy| nonempty_condition(model, &decl, cond, truthy).unwrap_or(false),
-        |_, _| Some(()), // The whole-function stability check already excludes writes.
+        // The whole-function stability check already excludes writes.
+        |_, _| Some(AssignStep::Continue),
     )?;
     // Keep the current element type, including existing casts on the prefix.
     let components = match model.type_of_expr_at(prefix.get_syntax_id(), offset) {

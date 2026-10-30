@@ -10,19 +10,24 @@ use crate::semantic_db::flow::{FlowAntecedent, FlowId, FlowNodeKind, FlowTree, L
 
 use super::{SemanticModel, flow_condition_expr, literal_type};
 
-/// Each incoming path must reach a guard in the same function before a loop,
-/// goto boundary, or entry point. Callers decide which assignments are safe.
+/// What an assignment met on the way back from a read means for that path.
+pub(super) enum AssignStep {
+    /// The assignment leaves the read alone: keep walking.
+    Continue,
+    /// The assignment writes the read's value, which settles the path like a guard.
+    Established,
+}
+
+/// Each incoming path must reach a guard (or an establishing assignment) in the same function
+/// before a loop, goto boundary, or entry point. Callers decide which assignments are safe.
 pub(super) fn guarded_on_all_paths(
     model: &SemanticModel,
     index: &LuaIndexExpr,
     offset: TextSize,
     mut is_guard: impl FnMut(LuaExpr, bool) -> bool,
-    check_assignment: impl Fn(&FlowTree, FlowId) -> Option<()>,
+    mut check_assignment: impl FnMut(&FlowTree, FlowId) -> Option<AssignStep>,
 ) -> Option<()> {
     let tree = model.flow_tree()?;
-    if !tree.has_condition() {
-        return None;
-    }
     let closure = LuaClosureId::from_node(index.syntax());
     let mut pending = vec![tree.get_flow_id_at(offset)?];
     let mut visited = HashSet::new();
@@ -33,7 +38,9 @@ pub(super) fn guarded_on_all_paths(
         let node = tree.get_flow_node(current)?;
         match &node.kind {
             FlowNodeKind::Assignment(ptr) if !ptr.get_syntax_id().get_range().contains(offset) => {
-                check_assignment(&tree, current)?;
+                if let AssignStep::Established = check_assignment(&tree, current)? {
+                    continue;
+                }
             }
             FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
                 let cond = flow_condition_expr(model, ptr)?;

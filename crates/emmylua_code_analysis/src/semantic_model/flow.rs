@@ -42,7 +42,7 @@ use crate::semantic_model::infer::infer_call_with_bindings;
 use crate::semantic_model::infer::unify::substitute;
 use crate::semantic_model::infer::vm::{binary_type, widen_const, widen_variadic_const};
 use crate::signature::LuaSignatureId;
-use guards::{guarded_on_all_paths, literal_comparison, normalize_condition};
+use guards::{AssignStep, guarded_on_all_paths, literal_comparison, normalize_condition};
 
 /// Backtracking options: independently collect condition guards, cast widening, and assignment hits.
 #[derive(Clone, Copy)]
@@ -1038,7 +1038,8 @@ fn reads_index_target(
 }
 
 /// Require a guard on every incoming path, with no intervening direct write (to the access, or to
-/// what one of its dynamic keys reads). The result is the union of what each path's guard proves.
+/// what one of its dynamic keys reads). A write to the access itself (`t[k] = t[k] or {}`) settles
+/// its path with the assigned value. The result is the union of what each path proves.
 fn guarded_index_type(
     model: &SemanticModel,
     index: &emmylua_parser::LuaIndexExpr,
@@ -1063,6 +1064,7 @@ fn guarded_index_type(
     let access = LuaExpr::IndexExpr(index.clone());
     let target = index_target(model, &access)?;
     let mut narrowings = Vec::new();
+    let mut assigned = Vec::new();
     guarded_on_all_paths(
         model,
         index,
@@ -1077,21 +1079,40 @@ fn guarded_index_type(
         },
         |tree, current| {
             let assign = flow_assign_stat(model, tree, current)?;
-            for var in assign.get_var_and_expr_list().0 {
-                if let Some(written) = LuaExpr::cast(var.syntax().clone()).and_then(|expr| {
+            let (vars, values) = assign.get_var_and_expr_list();
+            let mut value = None;
+            for (i, var) in vars.into_iter().enumerate() {
+                let expr = LuaExpr::cast(var.syntax().clone())?;
+                // Literal-key writes are the member flow's (with `---@type` fallbacks); this
+                // settles only accesses through dynamic keys.
+                if !target.1.is_empty() && reads_index_target(model, &target, &access, &expr) {
+                    // Without its own value (`t[k], x = f()`) the write's type is not tracked.
+                    value = Some(values.get(i)?.clone());
+                    continue;
+                }
+                if let Some(written) =
                     stable_access_path(model, &expr).or_else(|| index_access_path(model, &expr))
-                }) && (path_write_affects(&written, &target.0.0, &target.0.1)
-                    || target.1.iter().any(|key| key.changed_by(&written)))
+                    && (path_write_affects(&written, &target.0.0, &target.0.1)
+                        || target.1.iter().any(|key| key.changed_by(&written)))
                 {
                     return None;
                 }
             }
-            Some(())
+            let Some(value) = value else {
+                return Some(AssignStep::Continue);
+            };
+            let value_ty = model.type_of_expr(value.get_syntax_id());
+            if value_ty.is_unknown() {
+                return None;
+            }
+            assigned.push(value_ty);
+            Some(AssignStep::Established)
         },
     )?;
     narrowings
         .iter()
         .map(|narrowing| apply_narrowing(model, ty.clone(), narrowing))
+        .chain(assigned)
         .reduce(merge_types)
 }
 

@@ -908,4 +908,47 @@ mod test {
         "#
         ));
     }
+
+    #[test]
+    fn test_dynamic_key_write_establishes_the_read() {
+        // `t[k] = t[k] or {}` makes a later `t[k]` the assigned value on that path, as long as
+        // neither `t[k]` nor `k` is written in between.
+        let cases = [
+            ("t[k] = t[k] or {}\nlocal b = t[k]\nb[#b + 1] = 'x'", 0),
+            ("t[k] = {}\nlocal n = #t[k]", 0),
+            (
+                "if c then t[k] = {} else t[k] = { 'y' } end\nlocal n = #t[k]",
+                0,
+            ),
+            ("t[k] = {}\nk = j\nlocal n = #t[k]", 1),
+            ("t[k] = {}\nlocal n = #t[j]", 1),
+            ("t[k] = {}\nt[j] = nil\nlocal n = #t[k]", 1),
+            ("t[k] = maybe\nlocal n = #t[k]", 1),
+            ("if c then t[k] = {} end\nlocal n = #t[k]", 1),
+        ];
+        let wrong: Vec<_> = cases
+            .iter()
+            .filter_map(|(body, expected)| {
+                let source = format!(
+                    r#"
+                    ---@param k string
+                    ---@param j string
+                    ---@param c boolean
+                    ---@param maybe string[]?
+                    local function f(k, j, c, maybe)
+                        ---@type table<string, string[]?>
+                        local t = {{}}
+                        {body}
+                    end
+                    "#
+                );
+                let found = crate::check::test::count_by_code(
+                    &crate::check::test::check_source(&source),
+                    DiagnosticCode::NeedCheckNil,
+                );
+                (found != *expected).then_some((body, found))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
 }
