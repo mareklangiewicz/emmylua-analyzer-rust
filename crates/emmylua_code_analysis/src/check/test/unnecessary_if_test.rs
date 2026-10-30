@@ -726,3 +726,27 @@ fn test_loop_carried_local_is_widened() {
         "#
     ));
 }
+
+/// A bare `local tmp` holds nil until assigned. On a path that skips the assignment the trace
+/// reached the declaration with no type at all (`unknown`), which vanished from the merge with
+/// the assigned branch, so `if tmp` after `if … then tmp = os.tmpname() end` was "always truthy"
+/// (neospector logsync/dbw/init.lua `M.invoke`).
+#[test]
+fn test_uninitialized_local_is_nil_on_unassigned_path() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param body string\nlocal function f(body)\n  local tmp\n  if #body > 8000 then\n    tmp = os.tmpname()\n  end\n  if tmp then print(body) end\nend",
+    ));
+    // An assigned value of unknown type keeps no nil from before it (neospector x/drive `M.dump`).
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        "---@param t table\nlocal function g(t)\n  local v\n  if t.a then\n    v = t.b\n  else\n    v = t.c\n  end\n  return v.x\nend",
+    ));
+    // Assigned on every path: truthy.
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param body string\nlocal function f(body)\n  local tmp\n  if #body > 8000 then\n    tmp = 'a'\n  else\n    tmp = 'b'\n  end\n  if tmp then print(body) end\nend",
+    ));
+}

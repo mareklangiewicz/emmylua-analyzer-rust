@@ -40,7 +40,9 @@ use super::cache;
 use super::member::find_self_return_cast_member;
 use crate::semantic_model::infer::infer_call_with_bindings;
 use crate::semantic_model::infer::unify::substitute;
-use crate::semantic_model::infer::vm::{binary_type, widen_const, widen_variadic_const};
+use crate::semantic_model::infer::vm::{
+    binary_type, uninitialized_local_reads_nil, widen_const, widen_variadic_const,
+};
 use crate::signature::LuaSignatureId;
 use guards::{
     AssignStep, guarded_on_all_paths, literal_comparison, normalize_condition, unparenthesized,
@@ -2140,6 +2142,16 @@ struct DeclAssignmentFrame {
     base_before: LuaType,
 }
 
+/// An assigned value of unknown type keeps the kind the local had before it. Nil before it (a
+/// bare `local x`) has no kind to keep: the local is then unknown, not nil.
+fn unknown_assign_keeps_kind(value_ty: LuaType, before: &LuaType) -> LuaType {
+    if value_ty.is_unknown() && !matches!(before, LuaType::Unknown | LuaType::Any | LuaType::Nil) {
+        widen_const_type(before.clone())
+    } else {
+        value_ty
+    }
+}
+
 /// After backtracking reaches the start, expand the assignment frames on the explicit stack in earliest-to-latest order.
 fn finish_decl_frames(
     model: &SemanticModel,
@@ -2168,13 +2180,7 @@ fn finish_decl_frames(
             &narrowed_before,
             &frame.base_before,
         );
-        let value_ty = if value_ty.is_unknown()
-            && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
-        {
-            widen_const_type(narrowed_before.clone())
-        } else {
-            value_ty
-        };
+        let value_ty = unknown_assign_keeps_kind(value_ty, &narrowed_before);
         let assign_result = finalize(model, value_ty, &frame.assign_path);
         // When branch-merge backtracking reaches an assignment node, the assignment may itself be in an unreachable branch
         // (e.g. `if always_false() then x = 1 end`). In that case the assignment does not participate in merging;
@@ -2379,13 +2385,7 @@ fn trace_decl_uncached(
                                 &narrowed_before,
                                 &base_before,
                             );
-                            let value_ty = if value_ty.is_unknown()
-                                && !matches!(narrowed_before, LuaType::Unknown | LuaType::Any)
-                            {
-                                widen_const_type(narrowed_before.clone())
-                            } else {
-                                value_ty
-                            };
+                            let value_ty = unknown_assign_keeps_kind(value_ty, &narrowed_before);
                             let result = finalize(model, value_ty, &assign_path);
                             if mode == TraceMode::MergeBranch
                                 && !assignment_antecedent_reachable(
@@ -2415,7 +2415,15 @@ fn trace_decl_uncached(
                     && let Some(d) = facts.decl_by_id(decl)
                     && d.owner_syntax.map(|s| s.get_range().start()) == Some(*pos)
                 {
-                    let declared = model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
+                    let declared = match model.type_of_decl(decl) {
+                        // On this path nothing assigned it yet.
+                        None | Some(LuaType::Unknown)
+                            if uninitialized_local_reads_nil(facts, decl) =>
+                        {
+                            LuaType::Nil
+                        }
+                        declared => declared.unwrap_or(LuaType::Unknown),
+                    };
                     let base = match options.capture {
                         // A captured read may see any of the local's values: keep only the
                         // kind; with no kind to keep (`local x`, `= nil`), it can be anything.

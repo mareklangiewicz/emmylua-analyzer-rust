@@ -615,22 +615,10 @@ impl<'a> InferVm<'a> {
             self.computing.insert(decl.clone());
             let mut ty = self.model.type_of_decl_at(&decl, offset);
             self.computing.remove(&decl);
-            // Lua semantics: an uninitialized local reads as nil in an expression. Use nil
-            // only when no declaration/flow type can provide information; do not change
-            // iteration variables, `---@type`, module/class-associated declarations, etc.
+            // Use nil only when no declaration/flow type can provide information.
             if matches!(ty, LuaType::Unknown)
                 && let Some(facts) = self.model.file_facts()
-                && let Some(info) = facts.decl_by_id(&decl)
-                && matches!(info.kind, DeclKind::Local { is_iter: false, .. })
-                && info.value_expr_syntax.is_none()
-                && info.doc_type_syntax.is_none()
-                && info.module_path.is_none()
-                && !info.owner_syntax.is_some_and(|owner| {
-                    facts
-                        .type_defs
-                        .iter()
-                        .any(|def| def.owner_syntax == Some(owner))
-                })
+                && uninitialized_local_reads_nil(facts, &decl)
             {
                 ty = LuaType::Nil;
             }
@@ -5252,4 +5240,24 @@ fn merge(a: LuaType, b: LuaType) -> LuaType {
         _ => types.push(b),
     }
     LuaType::Union(Rc::new(LuaUnionType::from_vec(types)))
+}
+
+/// Lua semantics: an uninitialized local (`local x`) reads as nil until assigned. Not for
+/// iteration variables, `---@type`, or module/class-associated declarations.
+pub(crate) fn uninitialized_local_reads_nil(
+    facts: &crate::semantic_db::facts::FileFacts,
+    decl: &SemanticId,
+) -> bool {
+    facts.decl_by_id(decl).is_some_and(|info| {
+        matches!(info.kind, DeclKind::Local { is_iter: false, .. })
+            && info.value_expr_syntax.is_none()
+            && info.doc_type_syntax.is_none()
+            && info.module_path.is_none()
+            && !info.owner_syntax.is_some_and(|owner| {
+                facts
+                    .type_defs
+                    .iter()
+                    .any(|def| def.owner_syntax == Some(owner))
+            })
+    })
 }
