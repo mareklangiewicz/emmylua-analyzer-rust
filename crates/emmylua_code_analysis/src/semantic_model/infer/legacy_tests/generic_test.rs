@@ -1068,6 +1068,42 @@ mod test {
         assert!(result_ty.is_any(), "{result_ty:?}");
     }
 
+    /// A function value for a method's class-generic callback param (`fun(v: T)`) matches once
+    /// the receiver binds `T`, as a closure literal already did; otherwise the only candidate
+    /// fails and the call reads `unknown`.
+    #[test]
+    fn test_method_callback_param_class_generic_takes_a_function_value() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Box<T>
+            local Box = {}
+
+            ---@param p fun(v: T): any
+            ---@return integer
+            function Box:count(p) end
+
+            ---@type Box<string>
+            local box
+
+            ---@param name string
+            ---@return boolean
+            local function listed(name) return name ~= '' end
+
+            ---@type fun(v: string): boolean
+            local typed
+
+            Named = box:count(listed)
+            Typed = box:count(typed)
+            "#,
+        );
+
+        let named = ws.expr_ty("Named");
+        assert_eq!(ws.humanize_type(named), "integer");
+        let typed = ws.expr_ty("Typed");
+        assert_eq!(ws.humanize_type(typed), "integer");
+    }
+
     #[test]
     fn test_method_generic_constraint_references_class_generic() {
         let mut ws = VirtualWorkspace::new();

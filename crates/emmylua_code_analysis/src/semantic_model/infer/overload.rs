@@ -531,6 +531,10 @@ fn match_call_candidate_impl(
     // `fun(_: T1..., _: T2...)` can be sliced correctly.
     prebind_variadic_generics(fun, args, param_start, arg_start, &mut bindings);
 
+    // A method's class generics stay named refs (`fun(v: T)`); the receiver instance binds them,
+    // so a function value unifies with `fun(v: string)`, not with an unbindable `T`.
+    let class_map = receiver.and_then(|receiver| type_eval::class_generic_map(model, receiver));
+
     // Also set in the loop: an alias param can expand to `T...`.
     let mut takes_rest = fun.takes_rest();
     for (param_index, (name, param_ty)) in params.iter().enumerate().skip(param_start) {
@@ -539,6 +543,9 @@ fn match_call_candidate_impl(
             continue;
         };
         let mut param_ty = bind_signature_generics(param_ty, fun.get_generic_params());
+        if let Some(class_map) = &class_map {
+            param_ty = type_eval::substitute_named_refs(&param_ty, class_map);
+        }
         let raw_param_ty = param_ty.clone();
         param_ty = unify::substitute(&param_ty, &bindings);
         // Only expand conditional aliases; plain structural aliases (e.g. `Arrayable<T>`)
