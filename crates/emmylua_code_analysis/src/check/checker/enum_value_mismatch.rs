@@ -81,22 +81,19 @@ fn check_pair(
     let Some(value_text) = literal_text(value_expr) else {
         return;
     };
-    // Enum value text set: `@field` (owner=TypeDef) plus runtime table fields (`local Status = {...}`, owner=Decl).
-    let tree = semantic_model.syntax_tree().expect("tree");
-    let root = tree.get_red_root();
-    let mut member_refs = semantic_model.members_of_owner(&def.id).as_slice().to_vec();
-    if let Some(facts) = semantic_model.file_facts_of(def.file_id)
-        && let Some(decl) = facts.decl_named(def.name.as_str())
-    {
-        member_refs.extend(semantic_model.members_of_owner(&decl.id).iter().cloned());
-    }
-    let enum_value_texts: Vec<String> = member_refs
+    // Enum value text set: `@field` members plus the fields of the table literal the enum is
+    // bound to (`local Status = {...}` or `M.Status = {...}`, possibly in another file).
+    let enum_value_texts: Vec<String> = semantic_model
+        .member_infos(enum_type)
         .iter()
-        .filter_map(|member_ref| {
-            let facts = semantic_model.file_facts_of(member_ref.file_id)?;
-            let member = facts.member_by_id(&member_ref.id)?;
+        .filter_map(|info| {
+            let file_id = info.file_id?;
+            let member = semantic_model
+                .file_facts_of(file_id)?
+                .member_by_id(info.id.as_ref()?)?;
             let value_syntax = member.value_syntax?;
-            let node = value_syntax.to_node_from_root(&root)?;
+            let tree = semantic_model.syntax_tree_of(file_id)?;
+            let node = value_syntax.to_node_from_root(&tree.get_red_root())?;
             // Runtime member: LuaExpr literal; `@field`: doc type literal node.
             if let Some(text) = LuaExpr::cast(node.clone()).and_then(|expr| literal_text(&expr)) {
                 return Some(text);

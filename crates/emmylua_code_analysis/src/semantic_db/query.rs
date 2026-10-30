@@ -31,7 +31,7 @@ use crate::FileId;
 use emmylua_parser::{
     BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocObjectFieldKey, LuaDocType,
     LuaExpr, LuaIndexExpr, LuaLiteralExpr, LuaLiteralToken, LuaReturnStat, LuaSyntaxId,
-    LuaSyntaxTree, LuaTypeBinaryOperator, LuaVersionCondition, UnaryOperator,
+    LuaSyntaxTree, LuaTableExpr, LuaTypeBinaryOperator, LuaVersionCondition, UnaryOperator,
 };
 use rowan::{TextRange, TextSize};
 
@@ -1825,6 +1825,19 @@ fn push_type_associated_owner_ids(
                                     OwnerId::Global(SmolStr::new(format!("{head}.{tail}"))),
                                 );
                             }
+                        }
+                    }
+                    // `---@class C` on `M.f = { ... }` with a local `M` (lazy.nvim's `LazyConfig`):
+                    // the literal's fields are the class surface, as for `local c = { ... }`. A
+                    // local owner is one table, unlike a global path (the meta-only case above).
+                    for member in facts.members_by_owner_syntax(owner_syntax) {
+                        if facts
+                            .decl_by_id(&member.owner)
+                            .is_some_and(|decl| !matches!(decl.kind, DeclKind::Global))
+                            && let Some(value) = member.value_syntax
+                            && LuaTableExpr::can_cast(value.get_kind())
+                        {
+                            push_unique_owner_id(out, OwnerId::Table(file_id, value.get_range()));
                         }
                     }
                 }

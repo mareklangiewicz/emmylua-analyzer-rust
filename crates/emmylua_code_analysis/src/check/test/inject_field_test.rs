@@ -638,6 +638,32 @@ return items
     }
 
     #[test]
+    fn test_table_literal_accepts_fields_of_class_bound_field_literal() {
+        // `---@class Cfg` on `M.defaults = { ... }` (lazy.nvim's `LazyConfig`): the literal's
+        // fields are Cfg's members, as with `---@class C local c = { ... }`.
+        let diagnostics = check_source(
+            r#"
+            local M = {}
+            ---@class Cfg
+            M.defaults = { root = 'r', spec = {} }
+            ---@type Cfg
+            local c = { root = 's', nope = 1 }
+            return c, M
+            "#,
+        );
+        let injected: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::InjectField)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            injected,
+            ["Field `nope` cannot be injected into the target type."],
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_table_literal_dictionary_index() {
         let diagnostics = check_source(
             r#"

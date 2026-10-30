@@ -3,6 +3,39 @@ mod tests {
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
+    fn test_enum_values_bound_in_another_file() {
+        // neotest's `---@enum neotest.PositionType` + `M.PositionType = { file = "file", ... }`
+        // lives in its own file: its values are read from THAT file's tree.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+                local M = {}
+                ---@enum Kind
+                M.Kind = { dir = "dir", file = "file" }
+                return M
+                "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::EnumValueMismatch,
+            r#"
+                ---@type Kind
+                local kind
+                if kind == "file" then
+                end
+                "#,
+        ));
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::EnumValueMismatch,
+            r#"
+                ---@type Kind
+                local kind
+                if kind == "nope" then
+                end
+                "#,
+        ));
+    }
+
+    #[test]
     fn test_enum_value_mismatch_string() {
         let mut ws = VirtualWorkspace::new();
 

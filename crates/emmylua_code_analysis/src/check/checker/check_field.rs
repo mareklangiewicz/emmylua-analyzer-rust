@@ -4,12 +4,13 @@ use emmylua_parser::{
     LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaDocType, LuaExpr, LuaIndexKey, LuaLocalStat,
     LuaTableExpr, LuaVarExpr,
 };
+use rowan::TextRange;
 
 use crate::DiagnosticCode;
 use crate::semantic_db::def::{DeclKind, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::{expand_alias_branches, expand_alias_generic};
-use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
+use crate::{FileId, LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
 use super::assign_type_mismatch::index_key_type;
 use super::param_count::call_arg_param_index;
@@ -525,7 +526,7 @@ fn check_against_type(
                     SemanticId::Member(literal) => {
                         let at = (literal.file_id, literal.key_range);
                         at != (semantic_model.file_id(), table.get_range())
-                            && table_binding(semantic_model, at.0, at.1).is_some()
+                            && is_class_literal(semantic_model, at.0, at.1)
                     }
                     _ => false,
                 };
@@ -601,6 +602,28 @@ fn check_against_type(
             ),
         );
     }
+}
+
+/// The literal at `range` is the value a `---@class` statement binds: `local c = { ... }`
+/// (table_binding) or `M.f = { ... }`.
+fn is_class_literal(semantic_model: &SemanticModel<'_>, file_id: FileId, range: TextRange) -> bool {
+    if table_binding(semantic_model, file_id, range).is_some() {
+        return true;
+    }
+    let Some(facts) = semantic_model.file_facts_of(file_id) else {
+        return false;
+    };
+    facts
+        .type_defs
+        .iter()
+        .filter_map(|def| def.owner_syntax)
+        .any(|stat| {
+            facts.members_by_owner_syntax(stat).any(|member| {
+                member
+                    .value_syntax
+                    .is_some_and(|value| value.get_range() == range)
+            })
+        })
 }
 
 /// Every key of `table` is a field of the object type `ty` or fits its index signature.
