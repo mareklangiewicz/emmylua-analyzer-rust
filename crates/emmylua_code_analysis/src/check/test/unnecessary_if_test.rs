@@ -170,6 +170,28 @@ mod test {
         ));
     }
 
+    /// A captured local declared without a value (`local relay`) and set outside the closure
+    /// is not just `nil` inside it: `if relay` can be true.
+    #[test]
+    fn test_captured_nil_local_set_outside_is_not_nil() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+                ---@param c boolean
+                ---@param load fun(): fun(): integer
+                local function mk(c, load)
+                    local relay
+                    if c then relay = load() end
+                    return function()
+                        if relay then return relay() end
+                        return 0
+                    end
+                end
+            "#
+        ));
+    }
+
     /// A captured counter (`i = i + 1` inside the closure) stays an `integer`: a value
     /// computed from the local itself adds nothing to what it can hold.
     #[test]

@@ -53,7 +53,7 @@ struct TraceOptions {
     /// A read of a reassigned local that can see any of its values: inside a closure that
     /// captures it, or after a closure that writes it may have run (see `capturing_closure`).
     /// Code outside this range may run after any assignment outside it, so those are skipped
-    /// and the declaration contributes `captured_local_type` instead of its initializer.
+    /// and the declaration contributes its initializer widened to its kind (`widen_loop_carried`).
     capture: Option<rowan::TextRange>,
 }
 
@@ -236,68 +236,6 @@ fn capturing_closure(
     tree.decl_assignments_of(decl)
         .any(|(pos, _)| closure_at(pos) != range)
         .then(|| range.unwrap_or_else(|| root.text_range()))
-}
-
-/// A captured local's value inside the closure: any value it is assigned anywhere, widened,
-/// or its declaration's; unknown when one of those values is. A value computed from the local
-/// itself (`n = n + 1`) adds nothing. It depends on the declaration alone, while every read
-/// of the local inside a closure asks for it, so it is memoized per declaration.
-fn captured_local_type(
-    model: &SemanticModel,
-    tree: &FlowTree,
-    decl: &SemanticId,
-) -> Option<LuaType> {
-    let key = (model.file_id(), decl.clone());
-    if let Some(ty) = model.cache.borrow().captured_local.get(&key) {
-        return ty.clone();
-    }
-    let revision = model.cache.borrow().revision();
-    let ty = captured_local_type_uncached(model, tree, decl);
-    model.cache.publish_if_complete(revision, |cache| {
-        cache.captured_local.insert(key, ty.clone());
-    });
-    ty
-}
-
-fn captured_local_type_uncached(
-    model: &SemanticModel,
-    tree: &FlowTree,
-    decl: &SemanticId,
-) -> Option<LuaType> {
-    let name = model.file_facts()?.decl_by_id(decl)?.name.clone();
-    let root = model.syntax_tree()?.get_red_root();
-    let reads_itself = |value_syntax: &emmylua_parser::LuaSyntaxId| {
-        value_syntax.to_node_from_root(&root).is_some_and(|node| {
-            node.descendants()
-                .filter_map(emmylua_parser::LuaNameExpr::cast)
-                .any(|name_expr| name_expr.get_name_text().as_deref() == Some(name.as_str()))
-        })
-    };
-    let mut types = vec![widen_variadic_const(&model.type_of_decl(decl)?)];
-    for (_, flow_id) in tree.decl_assignments_of(decl) {
-        for effect in tree.get_flow_effects(flow_id) {
-            if let FlowEffect::AssignDecl {
-                decl: assigned,
-                value_syntax,
-            } = effect
-                && assigned == decl
-                && !reads_itself(value_syntax)
-            {
-                let ty = widen_variadic_const(&model.type_of_expr(*value_syntax));
-                // A value of unknown (or any) type makes the whole capture that, not narrower.
-                for top in [LuaType::Unknown, LuaType::Any] {
-                    if ty == top || matches!(&ty, LuaType::Union(u) if u.into_vec().contains(&top))
-                    {
-                        return Some(top);
-                    }
-                }
-                if !types.contains(&ty) {
-                    types.push(ty);
-                }
-            }
-        }
-    }
-    Some(LuaType::from_vec(types))
 }
 
 /// Flow-sensitive type of `decl` at a concrete CFG start node.
@@ -2446,11 +2384,16 @@ fn trace_decl_uncached(
                     && let Some(d) = facts.decl_by_id(decl)
                     && d.owner_syntax.map(|s| s.get_range().start()) == Some(*pos)
                 {
-                    let base = options
-                        .capture
-                        .and_then(|_| captured_local_type(model, tree, decl))
-                        .or_else(|| model.type_of_decl(decl))
-                        .unwrap_or(LuaType::Unknown);
+                    let declared = model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
+                    let base = match options.capture {
+                        // A captured read may see any of the local's values: keep only the
+                        // kind; with no kind to keep (`local x`, `= nil`), it can be anything.
+                        Some(_) => match widen_loop_carried(widen_variadic_const(&declared)) {
+                            LuaType::Unknown => LuaType::Any,
+                            ty => ty,
+                        },
+                        None => declared,
+                    };
                     return finish_decl_frames(
                         model,
                         decl,
