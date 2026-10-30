@@ -4972,4 +4972,43 @@ _ = a[2]
         let ty = ws.expr_ty("B");
         assert_eq!(ws.humanize_type(ty), "string");
     }
+
+    #[test]
+    fn test_member_read_after_owner_reassignment_reads_the_new_owner() {
+        // `y = { ... }` replaces the owner of `y.h`: the read takes the field of what `y` holds on
+        // each path, not the first literal's field.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@param c boolean
+            local function branch(c)
+                local y = { h = nil }
+                if c then y = { h = 'x' } end
+                local branched = y.h
+                print(branched)
+            end
+            local function straight()
+                local z = { h = 1 }
+                z = { h = 'x' }
+                local replaced = z.h
+                print(replaced)
+            end
+            ---@param c boolean
+            local function kept(c)
+                local w = { h = 1 }
+                if c then w = { h = 'x' } end
+                local both = w.h
+                print(both)
+            end
+            branch(true)
+            straight()
+            kept(true)
+            "#,
+        );
+        let ty = |name| ws.humanize_type(last_name_expr_type(&ws, file, name));
+        assert_eq!(
+            [ty("branched"), ty("replaced"), ty("both")],
+            ["\"x\"?", "\"x\"", "(\"x\"|1)"]
+        );
+    }
 }

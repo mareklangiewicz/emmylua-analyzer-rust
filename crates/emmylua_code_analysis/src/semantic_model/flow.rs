@@ -238,7 +238,6 @@ fn captured_local_type_uncached(
 }
 
 /// Flow-sensitive type of `decl` at a concrete CFG start node.
-#[allow(dead_code)] // Public flow API; retained for external/advanced callers.
 pub fn type_of_decl_at_flow_id(model: &SemanticModel, decl: &SemanticId, start: FlowId) -> LuaType {
     let fallback = || model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
     let Some(tree) = model.flow_tree() else {
@@ -1769,6 +1768,11 @@ fn same_member_access(model: &SemanticModel, left: &LuaExpr, right: &LuaExpr) ->
 enum MemberWrite {
     Exact,
     Invalidates,
+    /// `owner = value`: the member is `keys` of what `owner` now holds.
+    ReplacesOwner {
+        owner: SemanticId,
+        keys: Vec<LuaMemberKey>,
+    },
     Unrelated,
 }
 
@@ -1811,18 +1815,42 @@ fn member_write_match(
                 .zip(stable_access_path(model, &target))
                 .filter(|(written, target)| path_write_affects(written, &target.0, &target.1))
         };
-        if let Some(((_, written_keys), (_, keys))) = paths {
+        if let Some(((_, written_keys), (owner, keys))) = paths {
             return if assigned.is_some()
                 && written_keys == keys
                 && !written_keys.iter().any(LuaMemberKey::is_none)
             {
                 MemberWrite::Exact
+            } else if written_keys.is_empty() {
+                MemberWrite::ReplacesOwner { owner, keys }
             } else {
                 MemberWrite::Invalidates
             };
         }
     }
     MemberWrite::Unrelated
+}
+
+/// The member's type right after `write` at `at`: a replaced owner's field, else the member's own
+/// value type.
+fn invalidated_member_type(
+    model: &SemanticModel,
+    member: &SemanticId,
+    write: MemberWrite,
+    at: FlowId,
+) -> Option<LuaType> {
+    if let MemberWrite::ReplacesOwner { owner, keys } = write
+        && !keys.iter().any(LuaMemberKey::is_none)
+    {
+        let owner_ty = type_of_decl_at_flow_id(model, &owner, at);
+        if let Some(ty) = keys
+            .iter()
+            .try_fold(owner_ty, |ty, key| model.member_type(&ty, key))
+        {
+            return Some(ty);
+        }
+    }
+    flow_member_value_type(model, member)
 }
 
 fn path_write_affects(
@@ -2580,10 +2608,11 @@ fn trace_member_uncached(
                             Some(assigned_member),
                         ) {
                             MemberWrite::Unrelated => continue,
-                            MemberWrite::Invalidates => {
-                                // Replacing an owner or writing through a dynamic key removes
-                                // earlier guards, but preserves guards after this assignment.
-                                return flow_member_value_type(model, member)
+                            // Replacing an owner or writing through a dynamic key removes
+                            // earlier guards, but preserves guards after this assignment.
+                            write @ (MemberWrite::Invalidates
+                            | MemberWrite::ReplacesOwner { .. }) => {
+                                return invalidated_member_type(model, member, write, current)
                                     .map(|ty| finalize(model, ty, path));
                             }
                             MemberWrite::Exact => {}
@@ -2606,10 +2635,12 @@ fn trace_member_uncached(
                 }
                 // A dynamic-key write can lack a member ID and still replace
                 // the guarded value or one of its owners.
-                if member_write_match(model, tree, current, member, access, None)
-                    == MemberWrite::Invalidates
-                {
-                    return flow_member_value_type(model, member)
+                let write = member_write_match(model, tree, current, member, access, None);
+                if matches!(
+                    write,
+                    MemberWrite::Invalidates | MemberWrite::ReplacesOwner { .. }
+                ) {
+                    return invalidated_member_type(model, member, write, current)
                         .map(|ty| finalize(model, ty, path));
                 }
             }
