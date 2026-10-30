@@ -2267,10 +2267,16 @@ impl FactsBuilder {
         };
 
         // `---@type T` above `xx.aaa = value`: the owner is the assignment
-        // statement, so resolve the LHS IndexExpr range explicitly.
+        // statement, so resolve the LHS IndexExpr range explicitly. Above a table field it is
+        // the field's own key: the keys of a literal value belong to that literal.
         let target_ranges = |owner: &LuaSyntaxId| -> Vec<TextRange> {
             match owner.get_kind() {
-                LuaSyntaxKind::TableFieldAssign => vec![owner.get_range()],
+                LuaSyntaxKind::TableFieldAssign => owner
+                    .to_node_from_root(&root)
+                    .and_then(LuaTableField::cast)
+                    .map(|field| field_key_range(&field))
+                    .into_iter()
+                    .collect(),
                 LuaSyntaxKind::AssignStat => {
                     let Some(node) = owner.to_node_from_root(&root) else {
                         return Vec::new();

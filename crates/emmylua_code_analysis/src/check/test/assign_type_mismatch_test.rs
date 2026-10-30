@@ -2445,6 +2445,36 @@ return t
     }
 
     #[test]
+    fn test_table_field_type_annotates_only_its_own_field() {
+        // `---@type Win` above `zen = { ... }` types `zen`, not the keys of the literal inside it
+        // (snacks' `styles = { ---@type snacks.win.Config zen = { width = 160 } }`).
+        let diagnostics = check_source(
+            r#"
+            ---@class Win
+            ---@field width? number
+            ---@field border? string
+            local styles = {
+                ---@type Win
+                zen = { width = 160, border = 'single', backdrop = { transparent = false } },
+                ---@type Win
+                bad = 1,
+            }
+            return styles
+            "#,
+        );
+        let mismatches: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::AssignTypeMismatch)
+            .filter_map(|d| d.message.lines().next())
+            .collect();
+        assert_eq!(
+            mismatches,
+            ["expected `Win` but found `1`."],
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_object_table() {
         let mut ws = VirtualWorkspace::new();
         ws.def(
