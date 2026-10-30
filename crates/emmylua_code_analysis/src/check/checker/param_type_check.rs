@@ -1062,11 +1062,14 @@ fn function_arg_compatible(
     // A broad `function` value (e.g. `---@param cb function`) may be passed
     // wherever a function type is expected. Without this, stdlib generic
     // callbacks (`table.sort(list, comp)`) would report false positives.
-    if matches!(arg_ty, LuaType::Function) && is_function_like_type(param_ty) {
+    // A `---@alias X fun(...)` param is a function type too.
+    let expected = doc_function_of(semantic_model, param_ty);
+    if matches!(arg_ty, LuaType::Function)
+        && (is_function_like_type(param_ty) || expected.is_some())
+    {
         return true;
     }
     let actual = doc_function_of(semantic_model, arg_ty);
-    let expected = doc_function_of(semantic_model, param_ty);
     match (actual, expected) {
         (Some(actual), Some(expected)) => {
             functions_compatible(semantic_model, &actual, &expected, bindings)

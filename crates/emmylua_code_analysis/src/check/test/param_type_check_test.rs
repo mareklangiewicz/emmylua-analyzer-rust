@@ -3286,4 +3286,34 @@ mod test {
             "{diagnostics:#?}"
         );
     }
+
+    /// A broad `function` value fits a `fun(...)` param, and equally one named by an alias:
+    /// `uv_fs_event_t:start(path, flags, vim.schedule_wrap(cb))` (`---@return function`).
+    #[test]
+    fn test_broad_function_fits_a_fun_alias_param() {
+        let diagnostics = check_source(
+            r#"
+            ---@alias Callback fun(err?: string, filename: string)
+
+            ---@param cb Callback
+            local function start(cb) return cb end
+            ---@param cb fun(err?: string, filename: string)
+            local function start_inline(cb) return cb end
+
+            ---@param fn function
+            ---@return function
+            local function wrap(fn) return fn end
+
+            start(wrap(function() end))
+            start_inline(wrap(function() end))
+            local w = wrap(function() end)
+            start(w)
+        "#,
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+            0,
+            "{diagnostics:#?}"
+        );
+    }
 }
