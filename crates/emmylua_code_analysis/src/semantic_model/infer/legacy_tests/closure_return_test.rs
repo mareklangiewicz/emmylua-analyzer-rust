@@ -409,4 +409,49 @@ mod test {
         assert_eq!(ws.expr_ty("first"), ws.ty("integer"));
         assert_eq!(ws.expr_ty("second"), ws.ty("string|nil"));
     }
+
+    #[test]
+    fn test_length_return_is_the_length_not_the_operand() {
+        // The index-time return typer handled `not` and `-` but passed `#t` and `~x` through as
+        // their operands, so `return #self.items` returned `string[]`.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@param t string[]
+            function len_of(t) return #t end
+
+            ---@class LenBox
+            ---@field items string[]
+            ---@field __len fun(self: LenBox): string
+            LenBox = {}
+            function LenBox:count() return #self.items end
+            ---@param box LenBox
+            function box_len(box) return #box end
+
+            ---@param x integer
+            function bnot_of(x) return ~x end
+
+            ---@type LenBox
+            local box
+            plain = len_of({})
+            method = box:count()
+            overloaded = box_len(box)
+            flipped = bnot_of(1)
+            "#,
+        );
+        // `__len` is the VM's to resolve; the index-time typer leaves it unknown, not `LenBox`.
+        let ty = |ws: &mut VirtualWorkspace, name| {
+            let ty = ws.expr_ty(name);
+            ws.humanize_type(ty)
+        };
+        assert_eq!(
+            [
+                ty(&mut ws, "plain"),
+                ty(&mut ws, "method"),
+                ty(&mut ws, "overloaded"),
+                ty(&mut ws, "flipped")
+            ],
+            ["integer", "integer", "unknown", "integer"]
+        );
+    }
 }

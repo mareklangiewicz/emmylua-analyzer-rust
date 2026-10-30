@@ -3281,10 +3281,14 @@ fn expr_type_node(
                 TypeShell::from_primitive(PrimitiveType::Boolean)
             } else if op == Some(UnaryOperator::OpUnm) {
                 expr_type_arithmetic(db, facts, file, config, LuaExpr::UnaryExpr(unary))
+            } else if op == Some(UnaryOperator::OpBNot) {
+                TypeShell::from_primitive(PrimitiveType::Integer)
             } else {
                 unary
                     .get_expr()
-                    .map(|expr| expr_type(db, facts, file, config, expr).first_result())
+                    .map(|expr| {
+                        length_type(&expr_type(db, facts, file, config, expr).first_result())
+                    })
                     .unwrap_or_else(TypeShell::unknown)
             }
         }
@@ -3293,6 +3297,30 @@ fn expr_type_node(
             .map(|expr| expr_type(db, facts, file, config, expr).first_result())
             .unwrap_or_else(TypeShell::unknown),
         _ => TypeShell::unknown(),
+    }
+}
+
+/// `#x`: an integer for a string or a table without a metatable of its own (a named type may
+/// declare `__len`, which the VM resolves). `#nil` raises, so a nil candidate adds nothing.
+fn length_type(operand: &TypeShell) -> TypeShell {
+    let mut lengthy = false;
+    for candidate in &operand.candidates {
+        match candidate {
+            TypeCandidate::Primitive(PrimitiveType::Nil) => {}
+            TypeCandidate::Primitive(
+                PrimitiveType::String | PrimitiveType::Table | PrimitiveType::EmptyObject,
+            )
+            | TypeCandidate::Array(_)
+            | TypeCandidate::Tuple(_)
+            | TypeCandidate::Object(_)
+            | TypeCandidate::Table(_) => lengthy = true,
+            _ => return TypeShell::unknown(),
+        }
+    }
+    if lengthy {
+        TypeShell::from_primitive(PrimitiveType::Integer)
+    } else {
+        TypeShell::unknown()
     }
 }
 
