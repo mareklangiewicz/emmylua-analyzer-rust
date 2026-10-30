@@ -9,6 +9,45 @@ mod test {
     use crate::{DiagnosticCode, Emmyrc, VirtualWorkspace};
 
     #[test]
+    fn test_union_receiver_binds_shared_class_generics() {
+        // `vim.iter(t):enumerate()` is `vim.IterArray<integer, ...>|vim.Iter<integer, ...>`: a
+        // method called on it sees `V1` as integer from both components.
+        let diagnostics = check_source(
+            r#"
+            ---@class It<V1, V...>
+            local It = {}
+            ---@param f fun(v: V1, ...: V...): boolean
+            function It:rfind(f) end
+            ---@class ItArr<V1, V...>: It<V1, V...>
+            local ItArr = {}
+            ---@param i integer
+            ---@return boolean
+            local pred = function(i) return i > 0 end
+            ---@param s string
+            ---@return boolean
+            local bad = function(s) return s ~= '' end
+            ---@type ItArr<integer, string>|It<integer, string>
+            local both
+            both:rfind(pred)
+            both:rfind(bad)
+            return It, ItArr
+            "#,
+        );
+        let mismatches: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::ParamTypeMismatch)
+            .filter_map(|d| d.message.lines().next())
+            .collect();
+        assert_eq!(
+            mismatches,
+            [
+                "expected `fun(v: integer, ...: string...) -> boolean` but found `fun(s: string) -> boolean`. "
+            ],
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_generic_bound_by_a_table_literal_widens_to_a_later_arg() {
         // luagnd's `chk.eq.deep(act: T, exp: T)` with a literal first: the literal binds T, and
         // a later `integer[]` arg the literal fits widens T to it instead of failing. A literal

@@ -385,6 +385,24 @@ pub fn expand_mapped(model: &SemanticModel, mapped: &LuaMappedType) -> Option<Lu
 
 /// Build a mapping from class generic names to arguments (`T -> string`) from a receiver generic instance (`Box<string>`).
 pub fn class_generic_map(model: &SemanticModel, ty: &LuaType) -> Option<HashMap<String, LuaType>> {
+    // A union receiver (`IterArray<integer, V>|Iter<integer, V>`): each class generic every
+    // component binds takes the union of their args. Any component without them: none.
+    if let LuaType::Union(union) = ty {
+        let mut maps = union
+            .into_vec()
+            .into_iter()
+            .filter(|component| !component.is_nil())
+            .map(|component| class_generic_map(model, &component));
+        let mut merged = maps.next()??;
+        for map in maps {
+            let map = map?;
+            merged.retain(|name, _| map.contains_key(name));
+            for (name, value) in merged.iter_mut() {
+                *value = LuaType::from_vec(vec![value.clone(), map[name].clone()]);
+            }
+        }
+        return Some(merged);
+    }
     let LuaType::Generic(generic) = ty else {
         return None;
     };
