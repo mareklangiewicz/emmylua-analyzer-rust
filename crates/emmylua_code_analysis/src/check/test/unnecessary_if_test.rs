@@ -769,3 +769,20 @@ fn test_nil_write_does_not_type_a_member() {
         "local function f()\n  local t = {}\n  t.ann = nil\n  if t.ann then print(1) end\nend",
     ));
 }
+
+/// A negative integer in a doc type (`-1`, a unary minus over a literal) is that literal. It lowered
+/// to unknown, which a union then dropped: `---@param dir 1|-1` read `1`, so `if dir > 0` was "always
+/// truthy" (neospector `table_goto_col`), and a bare `-1` read unknown, so `d > 0` passed unseen.
+#[test]
+fn test_negative_doc_integer_is_a_literal() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param dir 1|-1\nlocal function f(dir)\n  if dir > 0 then print(1) end\nend",
+    ));
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param d -1\nlocal function f(d)\n  if d > 0 then print(1) end\nend",
+    ));
+}

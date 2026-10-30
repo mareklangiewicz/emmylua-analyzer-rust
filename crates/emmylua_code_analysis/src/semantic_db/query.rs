@@ -30,9 +30,9 @@ use crate::Emmyrc;
 use crate::FileId;
 use emmylua_parser::{
     BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocObjectFieldKey, LuaDocType,
-    LuaExpr, LuaIndexExpr, LuaLiteralExpr, LuaLiteralToken, LuaReturnStat, LuaSyntaxId,
-    LuaSyntaxTree, LuaTableExpr, LuaTableField, LuaTypeBinaryOperator, LuaVersionCondition,
-    UnaryOperator,
+    LuaDocUnaryType, LuaExpr, LuaIndexExpr, LuaLiteralExpr, LuaLiteralToken, LuaReturnStat,
+    LuaSyntaxId, LuaSyntaxTree, LuaTableExpr, LuaTableField, LuaTypeBinaryOperator,
+    LuaTypeUnaryOperator, LuaVersionCondition, UnaryOperator,
 };
 use rowan::{TextRange, TextSize};
 
@@ -2422,8 +2422,30 @@ fn lower_doc_type_node(
             }
             shell
         }
+        LuaDocType::Unary(unary) => negated_literal(unary).unwrap_or_else(TypeShell::unknown),
         _ => TypeShell::unknown(),
     }
+}
+
+/// `-1` in a doc type: a unary minus over a number literal, lowered to the negated literal.
+/// Any other unary (`keyof T`, `-x`) is not one.
+fn negated_literal(unary: &LuaDocUnaryType) -> Option<TypeShell> {
+    if unary.get_op_token()?.get_op() != LuaTypeUnaryOperator::Neg {
+        return None;
+    }
+    let LuaDocType::Literal(literal) = unary.get_type()? else {
+        return None;
+    };
+    let Some(LuaLiteralToken::Number(number)) = literal.get_literal() else {
+        return None;
+    };
+    let negated = match number.get_number_value() {
+        emmylua_parser::NumberResult::Int(i) => LiteralShell::Integer(i.checked_neg()?),
+        emmylua_parser::NumberResult::Uint(u) => LiteralShell::Integer((u as i64).checked_neg()?),
+        emmylua_parser::NumberResult::Float(f) => LiteralShell::Float((-f).to_bits()),
+        emmylua_parser::NumberResult::Number => return None,
+    };
+    Some(TypeShell::from_literal(negated))
 }
 
 /// Whether `lower_doc_type_node` represents every type node in `doc_type` exactly. Conservative:
@@ -2448,6 +2470,7 @@ fn lowers_exactly(doc_type: &LuaDocType) -> bool {
             LuaDocType::Binary(binary) => binary
                 .get_op_token()
                 .is_some_and(|token| token.get_op() == LuaTypeBinaryOperator::Union),
+            LuaDocType::Unary(unary) => negated_literal(&unary).is_some(),
             _ => false,
         })
 }
