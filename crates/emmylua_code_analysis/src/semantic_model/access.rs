@@ -550,7 +550,16 @@ impl<'db> SemanticModel<'db> {
         let Some(key) = member_key_from_index_key(&index_key) else {
             return false;
         };
-        union.into_vec().iter().any(|component| {
+        let components = union.into_vec();
+        // An `any`/`unknown` component reads any member as itself: `any|string` (the value slot
+        // of `pcall(require, mod)`) has no missing member.
+        if components
+            .iter()
+            .any(|component| component.is_any() || component.is_unknown())
+        {
+            return false;
+        }
+        components.iter().any(|component| {
             if matches!(component, LuaType::Nil) {
                 return false;
             }

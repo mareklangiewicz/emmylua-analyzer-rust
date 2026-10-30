@@ -3378,4 +3378,25 @@ mod test {
             "#
         ));
     }
+
+    /// `local ok, m = pcall(require, mod)` types `m` as `any|string`; `m.ns` is `any`, not a
+    /// member missing from the `string` component (x.drive `repaint`).
+    #[test]
+    fn test_member_of_union_with_any_is_not_missing() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param n integer
+            local function need(n) end
+
+            ---@param mod string
+            local function f(mod)
+                local ok, m = pcall(require, mod)
+                if not (ok and type(m) == 'table' and m.ns) then return end
+                need(m.ns)
+            end
+            "#
+        ));
+    }
 }
