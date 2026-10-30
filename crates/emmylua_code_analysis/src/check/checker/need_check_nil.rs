@@ -190,14 +190,9 @@ fn expr_access_path(expr: &LuaExpr) -> Option<String> {
     }
 }
 
-/// Prefix type: name expressions use flow-sensitive type (after conditional narrowing); others use flow-aware expression type (including inline casts).
+/// Prefix type: the flow-aware expression type (conditional narrowing, inline casts).
 /// VM inference for array indices may degrade to Unknown; here use `T | nil` as a fallback for `T[]` indexing.
 fn prefix_type(semantic_model: &SemanticModel<'_>, prefix: &LuaExpr) -> LuaType {
-    if let LuaExpr::NameExpr(name_expr) = prefix
-        && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
-    {
-        return semantic_model.type_of_decl_at(&decl, name_expr.get_position());
-    }
     let ty = semantic_model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_range().start());
     if !matches!(ty, LuaType::Unknown) {
         return ty;

@@ -39,15 +39,12 @@ fn check_call(
         return;
     };
     let callee_ty = match &prefix_expr {
-        emmylua_parser::LuaExpr::NameExpr(name_expr) => semantic_model
-            .resolve_name(name_expr.get_position())
-            // The flow read, in a local initializer too: `i = function() end` makes `i()` callable,
-            // and `type(t) == 'function' and t()` narrows `t`.
-            .map(|decl| semantic_model.type_of_decl_at(&decl, name_expr.get_position()))
-            .unwrap_or_else(|| semantic_model.type_of_expr(prefix_expr.get_syntax_id())),
-        // The flow read, as for a name: `type(t.x) == 'function' and t.x()` narrows the field.
-        emmylua_parser::LuaExpr::IndexExpr(_) => semantic_model
-            .type_of_expr_at(prefix_expr.get_syntax_id(), prefix_expr.get_range().start()),
+        // The flow read, in a local initializer too: `i = function() end` makes `i()` callable,
+        // and `type(t) == 'function' and t()` / `type(t.x) == 'function' and t.x()` narrow.
+        emmylua_parser::LuaExpr::NameExpr(_) | emmylua_parser::LuaExpr::IndexExpr(_) => {
+            semantic_model
+                .type_of_expr_at(prefix_expr.get_syntax_id(), prefix_expr.get_range().start())
+        }
         _ => semantic_model.type_of_expr(prefix_expr.get_syntax_id()),
     };
     if is_callable(semantic_model, &callee_ty) {

@@ -90,10 +90,9 @@ pub(crate) fn is_undefined_field(
         return false;
     }
     let prefix_ty = match &prefix {
-        LuaExpr::NameExpr(name_expr) => semantic_model
-            .resolve_name(name_expr.get_position())
-            .map(|decl| semantic_model.type_of_decl_at(&decl, name_expr.get_position()))
-            .unwrap_or_else(|| semantic_model.type_of_expr(prefix.get_syntax_id())),
+        LuaExpr::NameExpr(_) => {
+            semantic_model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_range().start())
+        }
         _ => semantic_model.type_of_expr(prefix.get_syntax_id()),
     };
     let prefix_ty = resolve_generic_param(semantic_model, &prefix_ty);
