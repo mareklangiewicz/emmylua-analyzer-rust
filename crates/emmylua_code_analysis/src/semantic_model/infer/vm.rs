@@ -26,8 +26,8 @@ use crate::semantic_db::facts::member_key_from_index_key;
 use crate::semantic_db::types::PrimitiveType;
 use crate::semantic_model::flow::{ExprCastMode, apply_expr_casts, type_of_expr_with_cast};
 use crate::semantic_model::member::{
-    MemberInfo, attached_global_table_member, index_signature_type, table_const_class_type,
-    table_metatable_type,
+    MemberInfo, attached_global_table_member, index_signature_type, member_key_type,
+    table_const_class_type, table_metatable_type,
 };
 use crate::semantic_model::type_eval::{
     class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
@@ -1366,12 +1366,7 @@ impl<'a> InferVm<'a> {
         }
         // No named member: an index signature covering the key (`table<string, V>`,
         // `---@field [string] V`) types the read as `V`.
-        let key_ty = match key {
-            LuaMemberKey::Name(name) => Some(LuaType::StringConst(name.clone().into())),
-            LuaMemberKey::Integer(i) => Some(LuaType::IntegerConst(*i)),
-            LuaMemberKey::None => None,
-        };
-        if let Some(key_ty) = key_ty
+        if let Some(key_ty) = member_key_type(key)
             && let Some(ty) = index_signature_type(self.model, &owner.ty, &key_ty)
         {
             return Value::plain(ty);

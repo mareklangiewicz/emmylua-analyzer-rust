@@ -3,6 +3,7 @@ use crate::check::checker::generic_constraint_mismatch::resolved_call_signatures
 use crate::check::checker::param_count::callable_functions;
 use crate::check::checker::param_type_check::callable_candidates_uncached;
 use crate::semantic_db::facts::member_key_from_index_key;
+use crate::semantic_model::member::{index_signature_type, member_key_type};
 
 impl<'db> SemanticModel<'db> {
     /// Currently configured runtime version (used for `---@version` visibility checks).
@@ -558,7 +559,10 @@ impl<'db> SemanticModel<'db> {
             {
                 return false;
             }
+            // `---@field [string] any` covers the key even without a named member.
             self.member_type(component, &key).is_none()
+                && !member_key_type(&key)
+                    .is_some_and(|key_ty| index_signature_type(self, component, &key_ty).is_some())
         })
     }
     /// Resolves member references in index expressions (single member resolution entry point):

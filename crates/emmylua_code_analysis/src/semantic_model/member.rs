@@ -520,6 +520,15 @@ pub fn member_type(
     member_info(model, prefix_type, key).map(|info| info.typ)
 }
 
+/// The literal key type an index signature is matched against (`t.x` -> `"x"`, `t[1]` -> `1`).
+pub(crate) fn member_key_type(key: &LuaMemberKey) -> Option<LuaType> {
+    match key {
+        LuaMemberKey::Name(name) => Some(LuaType::StringConst(name.clone().into())),
+        LuaMemberKey::Integer(i) => Some(LuaType::IntegerConst(*i)),
+        LuaMemberKey::None => None,
+    }
+}
+
 /// Value type of the first index signature whose key domain accepts `key_type`:
 /// `table<K, V>`, `{ [K]: V }` and `---@field [K] V` (`t.x` / `t[k]` with no named member).
 pub(crate) fn index_signature_type(

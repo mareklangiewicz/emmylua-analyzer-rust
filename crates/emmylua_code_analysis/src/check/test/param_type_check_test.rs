@@ -3316,4 +3316,33 @@ mod test {
             "{diagnostics:#?}"
         );
     }
+
+    /// A `---@field [string] any` read on a param narrowed from `T?` (`if not d then return end`,
+    /// `if d then`) typed as `nil`, not `any` (snacks `item.source` in picker callbacks).
+    #[test]
+    fn test_narrowed_nullable_class_index_field_is_any() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@class One
+            ---@field [string] any
+            ---@field text string
+
+            ---@param s string
+            local function needs(s) end
+
+            ---@param d One?
+            local function g(d)
+                if not d then return end
+                needs(d.source)
+            end
+
+            ---@param d One?
+            local function h(d)
+                if d then needs(d.source) end
+            end
+            "#
+        ));
+    }
 }
