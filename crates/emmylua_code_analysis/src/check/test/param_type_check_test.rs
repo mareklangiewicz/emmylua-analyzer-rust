@@ -3884,6 +3884,56 @@ mod test {
         ));
     }
 
+    /// A table literal fits a union when ANY component takes it: `{}` misses `Opts`'s required `b` but is
+    /// an empty `Opts[]` (`xd.chosen`'s `Choice|Choice[]|nil`), also when a generic `T` binds the union.
+    #[test]
+    fn test_table_literal_fits_any_union_component() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+                ---@class Opts
+                ---@field b string
+
+                ---@param o Opts|Opts[]|nil
+                local function f(o) end
+                f({})
+
+                ---@generic T
+                ---@param act T
+                ---@param exp T
+                local function eq(act, exp) end
+                ---@type Opts|Opts[]|nil
+                local got
+                eq(got, {})
+            "#
+        ));
+    }
+
+    /// ...but not when the only component that could hold a table rejects it.
+    #[test]
+    fn test_table_literal_rejected_by_every_table_component() {
+        for param in ["Opts|nil", "Opts|string"] {
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        r#"
+                ---@class Opts
+                ---@field b string
+
+                ---@param o {param}
+                local function f(o) end
+                f({{}})
+            "#
+                    )
+                ),
+                "{param}"
+            );
+        }
+    }
+
     /// `_G` is a table: it may be passed where a `table` is expected (`rawset(_G, 'x', 1)`).
     #[test]
     fn test_global_table_as_table_argument() {

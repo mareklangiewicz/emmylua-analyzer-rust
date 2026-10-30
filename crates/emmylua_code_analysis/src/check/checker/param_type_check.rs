@@ -961,9 +961,20 @@ fn generic_table_required_mismatch(
             if let Some(array) = union_array_for_sequence(union, table) {
                 return generic_table_required_mismatch(semantic_model, &array, table);
             }
-            return union.into_vec().iter().find_map(|component| {
-                generic_table_required_mismatch(semantic_model, component, table)
-            });
+            // The literal fits when ANY component that can hold a table takes it (`{}` is an
+            // empty `Choice[]` though it misses `Choice`'s required fields).
+            let table_ty = semantic_model.type_of_expr(table.get_syntax_id());
+            let mut first = None;
+            for component in union.into_vec() {
+                match generic_table_required_mismatch(semantic_model, &component, table) {
+                    Some(mismatch) => {
+                        first.get_or_insert(mismatch);
+                    }
+                    None if is_compatible(semantic_model, &table_ty, &component) => return None,
+                    None => {}
+                }
+            }
+            return first;
         }
         LuaType::Intersection(intersection) => {
             return intersection.get_types().iter().find_map(|component| {
