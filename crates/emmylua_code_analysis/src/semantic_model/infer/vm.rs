@@ -1184,14 +1184,15 @@ impl<'a> InferVm<'a> {
                     }
                 }
                 // If still a broad Function/Unknown, project a DocFunction from the member
-                // closure expression.
+                // closure expression. A `nil` value is a deletion (`t.f = nil`), which the
+                // member type leaves unknown on purpose (`member_type`).
                 if matches!(ty, LuaType::Unknown | LuaType::Function)
                     && let Some(facts) = self.model.file_facts_of(member.file_id)
                     && let Some(member_def) = facts.member_by_id(&member.id)
                     && let Some(value_syntax) = member_def.value_syntax
                 {
                     let expr_ty = self.type_of_expr_inherit(value_syntax);
-                    if !matches!(expr_ty, LuaType::Unknown) {
+                    if !matches!(expr_ty, LuaType::Unknown | LuaType::Nil) {
                         ty = expr_ty;
                     }
                 }

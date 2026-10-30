@@ -31,7 +31,8 @@ use crate::FileId;
 use emmylua_parser::{
     BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocObjectFieldKey, LuaDocType,
     LuaExpr, LuaIndexExpr, LuaLiteralExpr, LuaLiteralToken, LuaReturnStat, LuaSyntaxId,
-    LuaSyntaxTree, LuaTableExpr, LuaTypeBinaryOperator, LuaVersionCondition, UnaryOperator,
+    LuaSyntaxTree, LuaTableExpr, LuaTableField, LuaTypeBinaryOperator, LuaVersionCondition,
+    UnaryOperator,
 };
 use rowan::{TextRange, TextSize};
 
@@ -2514,6 +2515,12 @@ pub(crate) fn member_type(
                 }
             }
             _ => {
+                // `t.f = nil` deletes the field: it says nothing of the value `t.f` holds
+                // elsewhere (a `table` param's field read before the write), so it gives the
+                // member no type. A literal's `{ f = nil }` field keeps its nil.
+                if is_nil_assignment(db, file, value_syntax) {
+                    return TypeShell::unknown();
+                }
                 // A member holds one value: a call's first (`M.ok = detect()`).
                 let shell = expr_type_of(db, file, config, value_syntax).first_result();
                 if !shell.is_unknown() {
@@ -2528,6 +2535,19 @@ pub(crate) fn member_type(
     }
 
     TypeShell::unknown()
+}
+
+/// Whether `value_syntax` is the `nil` of an assignment `t.f = nil` (not of a table field).
+fn is_nil_assignment(db: &SemanticDatabase, file: FileId, value_syntax: LuaSyntaxId) -> bool {
+    let tree = syntax_tree(db, file);
+    let Some(LuaExpr::LiteralExpr(literal)) = find_expr_by_syntax_id(&tree, &value_syntax) else {
+        return false;
+    };
+    matches!(literal.get_literal(), Some(LuaLiteralToken::Nil(_)))
+        && literal
+            .syntax()
+            .parent()
+            .is_none_or(|parent| LuaTableField::cast(parent).is_none())
 }
 
 /// Direct member names of a local declaration (completion candidates).

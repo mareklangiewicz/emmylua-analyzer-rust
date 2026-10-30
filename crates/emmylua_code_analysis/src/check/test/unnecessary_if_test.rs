@@ -750,3 +750,22 @@ fn test_uninitialized_local_is_nil_on_unassigned_path() {
         "---@param body string\nlocal function f(body)\n  local tmp\n  if #body > 8000 then\n    tmp = 'a'\n  else\n    tmp = 'b'\n  end\n  if tmp then print(body) end\nend",
     ));
 }
+
+/// `fn.ann = nil` deletes a field of a `table` param; it does not declare it nil. The member typed
+/// by that write read `nil` everywhere, also before the write, so `if fn.ann and fn.ann.default`
+/// was "always falsy" (luagnd cmdscan `command`). Accepted cost: `fn.ann = nil; if fn.ann` is no
+/// longer "always falsy" (member reads on a param are flow-insensitive).
+#[test]
+fn test_nil_write_does_not_type_a_member() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param fn table\nlocal function f(fn)\n  local d = fn.ann and fn.ann.default\n  if d then\n    fn.ann.default = nil\n    if not next(fn.ann) then fn.ann = nil end\n  end\nend",
+    ));
+    // A table this function builds still reads the nil it was given.
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "local function f()\n  local t = {}\n  t.ann = nil\n  if t.ann then print(1) end\nend",
+    ));
+}
