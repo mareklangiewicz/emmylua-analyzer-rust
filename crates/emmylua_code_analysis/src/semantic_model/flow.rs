@@ -150,6 +150,10 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
 /// earlier one in a sibling branch), the next pass may see that value: the read keeps its kind
 /// but not its exact value (`false` → `boolean`, `0` → `integer`, `nil`
 /// → `unknown`). Deliberately not a fixpoint: no body write is evaluated here.
+///
+/// Nor does a dynamic loop merge into the flow after it, so a read after the loop sees only the
+/// value from before it: `for … do if … then s = true end end; if s` reads `false`. A loop of the
+/// read's function that ended before it and assigns the local widens the read the same way.
 fn widen_if_loop_carried(
     model: &SemanticModel,
     tree: &FlowTree,
@@ -157,6 +161,8 @@ fn widen_if_loop_carried(
     offset: TextSize,
     ty: LuaType,
 ) -> LuaType {
+    use emmylua_parser::LuaSyntaxKind;
+
     let mut writes = tree.decl_assignments_of(decl).peekable();
     if writes.peek().is_none() {
         return ty;
@@ -164,27 +170,54 @@ fn widen_if_loop_carried(
     let Some(root) = model.syntax_tree().map(|tree| tree.get_red_root()) else {
         return ty;
     };
-    let Some(token) = root.token_at_offset(offset).right_biased() else {
+    let closure_of = |pos: TextSize| {
+        let token = root.token_at_offset(pos).right_biased()?;
+        Some(
+            token
+                .parent_ancestors()
+                .find(|node| node.kind() == LuaSyntaxKind::ClosureExpr.into())
+                .map(|node| node.text_range()),
+        )
+    };
+    let Some(read_closure) = closure_of(offset) else {
         return ty;
     };
+    // An annotated local keeps its declared type as the contract, as in `capturing_closure`.
+    if model
+        .file_facts()
+        .and_then(|facts| facts.decl_by_id(decl))
+        .is_some_and(|info| info.doc_type_syntax.is_some())
+    {
+        return ty;
+    }
     // A local declared inside the loop is a new one on every pass: its writes do not carry.
     let decl_start = decl_owner_syntax_start(model, decl);
-    let loops: Vec<rowan::TextRange> = token
-        .parent_ancestors()
-        .take_while(|node| node.kind() != emmylua_parser::LuaSyntaxKind::ClosureExpr.into())
-        .filter(|node| {
-            matches!(
-                emmylua_parser::LuaSyntaxKind::from(node.kind()),
-                emmylua_parser::LuaSyntaxKind::WhileStat
-                    | emmylua_parser::LuaSyntaxKind::RepeatStat
-                    | emmylua_parser::LuaSyntaxKind::ForStat
-                    | emmylua_parser::LuaSyntaxKind::ForRangeStat
-            )
-        })
-        .map(|node| node.text_range())
-        .filter(|range| decl_start.is_none_or(|start| !range.contains(start)))
-        .collect();
-    if writes.any(|(pos, _)| loops.iter().any(|range| range.contains(pos))) {
+    let carries = |pos: TextSize| {
+        if closure_of(pos) != Some(read_closure) {
+            return false;
+        }
+        let Some(token) = root.token_at_offset(pos).right_biased() else {
+            return false;
+        };
+        token
+            .parent_ancestors()
+            .take_while(|node| node.kind() != LuaSyntaxKind::ClosureExpr.into())
+            .filter(|node| {
+                matches!(
+                    LuaSyntaxKind::from(node.kind()),
+                    LuaSyntaxKind::WhileStat
+                        | LuaSyntaxKind::RepeatStat
+                        | LuaSyntaxKind::ForStat
+                        | LuaSyntaxKind::ForRangeStat
+                )
+            })
+            .map(|node| node.text_range())
+            .any(|range| {
+                decl_start.is_none_or(|start| !range.contains(start))
+                    && (range.contains(offset) || range.end() <= offset)
+            })
+    };
+    if writes.any(|(pos, _)| carries(pos)) {
         widen_loop_carried(ty)
     } else {
         ty

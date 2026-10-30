@@ -2176,8 +2176,10 @@ n = n + 1
         assert!(thing_type_desc.contains("MyClass"), "{thing_type_desc}");
     }
 
+    // Fork: upstream pinned `nil` here (the body's write ignored). The body may have run, so
+    // the read keeps no exact value: `unknown`, as for a loop-carried read (`widen_if_loop_carried`).
     #[test]
-    fn test_dynamic_numeric_for_post_flow_ignores_body_assignment_for_print_arg() {
+    fn test_dynamic_numeric_for_post_flow_widens_body_assigned_local_for_print_arg() {
         let mut ws = VirtualWorkspace::new();
 
         let file_id = ws.def(
@@ -2195,7 +2197,7 @@ n = n + 1
         );
         let thing_type = last_name_expr_type(&ws, file_id, "thing");
 
-        assert_eq!(ws.humanize_type(thing_type), "nil");
+        assert_eq!(ws.humanize_type(thing_type), "unknown");
     }
 
     #[test]
@@ -2221,8 +2223,10 @@ n = n + 1
         assert!(thing_type_desc.contains("MyClass"), "{thing_type_desc}");
     }
 
+    // Fork: upstream pinned `nil` here (the body's write ignored). The body may have run, so
+    // the read keeps no exact value: `unknown`, as for a loop-carried read (`widen_if_loop_carried`).
     #[test]
-    fn test_dynamic_while_post_flow_ignores_body_assignment_for_print_arg() {
+    fn test_dynamic_while_post_flow_widens_body_assigned_local_for_print_arg() {
         let mut ws = VirtualWorkspace::new();
 
         let file_id = ws.def(
@@ -2241,7 +2245,7 @@ n = n + 1
         );
         let thing_type = last_name_expr_type(&ws, file_id, "thing");
 
-        assert_eq!(ws.humanize_type(thing_type), "nil");
+        assert_eq!(ws.humanize_type(thing_type), "unknown");
     }
 
     #[test]

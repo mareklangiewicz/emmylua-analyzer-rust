@@ -663,6 +663,37 @@ fn test_loop_carried_local_is_widened() {
             "{label}"
         );
     }
+    // The same holds after the loop: a dynamic loop's body may have run, so a read after it sees
+    // the body's writes too, not only the value from before the loop (neospector myaihook.lua
+    // `if full and not bracketed`).
+    for (label, code) in [
+        (
+            "for after",
+            "---@param t string[]\nlocal function f(t)\n  local s = false\n  for i = 1, #t do\n    if t[i] == 'x' then s = true end\n  end\n  if s then print(1) end\nend",
+        ),
+        (
+            "for-in after",
+            "---@param t string[]\nlocal function f(t)\n  local n = 0\n  for _, v in ipairs(t) do\n    if v == 'x' then n = n + 1 end\n  end\n  if n > 0 then print(n) end\nend",
+        ),
+        (
+            "while after",
+            "local function f()\n  local s = false\n  while math.random() > 0.5 do\n    s = true\n  end\n  if s then print(1) end\nend",
+        ),
+        (
+            "break",
+            "---@param t string[]\nlocal function f(t)\n  local s = false\n  for _, v in ipairs(t) do\n    if v == 'x' then\n      s = true\n      break\n    end\n  end\n  if s then print(1) end\nend",
+        ),
+    ] {
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, code),
+            "{label}"
+        );
+    }
+    // A loop that starts after the read cannot have run before it.
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param t string[]\nlocal function f(t)\n  local s = false\n  if s then print(1) end\n  for _ in ipairs(t) do\n    s = true\n  end\nend",
+    ));
     // A local declared inside the loop is a fresh one on every pass.
     assert!(!ws.has_no_diagnostic(
         DiagnosticCode::UnnecessaryIf,
