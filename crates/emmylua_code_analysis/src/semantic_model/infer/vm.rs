@@ -4062,6 +4062,10 @@ pub(crate) fn unify_call_bindings(
             {
                 return unify_call_bindings(model, param, &super_ty, bindings);
             }
+            if !type_contains_tpl_ref(param) {
+                // Nothing to bind, as in the `_` arm: `{ sync = true }` fits `table<string, boolean>`.
+                return model.type_check_subtype(arg, param);
+            }
             unify::unify_bindings(param, arg, bindings)
         }
         Table | TableConst(_) | TableGeneric(_) => true,

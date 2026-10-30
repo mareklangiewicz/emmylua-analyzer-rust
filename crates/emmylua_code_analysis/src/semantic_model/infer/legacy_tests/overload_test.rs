@@ -117,4 +117,32 @@ mod test {
         let ty = ws.expr_ty("E");
         assert_eq!(ws.humanize_type(ty), "boolean");
     }
+
+    #[test]
+    fn test_table_literal_fits_a_map_member_of_a_union_param() {
+        // `{ sync = true }` fits the `table<string, boolean>` member, so the 2-arg call keeps
+        // the main signature instead of falling to the 1-arg overload (or to nothing).
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@param line string?
+            ---@param bare? table<string, boolean>|true
+            ---@return integer
+            ---@overload fun(line: string?): string
+            local function f(line, bare) end
+            ---@param bare table<string, boolean>|true
+            ---@return integer
+            local function g(bare) end
+            A = f('x', { sync = true })
+            B = g({ sync = true })
+            C = f('x')
+            "#,
+        );
+        let ty = ws.expr_ty("A");
+        assert_eq!(ws.humanize_type(ty), "integer");
+        let ty = ws.expr_ty("B");
+        assert_eq!(ws.humanize_type(ty), "integer");
+        let ty = ws.expr_ty("C");
+        assert_eq!(ws.humanize_type(ty), "string");
+    }
 }
