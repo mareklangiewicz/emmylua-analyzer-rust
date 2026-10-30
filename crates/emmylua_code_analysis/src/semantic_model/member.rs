@@ -334,6 +334,20 @@ fn direct_member_info(
             file_id: None,
             is_method: false,
         }),
+        // `[A, B]`: `t[1]` is `A`; a slot past the end has no member.
+        LuaType::Tuple(tuple) => {
+            let LuaMemberKey::Integer(i) = key else {
+                return None;
+            };
+            let slot = usize::try_from(*i).ok()?.checked_sub(1)?;
+            tuple.get_type(slot).cloned().map(|typ| MemberInfo {
+                key: key.clone(),
+                typ,
+                id: None,
+                file_id: None,
+                is_method: false,
+            })
+        }
         LuaType::Intersection(intersection) => intersection_member_info(model, intersection, key),
         LuaType::String | LuaType::StringConst(_) | LuaType::DocStringConst(_) => {
             let string_owner = SemanticId::name(SmolStr::new("string"));

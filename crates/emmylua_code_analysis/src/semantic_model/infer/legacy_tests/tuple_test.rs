@@ -63,4 +63,30 @@ mod tests {
             "#,
         );
     }
+
+    #[test]
+    fn test_declared_tuple_index() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@return [integer, string]
+            local function pos() end
+
+            ---@param t [integer, string]
+            local function f(t)
+                A = t[1]
+                B = t[2]
+            end
+
+            local p = pos()
+            C = p[1]
+            D = pos()[2]
+            "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), LuaType::Integer);
+        assert_eq!(ws.expr_ty("B"), LuaType::String);
+        assert_eq!(ws.expr_ty("C"), LuaType::Integer);
+        assert_eq!(ws.expr_ty("D"), LuaType::String);
+    }
 }
