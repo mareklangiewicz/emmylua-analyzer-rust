@@ -186,4 +186,48 @@ mod test {
             assert_eq!(ws.humanize_type(typ), expected);
         }
     }
+    /// `local M = defer('m', { sub = 1 })` (Neovim's `vim._defer_require`): the export's flow-free
+    /// shell cannot instantiate the generic call, so `require` lost the literal's fields AND, held
+    /// by a member (`vim.lsp = require('vim.lsp')`), the `function M.get()` members too.
+    #[test]
+    fn test_require_export_initialized_by_generic_call() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_files(vec![(
+            "mod.lua",
+            r#"
+                ---@generic T
+                ---@param mod T
+                ---@return T
+                local function defer(root, mod) return mod end
+                local M = defer('mod', { sub = 1 })
+                function M.get() return 'x' end
+                return M
+            "#,
+        )]);
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            r#"
+                local m = require('mod')
+                local a = m.sub
+                local b = m.get()
+                vv = {}
+                vv.m = require('mod')
+                local c = vv.m.sub
+                local d = vv.m.get()
+            "#,
+        ));
+        ws.def(
+            r#"
+                local m = require('mod')
+                vv2 = {}
+                vv2.m = require('mod')
+                sub_ty = m.sub
+                get_ty = vv2.m.get()
+            "#,
+        );
+        let sub_ty = ws.expr_ty("sub_ty");
+        assert_eq!(ws.humanize_type(sub_ty), "1");
+        let get_ty = ws.expr_ty("get_ty");
+        assert_eq!(ws.humanize_type(get_ty), "string");
+    }
 }

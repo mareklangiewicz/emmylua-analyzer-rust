@@ -3634,6 +3634,18 @@ fn expr_type_call(
     match callee_closure_syntax(facts, prefix) {
         Some(closure_syntax) => {
             let mut slots = signature_returns(db, file, config, closure_syntax);
+            // The shell does not bind arguments, so the callee's own generics stay uninstantiated:
+            // unknown, not a `T` that projects as a global name (`local M = defer('m', {...})`).
+            if let Some(docs) = facts
+                .signature_by_closure(closure_syntax)
+                .and_then(|sig| sig.docs.as_ref())
+                && !docs.generic_params.is_empty()
+            {
+                let unbound = vec![TypeShell::unknown(); docs.generic_params.len()];
+                for slot in &mut slots {
+                    *slot = substitute_generics(slot, &docs.generic_params, &unbound);
+                }
+            }
             if slots.is_empty() {
                 TypeShell::unknown()
             } else if slots.len() == 1 {

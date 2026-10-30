@@ -1,5 +1,5 @@
 use crate::semantic_model::type_check::TypeCheckFailReason;
-use crate::{IndexInfo, MemberList, OperatorDef};
+use crate::{InFiled, IndexInfo, MemberList, OperatorDef};
 
 use super::prelude::*;
 
@@ -114,11 +114,51 @@ impl<'db> SemanticModel<'db> {
     }
     /// Type of the module's exported value.
     pub fn type_of_module_export(&self) -> Option<LuaType> {
-        if let Some(ty) = self.module_export_as_cast(self.view.file_id()) {
+        self.module_export_lua(self.view.file_id())
+    }
+    fn module_export_lua(&self, module_file: FileId) -> Option<LuaType> {
+        if let Some(ty) = self.module_export_as_cast(module_file) {
             return Some(ty);
         }
-        let shell = self.analysis().module_export_type(self.view.file_id())?;
-        Some(self.analysis().type_shell_lua(self.view.file_id(), &shell))
+        if let Some(ty) = self.module_export_from_call(module_file) {
+            return Some(ty);
+        }
+        let shell = self.analysis().module_export_type(module_file)?;
+        Some(self.analysis().type_shell_lua(module_file, &shell))
+    }
+    /// `local M = defer('m', { sub = 1 }); return M` (Neovim's `vim._defer_require`): the
+    /// flow-free shell cannot type a call initializer that needs the VM (a generic call), so
+    /// the export kept only `M`'s name, a global `Ref("M")` that resolves nothing. The export is
+    /// the VM's type of the call plus the table identity of `M` itself (keyed by its value
+    /// range, as `decl_by_value_range` reads it), which carries the `function M.f()` members.
+    fn module_export_from_call(&self, module_file: FileId) -> Option<LuaType> {
+        let ModuleExport::Decl { decl, .. } = self.analysis().module_export(module_file)? else {
+            return None;
+        };
+        let facts = self.file_facts_of(module_file)?;
+        let decl_info = facts.decl_by_id(decl)?;
+        let value_syntax = decl_info.value_expr_syntax?;
+        let has_type_def = decl_info
+            .owner_syntax
+            .and_then(|owner| facts.type_def_by_owner_syntax(owner))
+            .is_some();
+        if decl_info.doc_type_syntax.is_some()
+            || has_type_def
+            || decl_info.multi_return_index.is_some_and(|index| index > 0)
+            || value_syntax.get_kind() != LuaSyntaxKind::CallExpr
+            || !self
+                .analysis()
+                .decl_type(module_file, decl.clone())?
+                .is_unknown()
+        {
+            return None;
+        }
+        let ty = self.model_for(module_file).type_of_decl(decl)?;
+        if ty.is_unknown() || ty.is_any() || ty.contain_tpl() {
+            return None;
+        }
+        let identity = LuaType::TableConst(InFiled::new(module_file, value_syntax.get_range()));
+        Some(LuaType::from_vec(vec![ty, identity]))
     }
     /// `local M = f() --[[@as T]]; return M` exports `T`. The TypeShell export cannot see the
     /// cast (it only knows a `---@class` attached to `M`), so the module would export `M`'s name.
@@ -146,13 +186,8 @@ impl<'db> SemanticModel<'db> {
         else {
             return LuaType::Unknown;
         };
-        if let Some(ty) = self.module_export_as_cast(module_file) {
-            return ty;
-        }
-        let Some(shell) = self.analysis().module_export_type(module_file) else {
-            return LuaType::Unknown;
-        };
-        self.analysis().type_shell_lua(module_file, &shell)
+        self.module_export_lua(module_file)
+            .unwrap_or(LuaType::Unknown)
     }
     /// require module name -> module file id (consumed by require_module_visibility checks).
     pub fn module_file_of(&self, module_name: &str) -> Option<FileId> {
