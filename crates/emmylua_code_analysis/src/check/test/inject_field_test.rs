@@ -598,6 +598,46 @@ return items
     }
 
     #[test]
+    fn test_table_literal_fits_any_component_of_a_union() {
+        // snacks' `Highlight = Text|Extmark|{meta?}`: `{ ' ', 'Character' }` is a Text, so the
+        // literal fits even though Extmark (the first NAMED component) has no `[1]`. A literal
+        // no component takes is still reported.
+        let diagnostics = check_source(
+            r#"
+            ---@alias Text {[1]: string, [2]: (string|string[])?, virtual?: boolean}
+            ---@class Extmark
+            ---@field col? number
+            ---@alias Hl Text|Extmark|{meta?: table}
+
+            ---@type Hl[]
+            local list = { { ' ', 'Character' }, { col = 1 } }
+            ---@type Hl
+            local one = { 'x', 'y' }
+            ---@type Hl
+            local bad = { nope = 1 }
+            return list, one, bad
+            "#,
+        );
+        let injected: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::InjectField)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            injected,
+            ["Field `nope` cannot be injected into the target type."],
+            "{diagnostics:?}"
+        );
+        // Positional values set Text's `[1]` (missing-fields compared spelled keys only).
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::MissingFields),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_table_literal_dictionary_index() {
         let diagnostics = check_source(
             r#"

@@ -411,8 +411,31 @@ fn check_against_type(
                 check_against_type(context, semantic_model, &array, table);
                 return;
             }
-            // Check the first named-class component; empty tables pass through the array component.
+            // The literal fits the union when it fits one table-shaped component cleanly
+            // (`Text|Extmark` takes `{ 'x', 'Hl' }` as a Text). Otherwise report against the
+            // first named-class component; empty tables pass through the array component.
             let fields_count = table.get_fields_with_keys().len();
+            let components = union.into_vec();
+            let shaped: Vec<_> = components
+                .iter()
+                .filter(|component| match component {
+                    LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) => true,
+                    // The Object arm never reports a foreign key, so check its keys here.
+                    LuaType::Object(_) => object_has_keys(semantic_model, component, table),
+                    _ => false,
+                })
+                .collect();
+            // With a single candidate there is nothing to choose: the fallback checks it.
+            if fields_count > 0
+                && shaped.len() > 1
+                && shaped.into_iter().any(|component| {
+                    let mut trial = CheckContext::new(semantic_model, context.config.clone());
+                    check_against_type(&mut trial, semantic_model, component, table);
+                    trial.diagnostics.is_empty()
+                })
+            {
+                return;
+            }
             for component in union.into_vec() {
                 let named = matches!(
                     component,
@@ -429,7 +452,12 @@ fn check_against_type(
             return;
         }
         LuaType::Object(object) => {
-            let fields = table.get_fields_with_keys().to_vec();
+            // By member key: a positional `{ 'x' }` sets `[1]` though it spells no key.
+            let field_keys: HashSet<_> = table
+                .get_fields_with_keys()
+                .iter()
+                .filter_map(|(_, key)| static_member_key(semantic_model, key))
+                .collect();
             let mut missing = Vec::new();
             for (key, ty) in object.get_fields() {
                 let name = match key {
@@ -437,11 +465,7 @@ fn check_against_type(
                     LuaMemberKey::Integer(i) => i.to_string(),
                     _ => continue,
                 };
-                if !fields
-                    .iter()
-                    .any(|(_, field_key)| field_key.get_path_part() == name)
-                    && !ty.is_nullable()
-                {
+                if !field_keys.contains(key) && !ty.is_nullable() {
                     missing.push(name);
                 }
             }
@@ -577,6 +601,23 @@ fn check_against_type(
             ),
         );
     }
+}
+
+/// Every key of `table` is a field of the object type `ty` or fits its index signature.
+fn object_has_keys(semantic_model: &SemanticModel<'_>, ty: &LuaType, table: &LuaTableExpr) -> bool {
+    let LuaType::Object(object) = ty else {
+        return false;
+    };
+    table.get_fields_with_keys().iter().all(|(_, key)| {
+        let named = match key {
+            LuaIndexKey::Expr(_) => None,
+            _ => static_member_key(semantic_model, key),
+        };
+        named.is_some_and(|key| object.get_field(&key).is_some())
+            || semantic_model
+                .applicable_index_infos(ty, &index_key_type(semantic_model, key))
+                .is_ok_and(|infos| !infos.is_empty())
+    })
 }
 
 /// Target type -> named type id (Ref/Def/Generic base class).
