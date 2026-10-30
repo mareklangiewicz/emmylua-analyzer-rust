@@ -565,6 +565,39 @@ return items
     }
 
     #[test]
+    fn test_table_literal_accepts_fields_of_class_bound_literal() {
+        // `---@class Opts` bound to a table literal: the literal's fields ARE the class's members,
+        // so another literal typed `Opts` may set them (LazyVim's `LazyVimOptions` shape). Only
+        // MissingFields keeps to `@field` members: a default value in the class literal is not
+        // something every instance must restate.
+        let diagnostics = check_source(
+            r#"
+            ---@class Opts
+            local defaults = { colorscheme = 'x', nested = { a = 1 } }
+            ---@type Opts
+            local opts = { colorscheme = 'y', spec = {} }
+            return defaults, opts
+            "#,
+        );
+        let injected: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::InjectField)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            injected,
+            ["Field `spec` cannot be injected into the target type."],
+            "{diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::MissingFields),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_table_literal_dictionary_index() {
         let diagnostics = check_source(
             r#"

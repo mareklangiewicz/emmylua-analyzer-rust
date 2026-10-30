@@ -387,7 +387,7 @@ fn enum_table_access(
 }
 
 /// Finds the declaration and the type definition bound to a TableConst.
-fn table_binding(
+pub(super) fn table_binding(
     semantic_model: &SemanticModel<'_>,
     file_id: FileId,
     range: TextRange,

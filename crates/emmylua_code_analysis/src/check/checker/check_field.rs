@@ -14,6 +14,7 @@ use crate::{LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 use super::assign_type_mismatch::index_key_type;
 use super::param_count::call_arg_param_index;
 use super::param_type_check::callable_candidates;
+use super::undefined_field::table_binding;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 
@@ -478,7 +479,11 @@ fn check_against_type(
         return;
     }
 
-    // Target type's @field members (including inheritance).
+    // Target type's @field members (including inheritance). A field of the literal the class is
+    // bound to (`---@class C` + `local c = { x = 1 }`) may be set too, but it is a default value,
+    // not a field each instance must restate. Any other literal (`---@type C local t = {...}`,
+    // this table among them) cannot vouch for its own fields.
+    let mut class_literal_keys = HashSet::new();
     let members: HashMap<_, _> = semantic_model
         .member_infos(target)
         .into_iter()
@@ -488,7 +493,21 @@ fn check_against_type(
                     .file_facts_of(info.file_id?)
                     .and_then(|facts| facts.member_by_id(id))
             });
-            if declaration.is_some_and(|member| !matches!(member.owner, SemanticId::TypeDef(_))) {
+            if let Some(member) = declaration
+                && !matches!(member.owner, SemanticId::TypeDef(_))
+            {
+                // The literal's fields are owned by the literal (`Member` keyed by its range).
+                let class_bound = match &member.owner {
+                    SemanticId::Member(literal) => {
+                        let at = (literal.file_id, literal.key_range);
+                        at != (semantic_model.file_id(), table.get_range())
+                            && table_binding(semantic_model, at.0, at.1).is_some()
+                    }
+                    _ => false,
+                };
+                if class_bound {
+                    class_literal_keys.insert(info.key);
+                }
                 return None;
             }
             let typ = if declaration.is_some_and(|member| member.is_nullable)
@@ -504,7 +523,7 @@ fn check_against_type(
     let fields = table.get_fields_with_keys();
     let mut field_keys = HashSet::with_capacity(fields.len());
 
-    // InjectField: table field is not in the target members.
+    // InjectField: table field is not a member of the target.
     for (field, key) in &fields {
         // Expression keys still need the index-signature checks for their values.
         let member_key = match key {
@@ -513,7 +532,7 @@ fn check_against_type(
         };
         if !member_key
             .as_ref()
-            .is_some_and(|key| members.contains_key(key))
+            .is_some_and(|key| members.contains_key(key) || class_literal_keys.contains(key))
             && let Ok(infos) =
                 semantic_model.applicable_index_infos(target, &index_key_type(semantic_model, key))
         {
