@@ -1177,6 +1177,9 @@ impl<'db> SemanticModel<'db> {
                 }
             };
             if candidate_set.candidates().len() > 1 {
+                let mut candidates = candidate_set.candidates().to_vec();
+                type_eval::instantiate_for_receiver(self, &mut candidates, &prefix_ty);
+                let candidate_set = infer::callable::CallableCandidateSet::new(candidates);
                 let args = call
                     .get_args_list()
                     .map(|list| {

@@ -30,7 +30,7 @@ use crate::semantic_model::member::{
     table_const_class_type, table_metatable_type,
 };
 use crate::semantic_model::type_eval::{
-    class_generic_map, eval_conditionals, expand_alias_generic, expand_alias_head,
+    eval_conditionals, expand_alias_generic, expand_alias_head, instantiate_for_receiver,
     sanitize_unresolved_generics, sanitize_unresolved_generics_with_model, settle_sub_calls,
     substitute_named_refs,
 };
@@ -1669,7 +1669,11 @@ impl<'a> InferVm<'a> {
         // Collect candidate signatures: declaration/member docs (including overloads) are
         // preferred, then the function value type; named aliases (`A = A | fun(): integer`)
         // are expanded to get inner function candidates.
-        let candidates = self.callable_candidates(&callee);
+        let mut candidates = self.callable_candidates(&callee);
+        // A method's class generics (`fun(v: T)` of `Box<T>`) are the receiver's args from here on.
+        if let Some(receiver) = &callee.receiver {
+            instantiate_for_receiver(self.model, &mut candidates, receiver);
+        }
         // For class-table receivers (`local a = {}` + `---@class a`), pass the class
         // reference type to implicit self/constructor params instead of the bare TableConst,
         // otherwise `a:create()` binds T to table.
@@ -1696,29 +1700,21 @@ impl<'a> InferVm<'a> {
             }
         }
 
-        // Fill unresolved function generics with defaults/constraints; class-method defaults
-        // may reference class generics (`U = T`).
-        let class_map = callee
-            .receiver
-            .as_ref()
-            .and_then(|receiver| class_generic_map(self.model, receiver))
-            .unwrap_or_default();
+        // Fill unresolved function generics with defaults/constraints.
         for param in callee_fun.get_generic_params() {
             if bindings.contains_key(&param.get_tpl_id()) {
                 continue;
             }
             if let Some(default) = param.get_default_type() {
-                let default = substitute_named_refs(default, &class_map);
-                bindings.insert(param.get_tpl_id(), default);
+                bindings.insert(param.get_tpl_id(), default.clone());
             } else if let Some(constraint) = param.get_constraint() {
-                let constraint = substitute_named_refs(constraint, &class_map);
-                bindings.insert(param.get_tpl_id(), constraint);
+                bindings.insert(param.get_tpl_id(), constraint.clone());
             }
         }
         // Defaults may reference earlier generics (`U = T[]`); iteratively substitute until stable.
         for _ in 0..callee_fun.get_generic_params().len().max(1) {
             let mut changed = false;
-            let mut name_bindings: HashMap<String, LuaType> = class_map.clone();
+            let mut name_bindings: HashMap<String, LuaType> = HashMap::new();
             for param in callee_fun.get_generic_params() {
                 if let Some(value) = bindings.get(&param.get_tpl_id()) {
                     name_bindings.insert(param.get_name().to_string(), value.clone());
@@ -1773,8 +1769,6 @@ impl<'a> InferVm<'a> {
                 for (param_idx, callback_param) in callback_fun.get_params().iter().enumerate() {
                     if let Some(param_ty) = &callback_param.1 {
                         let mut substituted = unify::substitute(param_ty, &bindings);
-                        // Class generics (`T` of `Box<T>`) come from the receiver, as on returns.
-                        substituted = substitute_named_refs(&substituted, &class_map);
                         if let Some(self_ty) = &receiver_ty {
                             substituted = replace_self_type(&substituted, self_ty);
                         }
@@ -2009,14 +2003,6 @@ impl<'a> InferVm<'a> {
                 };
             }
         }
-        // Class generics directly referenced in method returns (e.g. T in `T[K]`) must be
-        // substituted by the receiver instance too.
-        let ret = callee
-            .receiver
-            .as_ref()
-            .and_then(|receiver| class_generic_map(self.model, receiver))
-            .map(|class_map| substitute_named_refs(&ret, &class_map))
-            .unwrap_or(ret);
         let call_self_ty = if colon_call {
             callee.receiver.as_ref().and_then(|receiver| {
                 receiver_class_type(self.model, receiver).or_else(|| Some(receiver.clone()))

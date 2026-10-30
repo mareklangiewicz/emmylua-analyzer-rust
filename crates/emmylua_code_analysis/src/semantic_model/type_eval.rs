@@ -403,6 +403,49 @@ pub fn class_generic_map(model: &SemanticModel, ty: &LuaType) -> Option<HashMap<
     )
 }
 
+/// Method signatures as seen through their receiver: the class generics they name (`x: T` of
+/// `Box<T>`) become the receiver's args (`Box<integer>` → `x: integer`), in params, return and
+/// generic defaults/constraints alike. A method's own generics are already `TplRef`s, untouched.
+pub fn instantiate_for_receiver(
+    model: &SemanticModel,
+    candidates: &mut [LuaFunctionType],
+    receiver: &LuaType,
+) {
+    let Some(map) = class_generic_map(model, receiver).filter(|map| !map.is_empty()) else {
+        return;
+    };
+    let sub = |ty: &LuaType| substitute_named_refs(ty, &map);
+    for candidate in candidates {
+        let generic_params = candidate
+            .get_generic_params()
+            .iter()
+            .map(|tpl| {
+                let param = tpl.get_param();
+                GenericTpl::new(
+                    tpl.get_tpl_id(),
+                    param.name.clone(),
+                    param.constraint.as_ref().map(sub),
+                    param.default.as_ref().map(sub),
+                    param.is_const,
+                    param.attributes.clone(),
+                )
+            })
+            .collect();
+        *candidate = LuaFunctionType::new(
+            candidate.get_async_state(),
+            candidate.is_colon_define(),
+            candidate.is_variadic(),
+            candidate
+                .get_params()
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty.as_ref().map(sub)))
+                .collect(),
+            sub(candidate.get_ret()),
+            Some(generic_params),
+        );
+    }
+}
+
 /// Substitute class generics referenced by name without traversing replacements.
 pub fn substitute_named_refs(ty: &LuaType, map: &HashMap<String, LuaType>) -> LuaType {
     if !ty.any_type(|ty| match ty {

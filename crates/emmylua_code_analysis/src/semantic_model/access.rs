@@ -743,19 +743,7 @@ impl<'db> SemanticModel<'db> {
         // Class generics referenced by name in a method (`x: T`) are bound by the receiver
         // instance (`Box<integer>`), as the VM does for the call's result. Every checker reads
         // the candidates bound.
-        if let Some(class_map) = type_eval::class_generic_map(self, &receiver_ty) {
-            for candidate in &mut candidates {
-                // The temporary input is dropped by the time the result is unwrapped, so an
-                // unchanged candidate comes back without a second copy.
-                let substituted = type_eval::substitute_named_refs(
-                    &LuaType::DocFunction(Rc::new(candidate.clone())),
-                    &class_map,
-                );
-                if let LuaType::DocFunction(func) = substituted {
-                    *candidate = Rc::unwrap_or_clone(func);
-                }
-            }
-        }
+        type_eval::instantiate_for_receiver(self, &mut candidates, &receiver_ty);
         let explicit_generics: Vec<LuaSyntaxId> = call_expr
             .get_call_generic_type_list()
             .map(|list| list.get_types().map(|ty| ty.get_syntax_id()).collect())
