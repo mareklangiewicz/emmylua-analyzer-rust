@@ -777,6 +777,15 @@ pub(crate) fn callable_functions(
     semantic_model: &SemanticModel<'_>,
     ty: &LuaType,
 ) -> Vec<LuaFunctionType> {
+    callable_functions_in(semantic_model, ty, &mut Vec::new())
+}
+
+/// `callable_functions` with the aliases being expanded (`---@alias A B`, `---@alias B A`).
+fn callable_functions_in(
+    semantic_model: &SemanticModel<'_>,
+    ty: &LuaType,
+    aliases: &mut Vec<LuaTypeDeclId>,
+) -> Vec<LuaFunctionType> {
     match ty {
         LuaType::DocFunction(func) => vec![func.as_ref().clone()],
         LuaType::Signature(signature_id) => semantic_model
@@ -784,6 +793,22 @@ pub(crate) fn callable_functions(
             .into_iter()
             .collect(),
         LuaType::Ref(id) | LuaType::Def(id) => {
+            // A bare-named alias (`---@alias PreviewItem fun(item: Choice): string`) is the
+            // function it names, as the `Generic` arm below does for a generic alias.
+            if let Some(def) = semantic_model.type_def_of(id)
+                && def.kind == TypeDefKind::Alias
+            {
+                if aliases.contains(id) {
+                    return Vec::new();
+                }
+                let Some(target) = semantic_model.alias_target(&def) else {
+                    return Vec::new();
+                };
+                aliases.push(id.clone());
+                let out = callable_functions_in(semantic_model, &target, aliases);
+                aliases.pop();
+                return out;
+            }
             let Some(def) = semantic_model.callable_type_def_of(id) else {
                 return Vec::new();
             };
@@ -811,7 +836,7 @@ pub(crate) fn callable_functions(
         LuaType::Union(union) => union
             .into_vec()
             .iter()
-            .flat_map(|component| callable_functions(semantic_model, component))
+            .flat_map(|component| callable_functions_in(semantic_model, component, aliases))
             .collect(),
         LuaType::Generic(generic) => {
             let Some(def) = semantic_model.callable_type_def_of(&generic.get_base_type_id()) else {
@@ -826,7 +851,7 @@ pub(crate) fn callable_functions(
                         .map(|(index, ty)| (GenericTplId::Type(index as u32), ty.clone()))
                         .collect();
                     let instantiated = unify::substitute(&target, &bindings);
-                    return callable_functions(semantic_model, &instantiated);
+                    return callable_functions_in(semantic_model, &instantiated, aliases);
                 }
             }
             // Non-alias generics (classes etc.): fall back to call overload / operator call candidates.

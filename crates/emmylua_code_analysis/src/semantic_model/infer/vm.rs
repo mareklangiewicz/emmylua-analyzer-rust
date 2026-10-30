@@ -3869,6 +3869,21 @@ fn type_contains_any_tpl_id(ty: &LuaType, ids: &HashSet<GenericTplId>) -> bool {
     ty.any_nested_type(|t| matches!(t, LuaType::TplRef(tpl) if ids.contains(&tpl.get_tpl_id())))
 }
 
+/// The structure an alias arg names, when it differs from the arg: a bare-named alias
+/// (`Ref`) through its target, a `Generic`-form one through `expand_alias_generic`.
+fn expand_alias_arg(model: &SemanticModel, arg: &LuaType) -> Option<LuaType> {
+    let expanded = match arg {
+        LuaType::Ref(id) | LuaType::Def(id) => model
+            .type_def_of(id)
+            .filter(|def| def.kind == TypeDefKind::Alias)
+            .and_then(|def| model.alias_target(&def))
+            .unwrap_or_else(|| arg.clone()),
+        other => other.clone(),
+    };
+    let expanded = expand_alias_generic(model, &expanded);
+    (&expanded != arg).then_some(expanded)
+}
+
 pub(crate) fn unify_call_bindings(
     model: &SemanticModel,
     param: &LuaType,
@@ -4024,18 +4039,7 @@ pub(crate) fn unify_call_bindings(
             }
             // Generic alias args (`A_StringHolder -> Holder<string>`) must be expanded to the
             // underlying structure before unifying/back-inferring with `Holder<T>` params.
-            // `expand_alias_generic` only expands `Generic`-form aliases, so additional
-            // bare-named alias expansion is added here.
-            let expanded_arg = match arg {
-                Ref(id) | Def(id) => model
-                    .type_def_of(id)
-                    .filter(|def| def.kind == TypeDefKind::Alias)
-                    .and_then(|def| model.alias_target(&def))
-                    .unwrap_or_else(|| arg.clone()),
-                other => other.clone(),
-            };
-            let expanded_arg = expand_alias_generic(model, &expanded_arg);
-            if &expanded_arg != arg {
+            if let Some(expanded_arg) = expand_alias_arg(model, arg) {
                 return unify_call_bindings(model, param, &expanded_arg, bindings);
             }
             // Subclass args (`C_StringHolder`, `C_StringHolderWith<table>`) may project onto
@@ -4197,6 +4201,9 @@ pub(crate) fn unify_call_bindings(
             } else if matches!(arg, Function) {
                 // Erased `function` can be a fallback for any callback param.
                 true
+            } else if let Some(expanded_arg) = expand_alias_arg(model, arg) {
+                // An aliased function (`---@alias PreviewItem fun(item: Choice): string`).
+                unify_call_bindings(model, param, &expanded_arg, bindings)
             } else {
                 false
             }

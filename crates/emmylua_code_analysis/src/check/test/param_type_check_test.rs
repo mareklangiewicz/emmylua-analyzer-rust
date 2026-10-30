@@ -4741,4 +4741,48 @@ mod test {
             "#
         ));
     }
+
+    /// An aliased function binds a callback pattern's generics like the function it names:
+    /// `pcall(f, item)` with `f: PreviewItem` (`fun(item: Choice): string`) binds `T...` from
+    /// its params (mypreview `to_snacks`).
+    #[test]
+    fn test_aliased_function_binds_callback_generics() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@class Choice
+            ---@field id string
+
+            ---@alias PreviewItem fun(item: Choice): string
+
+            ---@param f PreviewItem
+            ---@param c Choice
+            local function show(f, c)
+                local ok, text = pcall(f, c)
+            end
+            "#
+        ));
+    }
+
+    /// A call through an aliased function type is checked against the function it names
+    /// (0.25.1 did; main found no candidate for a bare-named alias and skipped the call).
+    #[test]
+    fn test_call_through_aliased_function_is_checked() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@class Choice
+            ---@field id string
+
+            ---@alias PreviewItem fun(item: Choice): string
+
+            ---@param f PreviewItem
+            local function show(f)
+                f(1)
+            end
+            "#
+        ));
+    }
 }

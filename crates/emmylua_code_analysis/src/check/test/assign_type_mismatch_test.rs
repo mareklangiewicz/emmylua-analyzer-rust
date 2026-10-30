@@ -3930,4 +3930,29 @@ return t
             );
         }
     }
+
+    /// An aliased function binds a callback pattern's generics like the function it names:
+    /// `map(xs, f)` with `f: ToLen` (`fun(s: string): integer`) binds `U` to `integer`.
+    #[test]
+    fn test_aliased_callback_binds_generic_return() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@alias ToLen fun(s: string): integer
+
+            ---@generic T, U
+            ---@param xs T[]
+            ---@param f fun(x: T): U
+            ---@return U[]
+            local function map(xs, f) return {} end
+
+            ---@param f ToLen
+            local function use(f)
+                ---@type string[]
+                local r = map({ 'a' }, f)
+            end
+            "#
+        ));
+    }
 }
