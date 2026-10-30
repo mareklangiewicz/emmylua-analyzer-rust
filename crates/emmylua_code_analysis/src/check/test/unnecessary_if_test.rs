@@ -602,3 +602,74 @@ fn truthiness_narrows_boolean_to_true_and_false() {
         ]
     );
 }
+
+/// Loops have no back-edge in the flow graph: a read inside a loop saw only the first pass, so
+/// `if in_string` after `local in_string = false` was "impossible" though the body sets it for the
+/// next pass (neospector jsonl.lua `walk_line`). A loop-carried local keeps its kind, not its value.
+#[test]
+fn test_loop_carried_local_is_widened() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    for (label, code) in [
+        (
+            "for",
+            "---@param line string\nlocal function f(line)\n  local s = false\n  for i = 1, #line do\n    if s then print(i) end\n    if line:sub(i, i) == '\"' then s = not s end\n  end\nend",
+        ),
+        (
+            "for-in",
+            "---@param t string[]\nlocal function f(t)\n  local s = false\n  for _, v in ipairs(t) do\n    if s then print(v) end\n    s = true\n  end\nend",
+        ),
+        (
+            "while",
+            "local function f()\n  local s = false\n  while math.random() > 0.5 do\n    if s then print(1) end\n    s = true\n  end\nend",
+        ),
+        (
+            "repeat",
+            "local function f()\n  local s = false\n  repeat\n    if s then print(1) end\n    s = true\n  until math.random() > 0.5\nend",
+        ),
+        (
+            "nested",
+            "---@param t string[]\nlocal function f(t)\n  local s = false\n  for _ = 1, 3 do\n    for _, v in ipairs(t) do\n      if s then print(v) end\n    end\n    s = true\n  end\nend",
+        ),
+        (
+            "sibling branch",
+            "---@param t string[]\nlocal function f(t)\n  local in_block = false\n  for _, v in ipairs(t) do\n    if v == 'a' then\n      in_block = true\n    elseif in_block then\n      print(v)\n    end\n  end\nend",
+        ),
+    ] {
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, code),
+            "{label}"
+        );
+    }
+    // A local declared inside the loop is a fresh one on every pass.
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param t string[]\nlocal function f(t)\n  for _, v in ipairs(t) do\n    local s = false\n    if s then print(v) end\n    s = true\n  end\nend",
+    ));
+    // Widening never evaluates a body write, so a write that reads the local (`j = f(j)`)
+    // cannot loop back into itself (gnd/json.lua `decode_array`).
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::ParamTypeMismatch,
+        r#"
+        ---@type fun(s: string, i: integer): any, integer
+        local decode_value
+        ---@param s string
+        ---@param i integer
+        ---@return integer
+        local function skip_ws(s, i) return i end
+        ---@param n integer
+        local function need(n) end
+        ---@param s string
+        ---@param i integer
+        local function decode_array(s, i)
+          local j = skip_ws(s, i + 1)
+          while true do
+            local v
+            v, j = decode_value(s, j)
+            need(j)
+            j = skip_ws(s, j + 1)
+          end
+        end
+        "#
+    ));
+}

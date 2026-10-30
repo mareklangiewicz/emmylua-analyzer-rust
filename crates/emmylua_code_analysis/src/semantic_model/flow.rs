@@ -120,12 +120,12 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
     {
         #[cfg(test)]
         flow_metrics::record_fast_decl_hit();
-        return fallback();
+        return widen_if_loop_carried(model, &tree, decl, offset, fallback());
     }
     let mut visited = HashSet::new();
     let mut path = PathState::default();
     let start = skip_own_decl_assign(decl, &tree, flow_id, offset);
-    trace_decl(
+    let ty = trace_decl(
         model,
         decl,
         &tree,
@@ -138,7 +138,70 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
         &mut visited,
         &mut path,
     )
-    .unwrap_or_else(fallback)
+    .unwrap_or_else(fallback);
+    widen_if_loop_carried(model, &tree, decl, offset, ty)
+}
+
+/// The flow graph has no loop back-edges, so a read inside a loop sees only the values that reach
+/// it in the first pass: `local s = false; for … do if s then … end; s = true end` reads `false`.
+/// When an enclosing loop assigns the local anywhere in its body (a later statement, or an
+/// earlier one in a sibling branch), the next pass may see that value: the read keeps its kind
+/// but not its exact value (`false` → `boolean`, `0` → `integer`, `nil`
+/// → `unknown`). Deliberately not a fixpoint: no body write is evaluated here.
+fn widen_if_loop_carried(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    decl: &SemanticId,
+    offset: TextSize,
+    ty: LuaType,
+) -> LuaType {
+    let mut writes = tree.decl_assignments_of(decl).peekable();
+    if writes.peek().is_none() {
+        return ty;
+    }
+    let Some(root) = model.syntax_tree().map(|tree| tree.get_red_root()) else {
+        return ty;
+    };
+    let Some(token) = root.token_at_offset(offset).right_biased() else {
+        return ty;
+    };
+    // A local declared inside the loop is a new one on every pass: its writes do not carry.
+    let decl_start = decl_owner_syntax_start(model, decl);
+    let loops: Vec<rowan::TextRange> = token
+        .parent_ancestors()
+        .take_while(|node| node.kind() != emmylua_parser::LuaSyntaxKind::ClosureExpr.into())
+        .filter(|node| {
+            matches!(
+                emmylua_parser::LuaSyntaxKind::from(node.kind()),
+                emmylua_parser::LuaSyntaxKind::WhileStat
+                    | emmylua_parser::LuaSyntaxKind::RepeatStat
+                    | emmylua_parser::LuaSyntaxKind::ForStat
+                    | emmylua_parser::LuaSyntaxKind::ForRangeStat
+            )
+        })
+        .map(|node| node.text_range())
+        .filter(|range| decl_start.is_none_or(|start| !range.contains(start)))
+        .collect();
+    if writes.any(|(pos, _)| loops.iter().any(|range| range.contains(pos))) {
+        widen_loop_carried(ty)
+    } else {
+        ty
+    }
+}
+
+fn widen_loop_carried(ty: LuaType) -> LuaType {
+    match ty {
+        LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
+        LuaType::Nil | LuaType::Never => LuaType::Unknown,
+        LuaType::Union(union) => LuaType::from_vec(
+            union
+                .into_vec()
+                .into_iter()
+                .map(widen_loop_carried)
+                .collect(),
+        ),
+        ty => widen_const_type(ty),
+    }
 }
 
 /// The range of reads of `decl` that can see any of its values, when `decl` is an un-annotated
