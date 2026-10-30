@@ -1226,7 +1226,22 @@ impl<'a> InferVm<'a> {
         // with the same key should be merged into a union so call inference can select a
         // candidate by args (a single member still keeps its original broad
         // Function/DocFunction projection).
-        if let Some(overloaded_ty) = self.overloaded_callable_member_type(&owner.ty, &lua_key) {
+        // A field typed as a callable CLASS (`---@field picker snacks.picker`, the class carrying
+        // `---@overload`s) is that class, not the union of its call signatures.
+        let field_is_class = match &member_type_fallback {
+            Some(LuaType::Ref(id) | LuaType::Def(id)) => self
+                .model
+                .type_def_of(id)
+                .is_some_and(|def| def.kind != TypeDefKind::Alias),
+            Some(LuaType::Generic(generic)) => self
+                .model
+                .type_def_of(&generic.get_base_type_id())
+                .is_some_and(|def| def.kind != TypeDefKind::Alias),
+            _ => false,
+        };
+        if !field_is_class
+            && let Some(overloaded_ty) = self.overloaded_callable_member_type(&owner.ty, &lua_key)
+        {
             return Value {
                 ty: overloaded_ty,
                 owner: None,

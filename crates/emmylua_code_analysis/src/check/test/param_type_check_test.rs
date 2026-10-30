@@ -3345,4 +3345,37 @@ mod test {
             "#
         ));
     }
+
+    /// `pcall(Snacks.picker.util.path, item)` (reduced from snacks): `Snacks` is only a class
+    /// name, its `picker` field a class with two `---@overload`s. `T...` was bound as a bare
+    /// `It`, so `fun(item: It)` was checked against `fun(...: It...)`.
+    #[test]
+    fn test_pcall_member_function_through_callable_class_path() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_files(vec![
+            ("s1.lua", "---@class Snacks: snacks.plugins"),
+            ("s2.lua", "---@class snacks.plugins\n---@field picker snacks.picker"),
+            ("s3.lua", "---@class It\n---@class Cfg"),
+            (
+                "s4.lua",
+                "---@class snacks.picker\n---@field util snacks.picker.util\n---@overload fun(opts: Cfg): integer\n---@overload fun(source: string, opts: Cfg): integer",
+            ),
+            (
+                "s5.lua",
+                "---@class snacks.picker.util\nlocal M = {}\n---@param item It\nfunction M.path(item) end\nreturn M",
+            ),
+        ]);
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param item It
+            local function f(item)
+                ---@type snacks.picker.util
+                local w
+                local b = pcall(w.path, item)
+                local a = pcall(Snacks.picker.util.path, item)
+            end
+            "#
+        ));
+    }
 }
