@@ -7,13 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use emmylua_parser::{
-    LuaAssignStat, LuaAst, LuaAstNode, LuaAstToken, LuaBlock, LuaCallExpr, LuaChunk,
-    LuaClosureExpr, LuaComment, LuaDocFieldKey, LuaDocGenericDeclList, LuaDocTag,
-    LuaDocTagAttributeUse, LuaDocTagDiagnostic, LuaDocTagField, LuaDocType, LuaDocTypeFlag,
-    LuaExpr, LuaFuncStat, LuaIfClauseStat, LuaIndexExpr, LuaIndexKey, LuaLiteralExpr,
-    LuaLiteralToken, LuaLocalStat, LuaNameExpr, LuaNameToken, LuaReturnStat, LuaStat, LuaSyntaxId,
-    LuaSyntaxKind, LuaTableExpr, LuaTableField, LuaVarExpr, LuaVersionCondition, NumberResult,
-    UnaryOperator,
+    LuaAssignStat, LuaAst, LuaAstNode, LuaAstToken, LuaBlock, LuaCallArgList, LuaCallExpr,
+    LuaCallExprStat, LuaChunk, LuaClosureExpr, LuaComment, LuaDocFieldKey, LuaDocGenericDeclList,
+    LuaDocTag, LuaDocTagAttributeUse, LuaDocTagDiagnostic, LuaDocTagField, LuaDocType,
+    LuaDocTypeFlag, LuaExpr, LuaFuncStat, LuaIfClauseStat, LuaIndexExpr, LuaIndexKey,
+    LuaLiteralExpr, LuaLiteralToken, LuaLocalStat, LuaNameExpr, LuaNameToken, LuaReturnStat,
+    LuaStat, LuaSyntaxId, LuaSyntaxKind, LuaTableExpr, LuaTableField, LuaVarExpr,
+    LuaVersionCondition, NumberResult, UnaryOperator,
 };
 use rowan::{TextRange, TextSize, WalkEvent};
 use smol_str::SmolStr;
@@ -1713,10 +1713,13 @@ impl FactsBuilder {
                 // Signature docs still belong to the outer statement (LocalStat/FuncStat), so save them now and use them in
                 // collect_signature; after collect_params, the body uses the closure owner.
                 // `---@param c C` above `return function(c)` documents that closure: the return statement is
-                // not an owner for anything else, so it is looked up here rather than tracked.
+                // not an owner for anything else, so it is looked up here rather than tracked. The same for
+                // `---@param h H` above `on(function(h) ... end)`: a call statement documents its first
+                // closure argument (0.25.1's rule).
                 let statement_owner = closure
                     .get_parent::<LuaReturnStat>()
                     .map(|stat| stat.get_syntax_id())
+                    .or_else(|| documenting_call_stat(closure))
                     .or(self.current_owner_syntax);
                 self.current_owner_syntax = Some(closure.get_syntax_id());
                 self.collect_params(closure);
@@ -2799,4 +2802,18 @@ pub(crate) fn implicit_self_receiver_prefix(
         return None;
     };
     method.get_prefix_expr()
+}
+
+/// The call statement whose docs document `closure`: `closure` is a direct argument of that statement's
+/// call, and its first closure argument.
+fn documenting_call_stat(closure: &LuaClosureExpr) -> Option<LuaSyntaxId> {
+    let call = closure
+        .get_parent::<LuaCallArgList>()?
+        .get_parent::<LuaCallExpr>()?;
+    let stat = call.get_parent::<LuaCallExprStat>()?;
+    let first = call.get_args_list()?.get_args().find_map(|arg| match arg {
+        LuaExpr::ClosureExpr(closure) => Some(closure),
+        _ => None,
+    })?;
+    (first.get_syntax_id() == closure.get_syntax_id()).then(|| stat.get_syntax_id())
 }

@@ -761,6 +761,10 @@ impl<'a> InferVm<'a> {
             return None;
         }
         let (signature, index) = facts.signature_and_param_index_of_decl(decl)?;
+        // A param's own `---@param` wins over the call site's callback type: its decl type has it.
+        if signature.param_doc_syntax(index).is_some() {
+            return None;
+        }
         let closure_syntax = signature.closure_syntax;
         if let Some(bound) = self.closure_params.get(&(closure_syntax, index)) {
             return Some(bound.clone());

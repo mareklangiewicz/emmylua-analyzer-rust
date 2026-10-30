@@ -283,22 +283,17 @@ impl<'db> SemanticModel<'db> {
                     facts.signature_and_param_index_of_decl(decl)
             {
                 let closure_syntax = signature.closure_syntax;
-                let ty = infer::closure_param_lua(self, closure_syntax, param_index);
-                if !matches!(ty, LuaType::Unknown) {
-                    return Some(self.attach_generic_constraints(ty, closure_syntax));
+                // The param's own `---@param` wins, over the call site's callback type (`---@param h D` above
+                // `on(function(h) ... end)` narrows `on`'s `fun(h: J)`) and over an inherited field's
+                // signature (an override keeps its doc).
+                let param_doc_syntax = signature.param_doc_syntax(param_index);
+                if param_doc_syntax.is_none() {
+                    let ty = infer::closure_param_lua(self, closure_syntax, param_index);
+                    if !matches!(ty, LuaType::Unknown) {
+                        return Some(self.attach_generic_constraints(ty, closure_syntax));
+                    }
                 }
                 // `function a.aaa(x)`: when no call site can be inferred, fill in parameter types from the owner type's field signature.
-                // The param's own `---@param` wins (an override of an inherited field keeps its doc).
-                let param_doc_syntax = signature
-                    .docs
-                    .as_ref()
-                    .zip(signature.param_names.get(param_index))
-                    .and_then(|(docs, name)| {
-                        docs.param_types
-                            .iter()
-                            .find(|(doc_name, _)| doc_name == name)
-                            .map(|(_, syntax)| *syntax)
-                    });
                 if param_doc_syntax.is_none()
                     && let Some(mut param_ty) =
                         self.expected_member_param_for_closure(closure_syntax, param_index)

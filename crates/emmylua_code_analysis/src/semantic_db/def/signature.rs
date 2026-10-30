@@ -43,6 +43,17 @@ impl Signature {
             .as_ref()
             .is_some_and(|docs| !docs.returns.is_empty() || !docs.return_overloads.is_empty())
     }
+
+    /// The `---@param` type of the `index`-th parameter, when its docs name it.
+    pub fn param_doc_syntax(&self, index: usize) -> Option<LuaSyntaxId> {
+        let name = self.param_names.get(index)?;
+        self.docs
+            .as_ref()?
+            .param_types
+            .iter()
+            .find(|(doc_name, _)| doc_name == name)
+            .map(|(_, syntax)| *syntax)
+    }
 }
 
 /// `---@[constructor("__init")]` (attribute line immediately after `---@param`).

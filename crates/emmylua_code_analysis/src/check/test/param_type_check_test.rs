@@ -4835,4 +4835,31 @@ mod test {
             "#
         ));
     }
+
+    /// `---@param h D` above `on(function(h) ... end)` documents that closure, as it did on 0.25.1
+    /// (the first closure argument of a call statement). Dropped, `h` took the callback's
+    /// `fun(h: J)` and `h.ok` read nil: "impossible if" (neospector `myworkflow.run`'s `oncomplete`).
+    #[test]
+    fn test_call_statement_docs_its_closure_argument() {
+        let mut ws = VirtualWorkspace::new();
+        let classes = r#"
+            ---@class J
+            ---@field id integer
+
+            ---@class D : J
+            ---@field ok boolean?
+
+            ---@param cb fun(h: J)
+            local function on(cb) return cb end
+        "#;
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            &format!("{classes}\n---@param h D the settled task\non(function(h)\n  if h.ok then print(1) end\nend)\n"),
+        ));
+        // Control: undocumented, `h` is the callback's `J`, which has no `ok`.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            &format!("{classes}\non(function(h)\n  if h.ok then print(1) end\nend)\n"),
+        ));
+    }
 }
