@@ -35,6 +35,16 @@ pub struct Signature {
     pub docs: Option<Box<SignatureDoc>>,
 }
 
+impl Signature {
+    /// Whether the docs declare the returns (`---@return`, `---@return_overload`); a closure
+    /// without them has its return inferred from its body, `---@param`s or not.
+    pub fn declares_returns(&self) -> bool {
+        self.docs
+            .as_ref()
+            .is_some_and(|docs| !docs.returns.is_empty() || !docs.return_overloads.is_empty())
+    }
+}
+
 /// `---@[constructor("__init")]` (attribute line immediately after `---@param`).
 /// The legacy signature index stored attributes per param, so `meta("Name")` calls use this to
 /// resolve `Name()` into a `Name:__init()` constructor call.

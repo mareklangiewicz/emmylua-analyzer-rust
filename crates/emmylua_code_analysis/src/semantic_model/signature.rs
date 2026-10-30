@@ -421,6 +421,16 @@ impl<'db> SemanticModel<'db> {
                 ret = rich;
             }
         }
+        // The shell types a returned name by its declaration, blind to flow: `buf = mk(); return
+        // buf` with `buf: integer?` read `integer?`. The VM reads each returned name at its
+        // `return`, so a nullable inferred return is re-asked of it (current file only, as the
+        // VM's other return fallbacks).
+        if ret.is_nullable() && !signature.declares_returns() && file_id == self.view.file_id() {
+            let inferred = infer::closure_return_lua(self, closure_syntax);
+            if !matches!(inferred, LuaType::Unknown | LuaType::Any) {
+                ret = inferred;
+            }
+        }
         // `self` in method annotations is the receiver instance; concretize the signature return type by the method owner.
         if signature.is_method
             && let Some(owner_ty) = self.method_owner_type(closure_syntax)

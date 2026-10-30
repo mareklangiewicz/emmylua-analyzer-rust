@@ -4671,4 +4671,74 @@ mod test {
             "#
         ));
     }
+
+    /// An unannotated function returning a nullable-declared local that its body narrowed
+    /// (`buf = mk(); return buf`, `if not p then p = 0 end return p`) returns the narrowed type,
+    /// not the declaration's `integer?` (myjournal `ensure_buf`).
+    #[test]
+    fn test_inferred_return_of_narrowed_nullable_local() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param n integer
+            local function need(n) end
+
+            ---@return integer
+            local function mk() return 1 end
+
+            local buf ---@type integer?
+
+            local function ensure()
+                if buf then return buf end
+                buf = mk()
+                return buf
+            end
+
+            ---@param p? integer
+            local function orzero(p)
+                if not p then p = 0 end
+                return p
+            end
+
+            need(ensure())
+            need(orzero())
+            "#
+        ));
+        // Typed, not `unknown` (which would pass `need` too).
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param s string
+            local function str(s) end
+
+            ---@param p? integer
+            local function orzero(p)
+                if not p then p = 0 end
+                return p
+            end
+
+            str(orzero())
+            "#
+        ));
+    }
+
+    /// A function in another file keeps its shell return (`integer?`), not `unknown`: the VM
+    /// answers for the current file only, so deferring to it must not drop the shell's answer.
+    #[test]
+    fn test_cross_file_nullable_return_stays_checked() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_file(
+            "nret.lua",
+            "local M = {}\n---@param p? integer\nfunction M.raw(p) return p end\nreturn M",
+        );
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param n integer
+            local function need(n) end
+            need(require('nret').raw())
+            "#
+        ));
+    }
 }
