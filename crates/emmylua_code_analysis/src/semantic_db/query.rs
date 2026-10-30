@@ -3529,20 +3529,23 @@ fn expr_type_index(
     index_expr: LuaIndexExpr,
     prefix_shell: TypeShell,
 ) -> TypeShell {
-    let Some((owner, name)) = member_ref_from_index_expr(facts, &index_expr) else {
+    let Some((owner, name, exact)) = member_ref_with_exactness(facts, &index_expr) else {
         return TypeShell::unknown();
     };
-    // 1. In-file members (owner key).
-    if let Some(member) = facts
-        .members_of_owner(&owner)
-        .find(|m| m.key.name() == Some(name.as_str()))
-    {
-        return member_type(db, file, config, member.id.clone());
-    }
-    // 2/3. Phase 2: cross-file merged lookup + type-member fallback (requires workspace).
-    // 2. Cross-file members by owner key + resolved concrete id key.
-    if let Some(shell) = member_type_via_owner(db, config, &owner, &name) {
-        return shell;
+    // 1/2 read the owner's members, so only when the owner is the table the prefix holds.
+    if exact {
+        // 1. In-file members (owner key).
+        if let Some(member) = facts
+            .members_of_owner(&owner)
+            .find(|m| m.key.name() == Some(name.as_str()))
+        {
+            return member_type(db, file, config, member.id.clone());
+        }
+        // 2/3. Phase 2: cross-file merged lookup + type-member fallback (requires workspace).
+        // 2. Cross-file members by owner key + resolved concrete id key.
+        if let Some(shell) = member_type_via_owner(db, config, &owner, &name) {
+            return shell;
+        }
     }
     // 3. If the prefix type is a named class/export name -> cross-file owner members (@field + runtime), then inherited @fields.
     for candidate in &prefix_shell.candidates {
@@ -3865,17 +3868,29 @@ pub(crate) fn member_ref_from_index_expr(
     facts: &FileFacts,
     index_expr: &LuaIndexExpr,
 ) -> Option<(SemanticId, SmolStr)> {
+    member_ref_with_exactness(facts, index_expr).map(|(owner, name, _)| (owner, name))
+}
+
+/// `member_ref_from_index_expr`, and whether the owner is the table the prefix holds: a local
+/// root whose segment reaches no runtime table (`self.sub` with `sub` only a `---@field`) stops
+/// at the last table it reached instead.
+fn member_ref_with_exactness(
+    facts: &FileFacts,
+    index_expr: &LuaIndexExpr,
+) -> Option<(SemanticId, SmolStr, bool)> {
     let name = SmolStr::new(index_expr.get_index_key()?.get_path_part());
     let prefix = index_expr.get_prefix_expr()?;
     let mut segments = Vec::new();
-    let owner = resolve_expr_root(facts, prefix, &mut segments)?;
-    Some((owner, name))
+    let mut exact = true;
+    let owner = resolve_expr_root(facts, prefix, &mut segments, &mut exact)?;
+    Some((owner, name, exact))
 }
 
 fn resolve_expr_root(
     facts: &FileFacts,
     expr: LuaExpr,
     segments: &mut Vec<SmolStr>,
+    exact: &mut bool,
 ) -> Option<SemanticId> {
     // Deep member chains: expand IndexExpr with an explicit task stack to avoid native stack recursion.
     let mut current = expr;
@@ -3907,9 +3922,9 @@ fn resolve_expr_root(
                     && !matches!(decl.kind, DeclKind::Global)
                 {
                     if decl.is_implicit_self {
-                        match implicit_self_receiver_prefix(decl, &name_expr)
-                            .and_then(|receiver| resolve_expr_root(facts, receiver, segments))
-                        {
+                        match implicit_self_receiver_prefix(decl, &name_expr).and_then(|receiver| {
+                            resolve_expr_root(facts, receiver, segments, exact)
+                        }) {
                             // Already qualified with the receiver's path and these segments.
                             Some(owner @ SemanticId::Name(_)) => return Some(owner),
                             Some(owner) => break owner,
@@ -3936,6 +3951,7 @@ fn resolve_expr_root(
         let Some(table) = key.and_then(|key| {
             nested_table_owner(facts.members_of_owner(&owner), &owner, &key, offset)
         }) else {
+            *exact = false;
             break;
         };
         owner = table;

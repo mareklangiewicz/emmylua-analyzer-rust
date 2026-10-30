@@ -454,4 +454,31 @@ mod test {
             ["integer", "integer", "unknown", "integer"]
         );
     }
+
+    #[test]
+    fn test_return_of_a_field_chain_reads_the_fields_type_not_a_same_named_method() {
+        // `self.sub.name` with `sub` only a `---@field`: the index-time typer could not walk
+        // `.sub` through local `A`'s runtime tables and looked `name` up on `A`, finding `A:name`.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@class ChainSub
+            ---@field name string
+            ---@field label string
+
+            ---@class ChainA
+            ---@field sub ChainSub
+            local A = {}
+            function A:name() return self.sub.name end
+            function A:label() return self.sub.label end
+
+            ---@type ChainA
+            local a
+            named = a:name()
+            labelled = a:label()
+            "#,
+        );
+        assert_eq!(ws.expr_ty("named"), ws.ty("string"));
+        assert_eq!(ws.expr_ty("labelled"), ws.ty("string"));
+    }
 }
