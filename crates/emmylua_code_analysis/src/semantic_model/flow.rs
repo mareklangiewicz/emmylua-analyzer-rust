@@ -42,7 +42,9 @@ use crate::semantic_model::infer::infer_call_with_bindings;
 use crate::semantic_model::infer::unify::substitute;
 use crate::semantic_model::infer::vm::{binary_type, widen_const, widen_variadic_const};
 use crate::signature::LuaSignatureId;
-use guards::{AssignStep, guarded_on_all_paths, literal_comparison, normalize_condition};
+use guards::{
+    AssignStep, guarded_on_all_paths, literal_comparison, normalize_condition, unparenthesized,
+};
 
 /// Backtracking options: independently collect condition guards, cast widening, and assignment hits.
 #[derive(Clone, Copy)]
@@ -632,18 +634,10 @@ pub(crate) fn type_of_expr_at_node(
                 return apply_casts(ty, All);
             }
             if let Some(resolved) = model.resolve_member(index_expr)
-                && let Some(member_id) = resolved.member_id.clone().or_else(|| {
-                    let prefix = index_expr.get_prefix_expr()?;
-                    let prefix_ty = model.type_of_expr_at(prefix.get_syntax_id(), offset);
-                    if matches!(prefix_ty, LuaType::Union(_)) {
-                        return None;
-                    }
-                    let key = member_key_from_index_expr(model, index_expr)?;
-                    model
-                        .member_infos_with_key(&prefix_ty, &key)
-                        .into_iter()
-                        .find_map(|info| info.id)
-                })
+                && let Some(member_id) = resolved
+                    .member_id
+                    .clone()
+                    .or_else(|| narrowed_member_id(model, index_expr, offset))
             {
                 let mut member_ty = if let Some(flow_tree) = model.flow_tree()
                     && (flow_tree.has_condition() || flow_tree.has_complex_control())
@@ -1127,8 +1121,11 @@ fn narrow_index_condition(
     let (cond, branch_is_true) = normalize_condition(cond, branch_is_true)?;
     if let LuaExpr::BinaryExpr(binary) = &cond {
         let (left, right) = binary.get_exprs()?;
-        let (value, literal, op) =
-            literal_comparison(left, right, binary.get_op_token()?.get_op())?;
+        let (value, literal, op) = literal_comparison(
+            unparenthesized(left)?,
+            unparenthesized(right)?,
+            binary.get_op_token()?.get_op(),
+        )?;
         if literal.is_nil()
             && matches!(op, BinaryOperator::OpEq | BinaryOperator::OpNe)
             && branch_is_true == (op == BinaryOperator::OpNe)
@@ -1139,8 +1136,9 @@ fn narrow_index_condition(
         // `type(t.x) == 'function'` keeps the functions (any name but `'nil'`); `type(t.x) ~= 'nil'`
         // removes nil.
         if let LuaExpr::CallExpr(call) = &value
-            && let Some(LuaExpr::NameExpr(callee)) = call.get_prefix_expr()
-            && callee.get_name_text().as_deref() == Some("type")
+            && model
+                .resolves_to_builtin(call.get_prefix_expr()?, "type")
+                .is_some()
             && let Some(arg) = call.get_args_list()?.get_args().next()
             && let LuaType::StringConst(name) | LuaType::DocStringConst(name) = &literal
             && matches!(op, BinaryOperator::OpEq | BinaryOperator::OpNe)
@@ -2882,7 +2880,27 @@ fn collect_decl_cast(
     }
 }
 
-/// `---@cast t.x +T`: after matching a member, add T to the path type.
+/// The member `index_expr` reaches through its owner's type at `offset`, for an owner whose
+/// declared type does not resolve one (a union narrowed by a guard or a cast to one part).
+fn narrowed_member_id(
+    model: &SemanticModel,
+    index_expr: &emmylua_parser::LuaIndexExpr,
+    offset: TextSize,
+) -> Option<SemanticId> {
+    let prefix = index_expr.get_prefix_expr()?;
+    let prefix_ty = model.type_of_expr_at(prefix.get_syntax_id(), offset);
+    if matches!(prefix_ty, LuaType::Union(_)) {
+        return None;
+    }
+    let key = member_key_from_index_expr(model, index_expr)?;
+    model
+        .member_infos_with_key(&prefix_ty, &key)
+        .into_iter()
+        .find_map(|info| info.id)
+}
+
+/// `---@cast t.x +T`: after matching a member, add T to the path type. The cast's path
+/// resolves its member like a read there does (`narrowed_member_id`).
 fn collect_member_cast(
     model: &SemanticModel,
     member: &SemanticId,
@@ -2903,6 +2921,7 @@ fn collect_member_cast(
             model
                 .resolve_member(index_expr)
                 .and_then(|resolved| resolved.member_id)
+                .or_else(|| narrowed_member_id(model, index_expr, index_expr.get_position()))
                 .as_ref()
                 == Some(member)
         }

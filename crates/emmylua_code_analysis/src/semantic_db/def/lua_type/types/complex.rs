@@ -939,6 +939,8 @@ impl LuaInstanceType {
 pub enum GenericTplId {
     Type(u32),
     Func(u32),
+    /// Syntax position keeps nested mapped keys distinct from other generics.
+    Mapped(u32),
     ConditionalInfer(u32),
 }
 
@@ -947,6 +949,7 @@ impl GenericTplId {
         match self {
             GenericTplId::Type(idx) => *idx as usize,
             GenericTplId::Func(idx) => *idx as usize,
+            GenericTplId::Mapped(idx) => *idx as usize,
             GenericTplId::ConditionalInfer(idx) => *idx as usize,
         }
     }
@@ -967,6 +970,7 @@ impl GenericTplId {
         match self {
             GenericTplId::Type(_) => GenericTplId::Type(idx),
             GenericTplId::Func(_) => GenericTplId::Func(idx),
+            GenericTplId::Mapped(_) => GenericTplId::Mapped(idx),
             GenericTplId::ConditionalInfer(_) => GenericTplId::ConditionalInfer(idx),
         }
     }

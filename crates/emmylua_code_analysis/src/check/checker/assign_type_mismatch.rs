@@ -11,10 +11,10 @@ use emmylua_parser::{
 use super::check_field::is_optional;
 use crate::DiagnosticCode;
 use crate::semantic_db::facts::member_key_from_index_key;
-use crate::semantic_model::SemanticModel;
 use crate::semantic_model::infer::unify::{TplBindings, substitute};
 use crate::semantic_model::infer::vm::bind_signature_generics;
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_detail, is_compatible};
+use crate::semantic_model::{SemanticModel, type_eval};
 use crate::{
     Decl, GenericTpl, LuaFunctionType, LuaMemberKey, LuaType, LuaTypeNode, MemberInfo, SemanticId,
     TypeDef, TypeDefKind,
@@ -159,18 +159,25 @@ fn least_rejected<T>(alternatives: impl IntoIterator<Item = (usize, T)>) -> Opti
 }
 
 /// A call's table literal arguments, field by field against `candidate`'s parameters
-/// (`f({ t = "" })`). param_type_check ranks the call's candidates with it.
+/// (`f({ t = "" })`), with the generics its arguments bound (`bindings`) substituted.
+/// param_type_check ranks the call's candidates with it.
 pub(super) fn check_call_table_args(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     candidate: &LuaFunctionType,
     args: &[LuaExpr],
     colon_call: bool,
+    bindings: &TplBindings,
 ) {
     let params = candidate.get_params();
     for (index, arg) in args.iter().enumerate() {
         let Some(param_index) = call_arg_param_index(candidate, index, colon_call) else {
             continue;
+        };
+        // Arguments past the last parameter fill a trailing `...`.
+        let param_index = match candidate.is_variadic() {
+            true => param_index.min(params.len().saturating_sub(1)),
+            false => param_index,
         };
         let Some((_, Some(param_ty))) = params.get(param_index) else {
             break;
@@ -180,6 +187,8 @@ pub(super) fn check_call_table_args(
         };
         // Signature params keep a `---@generic V` as `Ref("V")`; bind it before checking.
         let param_ty = bind_signature_generics(param_ty, candidate.get_generic_params());
+        let param_ty = substitute(&param_ty, bindings);
+        let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
         let param_ty = instantiate_by_constraints(&param_ty, candidate.get_generic_params());
         if is_structured_table_target(semantic_model, &param_ty) {
             check_table_fields(context, semantic_model, &param_ty, table);
@@ -187,9 +196,9 @@ pub(super) fn check_call_table_args(
     }
 }
 
-/// At a call site the callee's generics are instantiated by the arguments, so a literal
-/// argument fits a constrained `T` when it fits the constraint; an unconstrained one stays
-/// any-like. (Inside the generic body `T` is rigid; this is only for the call's arguments.)
+/// A generic the call's arguments left unbound: a literal argument fits a constrained `T`
+/// when it fits the constraint; an unconstrained one stays any-like. (Inside the generic
+/// body `T` is rigid; this is only for the call's arguments.)
 fn instantiate_by_constraints(ty: &LuaType, generics: &[GenericTpl]) -> LuaType {
     let mut constraints = TplBindings::new();
     for generic in generics {
@@ -691,7 +700,7 @@ pub(super) fn check_table_fields(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            check_table_value(context, semantic_model, &value_expr, expected);
+            check_table_value(context, semantic_model, &value_expr, expected, false);
         }
         return;
     }
@@ -716,7 +725,9 @@ pub(super) fn check_table_fields(
                 .as_ref()
                 .and_then(|key| object.get_fields().get(key))
             {
-                check_table_value(context, semantic_model, &value_expr, expected);
+                // `{a?: T}` already reads `T | nil`.
+                let required = !expected.is_nullable();
+                check_table_value(context, semantic_model, &value_expr, expected, required);
                 continue;
             }
             let key_ty = index_key_type(semantic_model, &key);
@@ -724,7 +735,13 @@ pub(super) fn check_table_fields(
                 continue;
             };
             if let Some(info) = infos.first() {
-                check_table_value(context, semantic_model, &value_expr, &info.value_type);
+                check_table_value(
+                    context,
+                    semantic_model,
+                    &value_expr,
+                    &info.value_type,
+                    false,
+                );
             } else if let Some(index_keys) = &index_keys {
                 check_table_key(context, semantic_model, &field, &key, index_keys);
             }
@@ -781,7 +798,10 @@ pub(super) fn check_table_fields(
             let Some(value_expr) = field.get_value_expr() else {
                 continue;
             };
-            check_table_value(context, semantic_model, &value_expr, expected);
+            let required = required_members
+                .iter()
+                .any(|(k, _)| Some(k) == member_key.as_ref());
+            check_table_value(context, semantic_model, &value_expr, expected, required);
             continue;
         }
         // Static member not found -> check against index signatures (`@field [integer] string`).
@@ -797,7 +817,7 @@ pub(super) fn check_table_fields(
         let Some(value_expr) = field.get_value_expr() else {
             continue;
         };
-        check_table_value(context, semantic_model, &value_expr, expected);
+        check_table_value(context, semantic_model, &value_expr, expected, false);
     }
     // Array-shaped table literal + integer index signature: required static members from class inheritance must still appear
     // (an Opts with `@field [integer] string` still requires the parent's `@field foo boolean`).
@@ -846,11 +866,14 @@ pub(super) fn check_table_fields(
     }
 }
 
+/// A `nil` value omits the entry, so it fits wherever an entry may be missing; a `required`
+/// field rejects a value that is only `nil` (`{ label = nil }`), not one that may be nil.
 fn check_table_value(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     value_expr: &LuaExpr,
     expected: &LuaType,
+    required: bool,
 ) {
     if matches!(value_expr, LuaExpr::TableExpr(_)) {
         check_value_against(context, semantic_model, expected, value_expr);
@@ -872,10 +895,10 @@ fn check_table_value(
     let value_ty = semantic_model
         .type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start())
         .into_first_value();
-    // Nil omits an entry from a table constructor.
+    let absent = required && value_ty.is_nil();
     let expected_or_absent = LuaType::from_vec(vec![expected.clone(), LuaType::Nil]);
     if matches!(value_ty, LuaType::Unknown | LuaType::Any | LuaType::Never)
-        || is_compatible(semantic_model, &value_ty, &expected_or_absent)
+        || !absent && is_compatible(semantic_model, &value_ty, &expected_or_absent)
     {
         return;
     }
@@ -897,7 +920,7 @@ fn check_keyed_fields(
         let Some(value_expr) = field.get_value_expr() else {
             continue;
         };
-        check_table_value(context, semantic_model, &value_expr, value_ty);
+        check_table_value(context, semantic_model, &value_expr, value_ty, false);
     }
 }
 

@@ -5,6 +5,7 @@
 //! strip one slot for the self parameter; plain functions treat the receiver as the first argument.
 
 use crate::semantic_model::type_check::{TypeCheckContext, integer_index_applies};
+use rowan::TextSize;
 use std::rc::Rc;
 
 use emmylua_parser::{
@@ -20,12 +21,12 @@ use crate::semantic_model::type_check::is_compatible;
 use crate::semantic_model::{SemanticModel, type_eval};
 use crate::{
     DiagnosticCode, LuaFunctionType, LuaMemberKey, LuaTupleStatus, LuaTupleType, LuaType,
-    LuaTypeNode, TypeDefKind, VariadicType,
+    LuaTypeNode, SemanticId, TypeDefKind, VariadicType,
 };
 
 use super::assign_type_mismatch::check_call_table_args;
 use super::check_field::union_array_for_sequence;
-use super::param_count::{call_arg_param_index, first_param_is_self};
+use super::param_count::first_param_is_self;
 use super::{CheckContext, Checker, Diagnostic};
 
 pub struct ParamTypeChecker;
@@ -70,37 +71,20 @@ fn check_pcall_forward(
     if callback_candidates.is_empty() {
         return false;
     }
-    let forwarded = &args[1..];
-    let mut best: Option<Vec<Mismatch>> = None;
-    for candidate in &callback_candidates {
-        let mismatches = check_candidate(
-            semantic_model,
-            candidate,
-            forwarded,
-            false,
-            &LuaType::Unknown,
-            &[],
-            None,
-        );
-        if mismatches.is_empty() {
-            return true;
-        }
-        if best
-            .as_ref()
-            .is_none_or(|current| mismatches.len() < current.len())
-        {
-            best = Some(mismatches);
-        }
-    }
-    if let Some(mismatches) = best {
-        for mismatch in mismatches {
-            context.add_diagnostic(
-                DiagnosticCode::ParamTypeMismatch,
-                mismatch.range,
-                mismatch.message,
-            );
-        }
-    }
+    let candidates: Vec<&LuaFunctionType> = callback_candidates.iter().collect();
+    report_least_rejecting(
+        context,
+        semantic_model,
+        candidates,
+        &args[1..],
+        CallShape {
+            colon_call: false,
+            receiver_ty: &LuaType::Unknown,
+            explicit_generics: &[],
+            arg_types: None,
+        },
+        &[],
+    );
     true
 }
 
@@ -165,14 +149,56 @@ pub(crate) fn callable_candidates_uncached(
         }
         // A name callee's value type is its main signature only; its `---@overload`s are
         // candidates too, as in the VM's call selection.
-        let vm = InferVm::new(semantic_model, &[]);
-        for overload in vm.overload_candidates_for_decl(&decl) {
+        for overload in live_decl_overloads(semantic_model, &decl, name_expr.get_position()) {
             if !candidates.contains(&overload) {
                 candidates.push(overload);
             }
         }
     }
     candidates
+}
+
+/// The `---@overload`s of `decl`'s function value, while that value is what a read at `offset`
+/// sees: for a local, an assignment before it replaces the function and its overloads. (A
+/// global's `function G()` is itself an assignment; its overloads always apply.)
+fn live_decl_overloads(
+    semantic_model: &SemanticModel<'_>,
+    decl: &SemanticId,
+    offset: TextSize,
+) -> Vec<LuaFunctionType> {
+    let is_local = semantic_model
+        .file_facts()
+        .and_then(|facts| facts.decl_by_id(decl))
+        .is_some_and(|info| matches!(info.kind, crate::DeclKind::Local { .. }));
+    if is_local
+        && semantic_model
+            .flow_tree()
+            .is_some_and(|tree| tree.latest_decl_assignment(decl, offset).is_some())
+    {
+        return Vec::new();
+    }
+    InferVm::new(semantic_model, &[]).overload_candidates_for_decl(decl)
+}
+
+/// The signatures of the definition an argument names, when it declares `---@overload`s:
+/// alternatives where any one may serve. A value that may be one of several functions
+/// (`choose and f or g`) is not one: each of them must fit.
+fn overload_set(semantic_model: &SemanticModel<'_>, arg: &LuaExpr) -> Vec<LuaFunctionType> {
+    match arg {
+        LuaExpr::NameExpr(name_expr) => {
+            let Some(decl) = semantic_model.resolve_name(name_expr.get_position()) else {
+                return Vec::new();
+            };
+            if live_decl_overloads(semantic_model, &decl, name_expr.get_position()).is_empty() {
+                return Vec::new();
+            }
+            callable_candidates(semantic_model, arg)
+        }
+        LuaExpr::IndexExpr(index_expr) => {
+            index_expr_callable_candidates(semantic_model, index_expr)
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve callable signatures directly from an index expression's member declaration.
@@ -291,13 +317,10 @@ fn check_call(
     let receiver_ty = analysis.receiver_ty;
     let explicit_generics = &analysis.explicit_generics;
 
-    // Extra arguments are param_count's concern, but a candidate that cannot take them all
+    // The argument count is param_count's concern, but a candidate that cannot take it
     // (`fun(): number` for `test(x)`, `fun(emit)` for `log('x', data)`) neither accepts the call
-    // nor is reported when another candidate can take them.
-    let (fits, too_many): (Vec<&LuaFunctionType>, Vec<_>) = candidates
-        .iter()
-        .partition(|func| !takes_too_many_args(func, args.len(), colon_call));
-    let mut ordered = if fits.is_empty() { too_many } else { fits };
+    // nor is reported when another candidate can take it. A forwarded `...` may be empty.
+    let mut ordered = candidates_for_arg_count(semantic_model, &candidates, &args, colon_call);
     // Cheap candidate ordering: check likely overloads first so the common
     // “one candidate matches” case returns before running the expensive
     // parameter-by-parameter check on every other overload.
@@ -305,23 +328,63 @@ fn check_call(
         quick_candidate_score(func, &analysis.arg_types, colon_call, &receiver_ty)
     });
 
-    // A candidate rejects arguments (here) and table literal fields (the assign descent). When
-    // every candidate rejects something, report the one rejecting the least, each rejection once.
+    let literal_names = doc_overload_literal_names(semantic_model, &callee);
+    report_least_rejecting(
+        context,
+        semantic_model,
+        ordered,
+        &args,
+        CallShape {
+            colon_call,
+            receiver_ty: &receiver_ty,
+            explicit_generics,
+            arg_types: Some(&analysis.arg_types),
+        },
+        &literal_names,
+    );
+}
+
+/// How a call passes its arguments to every candidate.
+struct CallShape<'a> {
+    colon_call: bool,
+    receiver_ty: &'a LuaType,
+    explicit_generics: &'a [LuaSyntaxId],
+    arg_types: Option<&'a [LuaType]>,
+}
+
+/// A candidate rejects arguments (here) and table literal fields (the assign descent). When
+/// every candidate rejects something, report the one rejecting the least, each rejection once.
+/// `literal_names` (two or more) replace a mismatch's expected type.
+fn report_least_rejecting(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    candidates: Vec<&LuaFunctionType>,
+    args: &[LuaExpr],
+    shape: CallShape<'_>,
+    literal_names: &[String],
+) {
     let has_literal = args.iter().any(|arg| matches!(arg, LuaExpr::TableExpr(_)));
     let mut best: Option<(usize, Vec<Mismatch>, Vec<Diagnostic>)> = None;
-    for candidate in ordered {
-        let mismatches = check_candidate(
+    for candidate in candidates {
+        let (mismatches, bindings) = check_candidate(
             semantic_model,
             candidate,
-            &args,
-            colon_call,
-            &receiver_ty,
-            explicit_generics,
-            Some(&analysis.arg_types),
+            args,
+            shape.colon_call,
+            shape.receiver_ty,
+            shape.explicit_generics,
+            shape.arg_types,
         );
         let fields = if has_literal {
             context.collect(|context| {
-                check_call_table_args(context, semantic_model, candidate, &args, colon_call)
+                check_call_table_args(
+                    context,
+                    semantic_model,
+                    candidate,
+                    args,
+                    shape.colon_call,
+                    &bindings,
+                )
             })
         } else {
             Vec::new()
@@ -336,7 +399,6 @@ fn check_call(
     }
     if let Some((_, mismatches, fields)) = best {
         context.extend_diagnostics(fields);
-        let literal_names = doc_overload_literal_names(semantic_model, &callee);
         for mismatch in mismatches {
             let message = if literal_names.len() >= 2 {
                 let found = mismatch
@@ -395,13 +457,23 @@ fn has_table_literal_shape(ty: &LuaType) -> bool {
     }
 }
 
-/// More call arguments than the candidate has parameters (after the receiver rules), and no varargs.
-fn takes_too_many_args(func: &LuaFunctionType, arg_count: usize, colon_call: bool) -> bool {
-    !func.takes_rest()
-        && arg_count
-            .checked_sub(1)
-            .and_then(|last| call_arg_param_index(func, last, colon_call))
-            .is_some_and(|param| param >= func.get_params().len())
+/// The candidates that accept the call's argument count (param_count's rule), when some do.
+fn candidates_for_arg_count<'a>(
+    semantic_model: &SemanticModel<'_>,
+    candidates: &'a [LuaFunctionType],
+    args: &[LuaExpr],
+    colon_call: bool,
+) -> Vec<&'a LuaFunctionType> {
+    let range = super::param_count::expanded_arg_range(semantic_model, args);
+    let fits: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| range.accepts(semantic_model, candidate, colon_call))
+        .collect();
+    if fits.is_empty() {
+        candidates.iter().collect()
+    } else {
+        fits
+    }
 }
 
 /// A cheap literal/scalar-shape score used only to order call candidates.
@@ -503,7 +575,7 @@ fn check_candidate(
     receiver_ty: &LuaType,
     explicit_generics: &[LuaSyntaxId],
     arg_types: Option<&[LuaType]>,
-) -> Vec<Mismatch> {
+) -> (Vec<Mismatch>, unify::TplBindings) {
     let params = func.get_params();
     let self_param = first_param_is_self(func);
     let param_start = usize::from(colon_call && self_param).min(params.len());
@@ -551,7 +623,7 @@ fn check_candidate(
             &mut bindings,
             arg_types,
         ));
-        return mismatches;
+        return (mismatches, bindings);
     }
 
     // When a colon-defined method is invoked with dot syntax, the explicit receiver is
@@ -561,14 +633,15 @@ fn check_candidate(
         let offset = arg_offset.min(types.len());
         &types[offset..]
     });
-    check_arg_pairs(
+    let mismatches = check_arg_pairs(
         semantic_model,
         &params[param_start..],
         &args[arg_offset..],
         func.is_variadic(),
         &mut bindings,
         dot_arg_types,
-    )
+    );
+    (mismatches, bindings)
 }
 
 fn param_generic_base_match(
@@ -843,16 +916,14 @@ fn check_arg_pairs(
             continue;
         }
         // A function argument's `---@overload`s are candidates as when it is called:
-        // `fold(0, fun.succ)` fits through `fun(n: integer): integer`.
+        // `fold(0, fun.succ)` fits through `fun(n: integer): integer` (`overload_set`).
         if matches!(
             call_arg_ty,
             LuaType::DocFunction(_) | LuaType::Signature(_) | LuaType::Union(_)
-        ) && matches!(arg, LuaExpr::NameExpr(_) | LuaExpr::IndexExpr(_))
-            && callable_candidates(semantic_model, arg).iter().any(|fun| {
-                let fun = LuaType::DocFunction(Rc::new(fun.clone()));
-                function_arg_compatible(semantic_model, &fun, &param_ty, bindings)
-            })
-        {
+        ) && overload_set(semantic_model, arg).iter().any(|fun| {
+            let fun = LuaType::DocFunction(Rc::new(fun.clone()));
+            function_arg_compatible(semantic_model, &fun, &param_ty, bindings)
+        }) {
             continue;
         }
         if call_arg_ty == param_ty {
