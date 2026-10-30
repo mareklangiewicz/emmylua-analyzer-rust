@@ -19,7 +19,7 @@ use super::exports::{
 };
 use super::facts::{
     FactsBuilder, FileFacts, implicit_self_receiver_prefix, member_key_from_index_key,
-    nested_table_owner,
+    nested_table_owner, unreached_path_key,
 };
 use super::inputs::WorkspaceRoot;
 use super::types::{
@@ -3893,16 +3893,23 @@ fn member_ref_with_exactness(
     let name = SmolStr::new(index_expr.get_index_key()?.get_path_part());
     let prefix = index_expr.get_prefix_expr()?;
     let mut segments = Vec::new();
-    let mut exact = true;
-    let owner = resolve_expr_root(facts, prefix, &mut segments, &mut exact)?;
-    Some((owner, name, exact))
+    let mut unreached = Vec::new();
+    let owner = resolve_expr_root(facts, prefix, &mut segments, &mut unreached)?;
+    if unreached.is_empty() {
+        return Some((owner, name, true));
+    }
+    // The member a write through the same path recorded (`unreached_path_key`).
+    let LuaMemberKey::Name(name) = unreached_path_key(&unreached, &name) else {
+        return None;
+    };
+    Some((owner, name, false))
 }
 
 fn resolve_expr_root(
     facts: &FileFacts,
     expr: LuaExpr,
     segments: &mut Vec<SmolStr>,
-    exact: &mut bool,
+    unreached: &mut Vec<SmolStr>,
 ) -> Option<SemanticId> {
     // Deep member chains: expand IndexExpr with an explicit task stack to avoid native stack recursion.
     let mut current = expr;
@@ -3914,13 +3921,15 @@ fn resolve_expr_root(
                 current = paren.get_expr()?;
             }
             LuaExpr::IndexExpr(parent) => {
-                segments.push(SmolStr::new(parent.get_index_key()?.get_path_part()));
+                let segment = SmolStr::new(parent.get_index_key()?.get_path_part());
+                segments.push(segment.clone());
                 keys.push((
                     parent
                         .get_index_key()
                         .as_ref()
                         .and_then(member_key_from_index_key),
                     parent.get_position(),
+                    segment,
                 ));
                 current = parent.get_prefix_expr()?;
             }
@@ -3935,7 +3944,7 @@ fn resolve_expr_root(
                 {
                     if decl.is_implicit_self {
                         match implicit_self_receiver_prefix(decl, &name_expr).and_then(|receiver| {
-                            resolve_expr_root(facts, receiver, segments, exact)
+                            resolve_expr_root(facts, receiver, segments, unreached)
                         }) {
                             // Already qualified with the receiver's path and these segments.
                             Some(owner @ SemanticId::Name(_)) => return Some(owner),
@@ -3959,14 +3968,19 @@ fn resolve_expr_root(
         return Some(SemanticId::name(SmolStr::new(path)));
     }
     let mut owner = owner;
-    for (key, offset) in keys.into_iter().rev() {
-        let Some(table) = key.and_then(|key| {
+    let mut keys = keys.into_iter().rev();
+    for (key, offset, segment) in keys.by_ref() {
+        let table = key.filter(|_| unreached.is_empty()).and_then(|key| {
             nested_table_owner(facts.members_of_owner(&owner), &owner, &key, offset)
-        }) else {
-            *exact = false;
-            break;
-        };
-        owner = table;
+        });
+        match table {
+            Some(table) => owner = table,
+            None => {
+                unreached.push(segment);
+                break;
+            }
+        }
     }
+    unreached.extend(keys.map(|(_, _, segment)| segment));
     Some(owner)
 }

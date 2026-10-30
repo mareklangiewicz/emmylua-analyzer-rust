@@ -665,4 +665,49 @@ mod test {
         assert_eq!(ws.expr_ty("A"), LuaType::Integer);
         assert_eq!(ws.expr_ty("B"), LuaType::String);
     }
+
+    #[test]
+    fn test_write_through_an_unreached_path_is_not_a_root_field() {
+        // `opts` holds no table this file stored, so `self.opts.wo.list` stays on `Win` for flow,
+        // but it is not `Win.list`: a subclass's own `list` function is still callable.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Win
+            ---@field opts table
+            local Win = {}
+            function Win:setup()
+                self.opts.wo.list = true
+            end
+            ---@class Term: Win
+            local Term = {}
+            ---@return integer
+            function Term.list() return 1 end
+            A = Term.list()
+            B = Win.list
+            "#,
+        );
+        let ty = ws.expr_ty("A");
+        assert_eq!(ws.humanize_type(ty), "integer");
+        let ty = ws.expr_ty("B");
+        assert_eq!(ws.humanize_type(ty), "nil");
+    }
+
+    #[test]
+    fn test_unreached_path_write_narrows_the_same_path_read() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class Bag
+            ---@field items table
+            ---@param t Bag
+            local function f(t)
+                t.items.first = 'x'
+                A = t.items.first
+            end
+            "#,
+        );
+        let ty = ws.expr_ty("A");
+        assert_eq!(ws.humanize_type(ty), "\"x\"");
+    }
 }

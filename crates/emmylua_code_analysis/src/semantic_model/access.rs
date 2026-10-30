@@ -807,9 +807,12 @@ impl<'db> SemanticModel<'db> {
         result
     }
     pub(crate) fn resolve_member_impl(&self, index_expr: &LuaIndexExpr) -> Option<ResolvedMember> {
-        let (owner, name) = self
+        // `key` finds the owner's member; past a segment that reaches no table it carries the
+        // rest of the path (`items.first`), while `name` stays the field read on the prefix's type.
+        let (owner, key) = self
             .analysis()
             .member_ref_of_index(self.view.file_id(), index_expr.get_syntax_id())?;
+        let name = SmolStr::new(index_expr.get_index_key()?.get_path_part());
 
         // 1. Same-file members (owner key). Members with explicit `---@type` take priority over purely inferred runtime members;
         // if only runtime members exist and the prefix type is a named type with a same-named `@field`, skip this step --
@@ -817,7 +820,7 @@ impl<'db> SemanticModel<'db> {
         {
             let facts = self.file_facts()?;
             let same_name = facts
-                .members_of_owner_named(&owner, name.as_str())
+                .members_of_owner_named(&owner, key.as_str())
                 .collect::<Vec<_>>();
             let prefer_typed = same_name
                 .iter()

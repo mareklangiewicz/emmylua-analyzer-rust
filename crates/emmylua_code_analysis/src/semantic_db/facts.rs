@@ -1922,9 +1922,16 @@ impl FactsBuilder {
             return;
         };
         let mut segments = Vec::new();
-        let Some((owner, implicit_self)) = self.resolve_member_owner_id(prefix, &mut segments)
+        let Some((owner, implicit_self, unreached)) =
+            self.resolve_member_owner_id(prefix, &mut segments)
         else {
             return;
+        };
+        // A path that stops at the deepest table it reached keeps the rest in its key, as reads do
+        // (`unreached_path_key`): `self.opts.wo.list` is not the root's own `list`.
+        let member_key = match (unreached, index_expr.get_index_key()) {
+            (Some(from), Some(key)) => unreached_path_key(&segments[from..], &key.get_path_part()),
+            _ => member_key,
         };
         // `_G.name = value` / `_ENV.name = value` also defines a real global declaration.
         if let Some(LuaExpr::NameExpr(prefix_name)) = index_expr.get_prefix_expr()
@@ -1964,18 +1971,18 @@ impl FactsBuilder {
         self.members.push(member);
     }
 
-    /// Resolves a member owner's prefix into `(owner, implicit_self, reached)`.
+    /// Resolves a member owner's prefix into `(owner, implicit_self, unreached)`.
     /// Local root → `Decl(local)`, or `Member(table literal)` under a path; global root → `Name(root)`
     /// with `segments` collected, qualified exactly once by [`Self::resolve_member_owner_id`].
     ///
     /// `implicit_self` is the syntax id of the enclosing method closure when the chain is rooted at an
     /// implicit `self`, so callers can keep per-method grouping (e.g. duplicate-field checks).
-    /// `reached` is whether every segment of a local-rooted path reached its table.
+    /// `unreached` is where in `segments` a local-rooted path stopped reaching tables, if it did.
     fn resolve_member_owner(
         &self,
         expr: LuaExpr,
         segments: &mut Vec<SmolStr>,
-    ) -> Option<(SemanticId, Option<LuaSyntaxId>, bool)> {
+    ) -> Option<(SemanticId, Option<LuaSyntaxId>, Option<usize>)> {
         match expr {
             // `(t).x = v` is equivalent to `t.x = v`; the member belongs to the same underlying declaration.
             LuaExpr::ParenExpr(paren) => self.resolve_member_owner(paren.get_expr()?, segments),
@@ -1984,11 +1991,11 @@ impl FactsBuilder {
                     .get_index_key()
                     .map(|k| k.get_path_part())
                     .and_then(|p| (!p.is_empty()).then(|| SmolStr::new(p)))?;
-                let (owner, implicit_self, reached) =
+                let (owner, implicit_self, unreached) =
                     self.resolve_member_owner(parent.get_prefix_expr()?, segments)?;
                 segments.push(segment);
                 if matches!(owner, SemanticId::Name(_)) {
-                    return Some((owner, implicit_self, true));
+                    return Some((owner, implicit_self, None));
                 }
                 // Local root: `M.A.f` belongs to the table `M.A` holds, not to `M`. A path stops at
                 // the deepest table it reached (`resolve_expr_root` resolves reads the same way).
@@ -1996,19 +2003,19 @@ impl FactsBuilder {
                     .get_index_key()
                     .as_ref()
                     .and_then(member_key_from_index_key)
-                    .filter(|_| reached)
+                    .filter(|_| unreached.is_none())
                     .and_then(|key| {
                         nested_table_owner(self.members.iter(), &owner, &key, parent.get_position())
                     });
                 Some(match table {
-                    Some(table) => (table, implicit_self, true),
-                    None => (owner, implicit_self, false),
+                    Some(table) => (table, implicit_self, None),
+                    None => (owner, implicit_self, unreached.or(Some(segments.len() - 1))),
                 })
             }
             LuaExpr::NameExpr(name_expr) => {
                 let name = name_expr.get_name_text()?;
                 if name == "_ENV" || name == "_G" {
-                    return Some((SemanticId::name(SmolStr::new(&name)), None, true));
+                    return Some((SemanticId::name(SmolStr::new(&name)), None, None));
                 }
                 let offset = name_expr.get_position();
                 if let Some(decl) = self.find_visible_decl_before_offset(&name, offset)
@@ -2019,13 +2026,13 @@ impl FactsBuilder {
                         let resolved = implicit_self_receiver_prefix(decl, &name_expr)
                             .and_then(|receiver| self.resolve_member_owner(receiver, segments));
                         return match resolved {
-                            Some((owner, _, reached)) => Some((owner, closure, reached)),
-                            None => Some((decl.id.clone(), closure, true)),
+                            Some((owner, _, unreached)) => Some((owner, closure, unreached)),
+                            None => Some((decl.id.clone(), closure, None)),
                         };
                     }
-                    return Some((decl.id.clone(), None, true));
+                    return Some((decl.id.clone(), None, None));
                 }
-                Some((SemanticId::name(SmolStr::new(name)), None, true))
+                Some((SemanticId::name(SmolStr::new(name)), None, None))
             }
             _ => None,
         }
@@ -2036,8 +2043,8 @@ impl FactsBuilder {
         &self,
         expr: LuaExpr,
         segments: &mut Vec<SmolStr>,
-    ) -> Option<(SemanticId, Option<LuaSyntaxId>)> {
-        let (owner, implicit_self, _) = self.resolve_member_owner(expr, segments)?;
+    ) -> Option<(SemanticId, Option<LuaSyntaxId>, Option<usize>)> {
+        let (owner, implicit_self, unreached) = self.resolve_member_owner(expr, segments)?;
         let owner = match &owner {
             SemanticId::Name(root) => {
                 let mut path = root.as_str().to_string();
@@ -2049,7 +2056,7 @@ impl FactsBuilder {
             }
             _ => owner,
         };
-        Some((owner, implicit_self))
+        Some((owner, implicit_self, unreached))
     }
 
     /// Direct fields of `{ foo = 1, ... }` → owner = the local declaring the table (`Decl`).
@@ -2548,6 +2555,16 @@ pub(crate) fn nested_table_owner<'a>(
         .value_syntax
         .filter(|value| LuaTableExpr::can_cast(value.get_kind()))?;
     Some(SemanticId::member(id.file_id, table.get_range()))
+}
+
+/// The key of a member under a path that stopped at the deepest table it reached: the unreached
+/// segments and the key, dotted (`opts.wo` + `list` → `"opts.wo.list"`), so it never meets the
+/// owner's own `list`, while a read through the same path meets the write. Shared by writes and reads.
+pub(crate) fn unreached_path_key(unreached: &[SmolStr], key: &str) -> LuaMemberKey {
+    let mut path = unreached.join(".");
+    path.push('.');
+    path.push_str(key);
+    LuaMemberKey::Name(SmolStr::new(path))
 }
 
 /// `LuaIndexKey` → file-independent member key, the one conversion for writes and reads. A
