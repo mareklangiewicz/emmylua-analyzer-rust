@@ -117,6 +117,7 @@ pub fn type_of_decl_at(model: &SemanticModel, decl: &SemanticId, offset: TextSiz
         && let Some(decl_start) = decl_owner_syntax_start(model, decl)
         && tree.latest_decl_assignment(decl, offset).is_none()
         && !tree.has_flow_event_between(decl_start, offset, true)
+        && !tree.has_loop_carried_assignment(decl, offset)
     {
         #[cfg(test)]
         flow_metrics::record_fast_decl_hit();
@@ -534,6 +535,103 @@ pub(crate) fn skip_own_member_assign(
         return next;
     }
     flow_id
+}
+
+thread_local! {
+    /// `(file, decl, loop label)` heads whose body writes are being merged (see `LoopLabel` in
+    /// `trace_decl_uncached`).
+    /// `(file, decl, loop label)` heads whose body writes are being merged, with the head's
+    /// entry state once known (the "before" of a body write that walks back to the head).
+    static LOOP_MERGE_IN_PROGRESS: std::cell::RefCell<Vec<((FileId, SemanticId, FlowId), Option<LuaType>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct LoopMergeGuard {
+    key: (FileId, SemanticId, FlowId),
+}
+
+impl LoopMergeGuard {
+    fn enter(key: (FileId, SemanticId, FlowId)) -> Self {
+        LOOP_MERGE_IN_PROGRESS.with(|stack| stack.borrow_mut().push((key.clone(), None)));
+        Self { key }
+    }
+
+    fn set_entry(&self, entry: LuaType) {
+        LOOP_MERGE_IN_PROGRESS.with(|stack| {
+            if let Some(slot) = stack
+                .borrow_mut()
+                .iter_mut()
+                .rev()
+                .find(|(key, _)| key == &self.key)
+            {
+                slot.1 = Some(entry);
+            }
+        });
+    }
+}
+
+/// Whether a loop-head merge is evaluating its body writes on this thread.
+pub(crate) fn loop_merge_active() -> bool {
+    LOOP_MERGE_IN_PROGRESS.with(|stack| !stack.borrow().is_empty())
+}
+
+/// Entry state of the innermost loop head merging `decl`'s body writes: a write's walk that runs
+/// into a node it has seen is back at (or around) that head.
+fn loop_merge_entry(file_id: FileId, decl: &SemanticId) -> Option<LuaType> {
+    LOOP_MERGE_IN_PROGRESS.with(|stack| {
+        stack
+            .borrow()
+            .iter()
+            .rev()
+            .find(|((file, merging, _), entry)| {
+                *file == file_id && merging == decl && entry.is_some()
+            })
+            .and_then(|(_, entry)| entry.clone())
+    })
+}
+
+impl Drop for LoopMergeGuard {
+    fn drop(&mut self) {
+        LOOP_MERGE_IN_PROGRESS.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if let Some(pos) = stack.iter().rposition(|(key, _)| key == &self.key) {
+                stack.remove(pos);
+            }
+        });
+    }
+}
+
+/// Flow nodes of the assignments to `decl` inside the loop headed by `label`, excluding writes in
+/// closures defined in the body (they run when called, not per iteration).
+fn loop_body_decl_writes(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    decl: &SemanticId,
+    label: FlowId,
+) -> Vec<FlowId> {
+    let Some(range) = tree.loop_range(label) else {
+        return Vec::new();
+    };
+    let Some(syntax) = model.syntax_tree() else {
+        return Vec::new();
+    };
+    let root = syntax.get_red_root();
+    tree.decl_assignments_of(decl)
+        .filter(|(pos, _)| range.contains(*pos))
+        .filter(|(pos, _)| {
+            let Some(token) = root.token_at_offset(*pos).right_biased() else {
+                return false;
+            };
+            !token
+                .parent_ancestors()
+                .take_while(|node| range.contains_range(node.text_range()))
+                .any(|node| {
+                    emmylua_parser::LuaSyntaxKind::from(node.kind())
+                        == emmylua_parser::LuaSyntaxKind::ClosureExpr
+                })
+        })
+        .map(|(_, flow_id)| flow_id)
+        .collect()
 }
 
 /// Take one branch from the antecedent as the start for skipping this assignment (walk expands merge points).
@@ -2260,7 +2358,20 @@ fn trace_decl_uncached(
         #[cfg(test)]
         flow_metrics::record_trace_step();
         if !visited.insert(current) {
-            return None;
+            // An assignment already on the stack still has a value: its "before" state is the
+            // entry state of the loop head being merged (the walk is back around it), else the
+            // declared type, as the merge path's fallback.
+            if frames.is_empty() {
+                return None;
+            }
+            let base = loop_merge_entry(model.file_id(), decl).unwrap_or_else(|| {
+                finalize(
+                    model,
+                    model.type_of_decl(decl).unwrap_or(LuaType::Unknown),
+                    path,
+                )
+            });
+            return finish_decl_frames(model, decl, tree, base, frames, root_mode);
         }
         let node = tree.get_flow_node(current)?;
         match &node.kind {
@@ -2454,6 +2565,79 @@ fn trace_decl_uncached(
                         .map(|ty| finalize(model, ty, path))
                         .unwrap_or(LuaType::Unknown);
                     return finish_decl_frames(model, decl, tree, base, frames, root_mode);
+                }
+            }
+            // The binder links no back-edge into a loop: a read reaching the loop head would see
+            // only the entry state. Merge in what the loop body assigns, as the next iteration
+            // would (`local s = false; for … do if s then … end; s = true end`).
+            FlowNodeKind::LoopLabel if options.assignments => {
+                let key = (model.file_id(), decl.clone(), current);
+                let body_writes = if LOOP_MERGE_IN_PROGRESS.with(|stack| {
+                    stack
+                        .borrow()
+                        .iter()
+                        .any(|(in_progress, _)| in_progress == &key)
+                }) {
+                    // A body write's value reads this local at this head again (`j = f(j)`):
+                    // that nested read sees the entry state, not a half-built merge, and is
+                    // not cached as if it were final.
+                    model.cache.borrow().mark_incomplete();
+                    Vec::new()
+                } else {
+                    loop_body_decl_writes(model, tree, decl, current)
+                };
+                if !body_writes.is_empty() {
+                    let guard = LoopMergeGuard::enter(key);
+                    let writes_visited = visited.clone();
+                    let mut entry_path = path.clone_path();
+                    let mut merged = walk_decl(
+                        model,
+                        decl,
+                        tree,
+                        node.antecedent.as_ref(),
+                        options,
+                        mode,
+                        visited,
+                        &mut entry_path,
+                    )
+                    .unwrap_or_else(|| {
+                        finalize(
+                            model,
+                            model.type_of_decl(decl).unwrap_or(LuaType::Unknown),
+                            path,
+                        )
+                    });
+                    guard.set_entry(merged.clone());
+                    // A write whose value depends on itself through this head (`i = f(i) + 1`)
+                    // meets an in-progress query and comes back half-built (`unknown + 1` is
+                    // `number`): such a write contributes the entry's base type instead.
+                    let entry_base = widen_const_type(merged.clone());
+                    for write in body_writes {
+                        let mut write_visited = writes_visited.clone();
+                        let mut write_path = path.clone_path();
+                        let mark = model.cache.borrow().recursion_mark();
+                        let ty = trace_decl(
+                            model,
+                            decl,
+                            tree,
+                            write,
+                            options,
+                            TraceMode::MergeBranch,
+                            &mut write_visited,
+                            &mut write_path,
+                        );
+                        let ty = if model.cache.borrow().recursion_mark() != mark {
+                            Some(entry_base.clone())
+                        } else {
+                            ty
+                        };
+                        if let Some(ty) = ty
+                            && !ty.is_never()
+                        {
+                            merged = merge_types(merged, ty);
+                        }
+                    }
+                    return finish_decl_frames(model, decl, tree, merged, frames, root_mode);
                 }
             }
             _ => {}

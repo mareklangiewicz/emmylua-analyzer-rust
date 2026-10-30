@@ -40,6 +40,17 @@ fn finish_flow_label(binder: &mut FlowBinder, label: FlowId, default: FlowId) ->
     label
 }
 
+/// Start of a loop body: the loop label itself while it is reachable. `finish_flow_label`
+/// collapses a single-antecedent label into its antecedent, which drops the label from the
+/// chain (a `for … in` whose iterator binds no node, a `repeat`) and with it the loop-head
+/// merge of the body's assignments.
+fn finish_loop_label(binder: &mut FlowBinder, label: FlowId, default: FlowId) -> FlowId {
+    match binder.get_flow(label) {
+        Some(node) if node.antecedent.is_some() => label,
+        _ => finish_flow_label(binder, label, default),
+    }
+}
+
 /// Per-file control flow graph. Pure lookup in the write-time built `SemanticDatabase::flow_trees`.
 pub(crate) fn flow_tree_of(db: &SemanticDatabase, file: FileId) -> &FlowTree {
     db.flow_tree_of(file)

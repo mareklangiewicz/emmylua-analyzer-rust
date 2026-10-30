@@ -51,7 +51,18 @@ pub(super) fn guarded_on_all_paths(
                     continue;
                 }
             }
-            FlowNodeKind::Start | FlowNodeKind::LoopLabel | FlowNodeKind::NamedLabel(_) => {
+            // A guard before a loop still holds inside it while the body writes nothing the
+            // read depends on (the next pass sees the same value).
+            FlowNodeKind::LoopLabel => {
+                let range = tree.loop_range(current)?;
+                let writes: Vec<FlowId> = tree.assignments_in(range).collect();
+                for write in writes {
+                    if !matches!(check_assignment(&tree, write)?, AssignStep::Continue) {
+                        return None;
+                    }
+                }
+            }
+            FlowNodeKind::Start | FlowNodeKind::NamedLabel(_) => {
                 return None;
             }
             FlowNodeKind::Unreachable => continue,

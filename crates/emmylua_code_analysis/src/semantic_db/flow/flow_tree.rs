@@ -18,6 +18,8 @@ pub struct FlowTree {
     multiple_antecedents: Vec<Vec<FlowId>>,
     // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
     bindings: HashMap<LuaSyntaxId, FlowId>,
+    /// Loop label -> range of its loop statement (`while`/`repeat`/`for`/`for in`).
+    loop_ranges: HashMap<FlowId, TextRange>,
     /// Sorted binding ranges; used as a fallback for offsets that are not exactly
     /// the start of a bound syntax node.
     binding_ranges: Vec<(TextRange, FlowId)>,
@@ -60,6 +62,7 @@ impl FlowTree {
         multiple_antecedents: Vec<Vec<FlowId>>,
         // labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
         bindings: HashMap<LuaSyntaxId, FlowId>,
+        loop_ranges: HashMap<FlowId, TextRange>,
     ) -> Self {
         let mut decl_assignments: HashMap<SemanticId, Vec<(TextSize, FlowId)>> = HashMap::new();
         let mut member_assignments: HashMap<SemanticId, Vec<(TextSize, FlowId)>> = HashMap::new();
@@ -173,6 +176,7 @@ impl FlowTree {
             unpositioned_branch,
             has_complex_control,
             loop_reachable,
+            loop_ranges,
         }
     }
 
@@ -362,6 +366,31 @@ impl FlowTree {
             .into_iter()
             .flatten()
             .copied()
+    }
+
+    /// Flow nodes of the assignment statements inside `range`.
+    pub fn assignments_in(&self, range: TextRange) -> impl Iterator<Item = FlowId> + '_ {
+        self.assignments
+            .iter()
+            .filter(move |(stat, _)| range.contains_range(*stat))
+            .map(|(_, flow_id)| *flow_id)
+    }
+
+    /// Range of the loop statement a `LoopLabel` node heads.
+    pub fn loop_range(&self, label: FlowId) -> Option<TextRange> {
+        self.loop_ranges.get(&label).copied()
+    }
+
+    /// Whether a loop encloses both `read` and an assignment to `decl` after it: the next pass
+    /// reads that assignment's value at `read`.
+    pub fn has_loop_carried_assignment(&self, decl: &SemanticId, read: TextSize) -> bool {
+        self.decl_assignments_of(decl)
+            .filter(|(pos, _)| *pos > read)
+            .any(|(pos, _)| {
+                self.loop_ranges
+                    .values()
+                    .any(|range| range.contains(read) && range.contains(pos))
+            })
     }
 
     /// Whether any assignment to `decl` occurs in the flow tree.

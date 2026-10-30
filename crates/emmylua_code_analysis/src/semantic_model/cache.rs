@@ -156,6 +156,14 @@ impl<T> CacheEntry<T> {
     /// propagating provisional results from dependent semantic queries.
     pub(crate) fn get_inference_seed<'a>(&'a self, cache: &SemanticLocalCache) -> Option<&'a T> {
         if matches!(self, Self::InProgress) {
+            cache
+                .seed_misses
+                .set(cache.seed_misses.get().wrapping_add(1));
+            // Inside a loop-head merge a seeded read is part of a cycle the merge opened
+            // (`i = b + 1` while `b` reads `i`): what it feeds must not be cached as final.
+            if crate::semantic_model::flow::loop_merge_active() {
+                cache.mark_incomplete();
+            }
             None
         } else {
             self.get(cache)
@@ -204,6 +212,10 @@ pub(crate) struct SemanticLocalCache {
     /// use this to decide whether a result can be cached. Type comparisons
     /// track completeness in their result, including discarded alternatives.
     incomplete_revision: Cell<u64>,
+    /// Counts recursive reads served as an empty inference seed (`get_inference_seed` on an
+    /// unfinished entry). Seeds do not make a result incomplete; a loop-head merge still needs
+    /// to know its body write was evaluated against one.
+    seed_misses: Cell<u64>,
     query_depth: usize,
     evaluation_depth: usize,
     evaluation_work: usize,
@@ -280,6 +292,11 @@ impl SemanticLocalCache {
     pub(crate) fn mark_incomplete(&self) {
         self.incomplete_revision
             .set(self.incomplete_revision.get().wrapping_add(1));
+    }
+
+    /// Recursive-read marker: changes with `revision` or with an empty inference seed.
+    pub(crate) fn recursion_mark(&self) -> (u64, u64) {
+        (self.incomplete_revision.get(), self.seed_misses.get())
     }
 
     pub(crate) fn is_complete(&self, revision: u64) -> bool {

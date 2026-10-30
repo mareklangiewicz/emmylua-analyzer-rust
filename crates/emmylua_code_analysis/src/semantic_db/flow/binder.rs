@@ -2,7 +2,7 @@ use hashbrown::HashMap;
 
 use emmylua_parser::{LuaAstPtr, LuaExpr, LuaNameToken, LuaSyntaxId};
 use internment::ArcIntern;
-use rowan::TextSize;
+use rowan::{TextRange, TextSize};
 use smol_str::SmolStr;
 
 use super::{
@@ -31,6 +31,8 @@ pub struct FlowBinder<'a> {
     labels: HashMap<LuaClosureId, HashMap<SmolStr, FlowId>>,
     goto_stats: Vec<GotoCache>,
     bindings: HashMap<LuaSyntaxId, FlowId>,
+    /// Loop label -> range of its loop statement.
+    loop_ranges: HashMap<FlowId, TextRange>,
 }
 
 impl<'a> FlowBinder<'a> {
@@ -48,6 +50,7 @@ impl<'a> FlowBinder<'a> {
             unreachable: FlowId::default(),
             break_target_label: FlowId::default(),
             bindings: HashMap::new(),
+            loop_ranges: HashMap::new(),
             goto_stats: Vec::new(),
             loop_label: FlowId::default(),
             true_target: FlowId::default(),
@@ -79,8 +82,11 @@ impl<'a> FlowBinder<'a> {
         self.create_node(FlowNodeKind::BranchLabel)
     }
 
-    pub fn create_loop_label(&mut self) -> FlowId {
-        self.create_node(FlowNodeKind::LoopLabel)
+    /// `range` is the loop statement's: reads at the loop head see its body's assignments.
+    pub fn create_loop_label(&mut self, range: TextRange) -> FlowId {
+        let id = self.create_node(FlowNodeKind::LoopLabel);
+        self.loop_ranges.insert(id, range);
+        id
     }
 
     pub fn create_name_label(&mut self, name: &str, closure_id: LuaClosureId) -> FlowId {
@@ -214,6 +220,7 @@ impl<'a> FlowBinder<'a> {
             self.multiple_antecedents,
             // self.labels,
             self.bindings,
+            self.loop_ranges,
         )
     }
 }

@@ -602,3 +602,118 @@ fn truthiness_narrows_boolean_to_true_and_false() {
         ]
     );
 }
+
+/// Loops have no back-edge in the flow graph: a read at the loop head saw only the value
+/// from before the loop, so `if in_string` after `local in_string = false` was "impossible"
+/// though the body sets it for the next iteration (neospector jsonl.lua `walk_line`).
+#[test]
+fn test_loop_head_read_sees_body_assignments() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    for (label, code) in [
+        (
+            "for",
+            "---@param line string\nlocal function f(line)\n  local s = false\n  for i = 1, #line do\n    if s then print(i) end\n    if line:sub(i, i) == '\"' then s = not s end\n  end\nend",
+        ),
+        (
+            "for-in",
+            "---@param t string[]\nlocal function f(t)\n  local s = false\n  for _, v in ipairs(t) do\n    if s then print(v) end\n    s = true\n  end\nend",
+        ),
+        (
+            "while",
+            "local function f()\n  local s = false\n  while math.random() > 0.5 do\n    if s then print(1) end\n    s = true\n  end\nend",
+        ),
+        (
+            "repeat",
+            "local function f()\n  local s = false\n  repeat\n    if s then print(1) end\n    s = true\n  until math.random() > 0.5\nend",
+        ),
+        (
+            "nested",
+            "---@param t string[]\nlocal function f(t)\n  local s = false\n  for _ = 1, 3 do\n    for _, v in ipairs(t) do\n      if s then print(v) end\n    end\n    s = true\n  end\nend",
+        ),
+    ] {
+        assert!(
+            ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, code),
+            "{label}"
+        );
+    }
+    // A read AFTER the body's own write in the same pass stays precise.
+    assert!(!ws.has_no_diagnostic(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param t string[]\nlocal function f(t)\n  local s = false\n  for _, v in ipairs(t) do\n    s = true\n    if s then print(v) end\n  end\nend",
+    ));
+}
+
+/// Merging a loop body's writes into the loop head opens cycles: a write's value reads the same
+/// local at the same head (`j = f(j)`, `i = b + 1` with `b` from `find(s, x, i)`). Gate shapes
+/// from gnd/json.lua and gndx/cmddoor.lua; none may leak a half-built `nil`/`number`.
+#[test]
+fn test_loop_head_merge_cycles_stay_precise() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let json = r#"
+        ---@type fun(s: string, i: integer): any, integer
+        local decode_value
+        ---@param s string
+        ---@param i integer
+        ---@return integer
+        local function skip_ws(s, i) return i end
+        ---@param n integer
+        local function need(n) end
+        ---@param s string
+        ---@param i integer
+        ---@return table
+        ---@return integer
+        local function decode_array(s, i)
+          local arr, j = {}, skip_ws(s, i + 1)
+          while true do
+            local v
+            v, j = decode_value(s, j)
+            need(j)
+            j = skip_ws(s, j)
+            if j > 3 then return arr, j + 1 end
+            j = skip_ws(s, j + 1)
+          end
+        end
+    "#;
+    let fields = r#"
+        ---@param s string
+        local function fields(s)
+          local i = 1
+          while i <= #s do
+            local _, b = s:find('x', i)
+            if not b then break end
+            if s:sub(b + 1, b + 1) == '=' then
+              local vs = b + 2
+              ---@type integer
+              local p = vs
+              i = vs + 1
+            else
+              i = b + 1
+            end
+          end
+        end
+    "#;
+    for code in [json, fields] {
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, code));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, code));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ReturnTypeMismatch, code));
+    }
+    // A guard before an inner loop still holds in it when the body writes nothing it reads.
+    assert!(ws.has_no_diagnostic(
+        DiagnosticCode::NeedCheckNil,
+        r#"
+        ---@param recs { obj: table? }[]
+        ---@param cols string[]
+        local function paint(recs, cols)
+          for _, rec in ipairs(recs) do
+            if type(rec.obj) == 'table' then
+              for _, key in ipairs(cols) do
+                print(rec.obj[key])
+              end
+            end
+          end
+        end
+        "#
+    ));
+}
