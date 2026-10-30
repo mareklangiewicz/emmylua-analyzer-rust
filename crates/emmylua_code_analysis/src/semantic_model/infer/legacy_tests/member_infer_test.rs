@@ -638,4 +638,31 @@ mod test {
         let ty = ws.expr_ty("B");
         assert_eq!(ws.humanize_type(ty), "1");
     }
+
+    #[test]
+    fn test_global_path_table_members() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            zz = {}
+            zz.api = {}
+            zz.api.sub = {}
+
+            ---@return integer
+            function zz.api.f() end
+
+            ---@return string
+            function zz.api.sub.g() end
+            "#,
+        );
+        ws.def(
+            r#"
+            A = zz.api.f()
+            B = zz.api.sub.g()
+            "#,
+        );
+
+        assert_eq!(ws.expr_ty("A"), LuaType::Integer);
+        assert_eq!(ws.expr_ty("B"), LuaType::String);
+    }
 }

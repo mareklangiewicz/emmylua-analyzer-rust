@@ -1315,14 +1315,13 @@ impl<'a> InferVm<'a> {
         }
 
         // Members of global tables (`math` / `table`) often hang on the global Name owner:
-        // look up the Name owner from the TableConst's corresponding Decl name, or, for a
-        // value of the class attached to such a table (`local b = bit`), from that class.
+        // look up the Name owner from the global path holding the TableConst (`zz = {}` →
+        // `zz`, `zz.api = {}` → `zz.api`), or, for a value of the class attached to such a
+        // table (`local b = bit`), from that class.
         let name_owner_member = if let LuaType::TableConst(_table) = &owner.ty
-            && let Some(SemanticId::Decl(decl_key)) = &owner.owner
-            && let Some(facts) = self.model.file_facts_of(decl_key.file_id)
-            && let Some(decl) = facts.decl_by_id(&SemanticId::Decl(decl_key.clone()))
+            && let Some(path) = owner.owner.as_ref().and_then(|id| self.global_path_of(id))
         {
-            let name_owner = SemanticId::Name(decl.name.clone().into());
+            let name_owner = SemanticId::name(path);
             let members = self.model.members_of_owner(&name_owner);
             match key {
                 LuaMemberKey::Name(name) => members.into_iter().find(|m| &m.name == name),
@@ -2235,6 +2234,28 @@ impl<'a> InferVm<'a> {
             types.pop().expect("len checked")
         } else {
             LuaType::from_vec(types)
+        }
+    }
+
+    /// The `Name` path a table holder is written under: a declaration's own name, or `head.key`
+    /// for a member of the global path `head` (`function zz.api.f()` lives under `Name("zz.api")`
+    /// while `zz.api = {}` is a member of `Name("zz")`).
+    fn global_path_of(&self, holder: &SemanticId) -> Option<SmolStr> {
+        match holder {
+            SemanticId::Decl(key) => {
+                let facts = self.model.file_facts_of(key.file_id)?;
+                Some(facts.decl_by_id(holder)?.name.clone())
+            }
+            SemanticId::Member(key) => {
+                let facts = self.model.file_facts_of(key.file_id)?;
+                let member = facts.member_by_id(holder)?;
+                let (SemanticId::Name(head), LuaMemberKey::Name(tail)) = (&member.owner, &member.key)
+                else {
+                    return None;
+                };
+                Some(SmolStr::new(format!("{head}.{tail}")))
+            }
+            _ => None,
         }
     }
 
