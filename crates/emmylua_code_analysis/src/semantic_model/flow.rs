@@ -5250,44 +5250,17 @@ fn direct_narrow_condition_false(
     }
 }
 
-/// Remove falsy components (false / nil).
+/// Remove falsy components (false / nil); `boolean` keeps its `true`.
 fn remove_falsy(ty: LuaType) -> LuaType {
-    let mut types: Vec<LuaType> = Vec::new();
-    for component in match ty {
-        LuaType::Union(union) => union.into_vec(),
-        other => vec![other],
-    } {
-        if !matches!(
-            component,
-            LuaType::Nil
-                | LuaType::Boolean
-                | LuaType::BooleanConst(false)
-                | LuaType::DocBooleanConst(false)
-        ) {
-            types.push(component);
-        }
-    }
-    match types.len() {
-        0 => LuaType::Unknown,
-        1 => types.pop().expect("len checked"),
-        _ => LuaType::Union(LuaUnionType::from_vec(types).into()),
-    }
+    union_or_unknown(logical_truthy_components(&ty))
 }
 
-/// Remove truthy components (keep only false / nil).
+/// Remove truthy components (keep only false / nil); `boolean` keeps its `false`.
 fn remove_truthy(ty: LuaType) -> LuaType {
-    let mut types: Vec<LuaType> = Vec::new();
-    for component in match ty {
-        LuaType::Union(union) => union.into_vec(),
-        other => vec![other],
-    } {
-        if matches!(
-            component,
-            LuaType::Nil | LuaType::BooleanConst(false) | LuaType::DocBooleanConst(false)
-        ) {
-            types.push(component);
-        }
-    }
+    union_or_unknown(logical_falsy_components(&ty))
+}
+
+fn union_or_unknown(mut types: Vec<LuaType>) -> LuaType {
     match types.len() {
         0 => LuaType::Unknown,
         1 => types.pop().expect("len checked"),

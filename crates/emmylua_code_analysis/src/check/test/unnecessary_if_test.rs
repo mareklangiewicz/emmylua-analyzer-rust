@@ -540,3 +540,65 @@ fn rawget_of_a_key_no_member_answers_is_not_always_truthy() {
         eq(true)
     );
 }
+
+#[googletest::gtest]
+fn a_false_or_boolean_condition_is_not_constant_after_an_if_on_it() {
+    use crate::DiagnosticCode;
+    // `a and b` of two booleans is `false|boolean`. Truthy narrowing dropped `boolean` (to
+    // Unknown), so the merge after `if on then end` kept only the else branch's `false`.
+    crate::check::test::assert_clean_cases(
+        DiagnosticCode::UnnecessaryIf,
+        "---@param a boolean\n---@param b boolean\nlocal function f(a, b)\n  local on = a and b\n",
+        &[
+            (
+                "  if on then print(1) end\n  if on then print(2) end\nend\nreturn f",
+                true,
+            ),
+            (
+                "  if not on then print(1) end\n  if on then print(2) end\nend\nreturn f",
+                true,
+            ),
+            (
+                "  if on then print(1) end\n  if not on then print(2) end\nend\nreturn f",
+                true,
+            ),
+            // Still constant inside a branch that decided it.
+            (
+                "  if on then if on then print(1) end end\nend\nreturn f",
+                false,
+            ),
+        ],
+    );
+}
+
+#[googletest::gtest]
+fn truthiness_narrows_boolean_to_true_and_false() {
+    use googletest::prelude::*;
+    let diagnostics = crate::check::test::check_source(
+        r#"
+        ---@param on boolean
+        local function f(on)
+            if on then
+                ---@type false
+                local _t = on
+            else
+                ---@type true
+                local _e = on
+            end
+        end
+        return f
+        "#,
+    );
+    let messages: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == crate::DiagnosticCode::AssignTypeMismatch)
+        .map(|d| d.message.lines().next().unwrap_or_default().to_string())
+        .collect();
+    assert_that!(
+        messages,
+        elements_are![
+            eq("expected `false` but found `true`."),
+            eq("expected `true` but found `false`.")
+        ]
+    );
+}
