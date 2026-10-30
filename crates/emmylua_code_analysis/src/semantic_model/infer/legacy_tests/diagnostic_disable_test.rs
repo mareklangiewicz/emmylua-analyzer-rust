@@ -15,4 +15,18 @@ mod test {
         "#,
         ));
     }
+
+    #[test]
+    fn test_file_disable_all() {
+        let mut ws = VirtualWorkspace::new();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+        ---@diagnostic disable -- vendored file
+        ---@type string
+        local x = 1
+        "#,
+        ));
+    }
 }

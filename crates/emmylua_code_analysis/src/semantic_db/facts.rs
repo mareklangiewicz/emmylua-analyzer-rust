@@ -1480,7 +1480,16 @@ impl FactsBuilder {
                 let is_file_disable = owner_block
                     .as_ref()
                     .is_some_and(|block| block.get_parent::<LuaChunk>().is_some());
-                if is_file_disable {
+                if is_file_disable && codes.is_empty() {
+                    // A bare `---@diagnostic disable` silences every code for the whole chunk.
+                    if let Some(block) = owner_block {
+                        push_diagnostic_disables(
+                            &mut self.diagnostic_disables,
+                            block.get_range(),
+                            codes,
+                        );
+                    }
+                } else if is_file_disable {
                     for code in codes {
                         self.file_diagnostic_disabled.insert(code);
                     }
