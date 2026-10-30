@@ -25,7 +25,8 @@ pub fn check_doc_func_type_compact(
             // Only callable classes declaring `---@overload fun` accept function values; ordinary classes
             // should not accept arbitrary functions as compatible (otherwise flow branches like `fun() | B` would lose errors).
             if context
-                .type_def_of(id)
+                .model
+                .callable_type_def_of(id)
                 .is_some_and(|def| !def.call_overloads.is_empty())
             {
                 Ok(())

@@ -379,6 +379,50 @@ mod test {
         ));
     }
 
+    /// snacks declares `---@class snacks.picker` twice: `---@meta` field docs in one file, the
+    /// `---@overload fun(...)` on the runtime table in another. Only the first declaration was
+    /// read for call candidates, so `Snacks.picker { ... }` was not callable.
+    #[test]
+    fn test_no_call_non_callable_on_class_overload_in_another_declaration() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_files(vec![
+            (
+                "picker_meta.lua",
+                r#"
+                ---@meta _
+                ---@class Picker
+                ---@field files fun(): integer
+                "#,
+            ),
+            (
+                "picker.lua",
+                r#"
+                ---@class Picker
+                ---@overload fun(opts: table): integer
+                local M = setmetatable({}, { __call = function(_, opts) return 1 end })
+                return M
+                "#,
+            ),
+        ]);
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::CallNonCallable,
+            r#"
+            ---@type Picker
+            local p
+            local n = p({})
+            "#
+        ));
+        ws.def(
+            r#"
+            ---@type Picker
+            local p
+            picked = p({})
+            "#,
+        );
+        let picked = ws.expr_ty("picked");
+        assert_eq!(ws.humanize_type(picked), "integer");
+    }
+
     #[test]
     fn test_no_call_non_callable_on_generic_class_instance() {
         let mut ws = VirtualWorkspace::new();

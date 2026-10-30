@@ -44,6 +44,22 @@ impl<'db> SemanticModel<'db> {
     pub fn type_def_of(&self, id: &LuaTypeDeclId) -> Option<TypeDef> {
         self.type_defs_of(id).iter().next().cloned()
     }
+    /// The declaration of `id` carrying its call candidates (`---@overload fun(...)` or
+    /// `---@operator call`), else the first one. A class may be declared in several files
+    /// (snacks: `---@meta` field docs + the runtime table with the overload); the overload
+    /// syntax ids are relative to the declaring file, so callers read them from this def.
+    pub fn callable_type_def_of(&self, id: &LuaTypeDeclId) -> Option<TypeDef> {
+        let defs = self.type_defs_of(id);
+        defs.iter()
+            .find(|def| {
+                !def.call_overloads.is_empty()
+                    || self
+                        .file_facts_of(def.file_id)
+                        .is_some_and(|facts| facts.operator_of(&def.id, "call").is_some())
+            })
+            .or_else(|| defs.iter().next())
+            .cloned()
+    }
 
     /// Type declaration identity of `LuaType::Ref/Def` -> `TypeDefList`.
     pub fn type_defs_of(&self, id: &LuaTypeDeclId) -> TypeDefList {
@@ -519,7 +535,7 @@ impl<'db> SemanticModel<'db> {
         };
         // Expand function aliases (`---@alias foo fun(...)` -> DocFunction).
         if let LuaType::Ref(id) | LuaType::Def(id) = &iter_ty
-            && let Some(def) = self.type_def_of(id)
+            && let Some(def) = self.callable_type_def_of(id)
         {
             if let Some(target) = self.alias_target(&def) {
                 iter_ty = target;

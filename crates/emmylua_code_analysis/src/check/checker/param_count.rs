@@ -186,7 +186,7 @@ fn generic_callee_fallback(
     callee: &LuaExpr,
     generic: &LuaGenericType,
 ) -> Vec<LuaFunctionType> {
-    let Some(def) = semantic_model.type_def_of(&generic.get_base_type_id()) else {
+    let Some(def) = semantic_model.callable_type_def_of(&generic.get_base_type_id()) else {
         return Vec::new();
     };
     if def.call_overloads.is_empty() {
@@ -763,7 +763,7 @@ pub(crate) fn callable_functions(
             .into_iter()
             .collect(),
         LuaType::Ref(id) | LuaType::Def(id) => {
-            let Some(def) = semantic_model.type_def_of(id) else {
+            let Some(def) = semantic_model.callable_type_def_of(id) else {
                 return Vec::new();
             };
             let mut out = Vec::new();
@@ -793,7 +793,7 @@ pub(crate) fn callable_functions(
             .flat_map(|component| callable_functions(semantic_model, component))
             .collect(),
         LuaType::Generic(generic) => {
-            let Some(def) = semantic_model.type_def_of(&generic.get_base_type_id()) else {
+            let Some(def) = semantic_model.callable_type_def_of(&generic.get_base_type_id()) else {
                 return Vec::new();
             };
             if def.kind == TypeDefKind::Alias {

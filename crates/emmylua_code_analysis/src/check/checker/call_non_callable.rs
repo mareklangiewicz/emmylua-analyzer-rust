@@ -100,7 +100,7 @@ fn is_callable(model: &SemanticModel, ty: &LuaType) -> bool {
         // or `---@operator call`.
         // Unresolved types are handled by analyze_error, so call-non-callable is not reported here.
         LuaType::Ref(id) | LuaType::Def(id) => {
-            let Some(def) = model.type_def_of(id) else {
+            let Some(def) = model.callable_type_def_of(id) else {
                 return true;
             };
             if def.kind == TypeDefKind::Alias
@@ -113,7 +113,7 @@ fn is_callable(model: &SemanticModel, ty: &LuaType) -> bool {
         // Generic instances (`Box<integer>`): an alias is checked on its instantiation, a class
         // by its base type's call candidates.
         LuaType::Generic(generic) => {
-            let Some(def) = model.type_def_of(&generic.get_base_type_id()) else {
+            let Some(def) = model.callable_type_def_of(&generic.get_base_type_id()) else {
                 return true;
             };
             if def.kind == TypeDefKind::Alias {

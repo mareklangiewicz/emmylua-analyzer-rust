@@ -225,7 +225,7 @@ fn call_operator_self_type_inner(
             }
             visited.push(id.clone());
             let result = (|| {
-                let def = model.type_def_of(id)?;
+                let def = model.callable_type_def_of(id)?;
                 if def.kind == TypeDefKind::Alias {
                     let target = model.alias_target(&def)?;
                     return call_operator_self_type_inner(model, &target, visited);
@@ -247,7 +247,7 @@ fn call_operator_self_type_inner(
             if visited.contains(&base_id) {
                 return None;
             }
-            let def = model.type_def_of(&base_id)?;
+            let def = model.callable_type_def_of(&base_id)?;
             if def.kind == TypeDefKind::Alias {
                 visited.push(base_id.clone());
                 let expanded = type_eval::expand_alias_generic(model, ty);

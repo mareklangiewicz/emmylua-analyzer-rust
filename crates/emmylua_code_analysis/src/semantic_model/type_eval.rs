@@ -976,7 +976,7 @@ fn contains_unbound_function_tpl(ty: &LuaType) -> bool {
 fn try_constructor_function(model: &SemanticModel, ty: &LuaType) -> Option<LuaFunctionType> {
     match ty {
         LuaType::Ref(id) | LuaType::Def(id) => {
-            let def = model.type_def_of(id)?;
+            let def = model.callable_type_def_of(id)?;
             constructor_function_from_def(model, &def)
         }
         LuaType::TableConst(table) => {

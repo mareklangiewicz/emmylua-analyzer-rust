@@ -2249,7 +2249,8 @@ impl<'a> InferVm<'a> {
             SemanticId::Member(key) => {
                 let facts = self.model.file_facts_of(key.file_id)?;
                 let member = facts.member_by_id(holder)?;
-                let (SemanticId::Name(head), LuaMemberKey::Name(tail)) = (&member.owner, &member.key)
+                let (SemanticId::Name(head), LuaMemberKey::Name(tail)) =
+                    (&member.owner, &member.key)
                 else {
                     return None;
                 };
@@ -3302,7 +3303,7 @@ impl<'a> InferVm<'a> {
                     out = self.expand_callable_types(&target, visited);
                 }
                 if out.is_empty()
-                    && let Some(def) = self.model.type_def_of(id)
+                    && let Some(def) = self.model.callable_type_def_of(id)
                 {
                     for syntax in &def.call_overloads {
                         if let Some(fun) = self.doc_func_from_syntax(
@@ -3337,7 +3338,7 @@ impl<'a> InferVm<'a> {
                     out = self.expand_callable_types(&target, visited);
                 }
                 if out.is_empty()
-                    && let Some(def) = self.model.type_def_of(&base_id)
+                    && let Some(def) = self.model.callable_type_def_of(&base_id)
                 {
                     for syntax in &def.call_overloads {
                         if let Some(fun) = self.doc_func_from_syntax(
