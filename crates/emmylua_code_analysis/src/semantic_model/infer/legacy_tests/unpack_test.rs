@@ -31,6 +31,29 @@ mod test {
     }
 
     #[test]
+    fn test_unpack_tuple() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let mut emmyrc = ws.get_emmyrc();
+        emmyrc.runtime.version = EmmyrcLuaVersion::Lua51;
+        ws.update_emmyrc(emmyrc);
+
+        ws.def(
+            r#"
+        ---@param t [integer, string]
+        local function f(t)
+            a, b = unpack(t)
+            c, d = table.unpack(t)
+        end
+        "#,
+        );
+
+        assert_eq!(ws.expr_ty("a"), LuaType::Integer);
+        assert_eq!(ws.expr_ty("b"), LuaType::String);
+        assert_eq!(ws.expr_ty("c"), LuaType::Integer);
+        assert_eq!(ws.expr_ty("d"), LuaType::String);
+    }
+
+    #[test]
     fn test_unpack_alias_call_union() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
         ws.def(

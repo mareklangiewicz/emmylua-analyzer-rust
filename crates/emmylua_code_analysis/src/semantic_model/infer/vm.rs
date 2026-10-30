@@ -1610,6 +1610,11 @@ impl<'a> InferVm<'a> {
                             element,
                         ))));
                     }
+                    if let LuaType::Tuple(tuple) = &arg.ty {
+                        return Value::plain(LuaType::Variadic(Rc::new(VariadicType::Multi(
+                            tuple.get_types().to_vec(),
+                        ))));
+                    }
                     return Value::plain(LuaType::Unknown);
                 }
                 // select(n, ...) / select('#', ...)
