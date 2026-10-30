@@ -3911,6 +3911,15 @@ pub(crate) fn unify_call_bindings(
                 if model.type_check_subtype(arg, &existing) {
                     return true;
                 }
+                // A table literal bound first (`eq({ 1, 2 }, ints)`) fits a later declared arg:
+                // widen to that arg, as a scalar literal widens before it is bound.
+                if matches!(existing, TableConst(_))
+                    && !tpl.is_const()
+                    && model.type_check_subtype(&existing, arg)
+                {
+                    bindings.insert(tpl_id, arg.clone());
+                    return true;
+                }
                 // The already-bound structure may still contain unfilled nested generics (e.g.
                 // `fun(x: integer): T`); do one structural unify with the current arg to fill
                 // them without changing the existing outer binding.

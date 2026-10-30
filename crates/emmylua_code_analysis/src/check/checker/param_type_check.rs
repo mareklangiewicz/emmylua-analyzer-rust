@@ -820,6 +820,12 @@ fn check_arg_pairs(
         let arg_ty = normalize_arg_for_check(semantic_model, &arg_ty);
         let call_arg_ty = call_argument_type(semantic_model, arg, &arg_ty);
         let call_arg_ty = normalize_arg_for_check(semantic_model, &call_arg_ty);
+        // A `T` an earlier arg bound may still widen to this one (`eq({ 1, 2 }, ints)`).
+        if let LuaType::TplRef(tpl) = param_ty
+            && bindings.contains_key(&tpl.get_tpl_id())
+        {
+            let _ = unify_call_bindings(semantic_model, param_ty, &call_arg_ty, bindings);
+        }
         let param_ty = unify::substitute(param_ty, bindings);
         let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
         let param_ty = type_eval::eval_conditionals(semantic_model, &param_ty);

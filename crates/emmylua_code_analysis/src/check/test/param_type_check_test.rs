@@ -9,6 +9,44 @@ mod test {
     use crate::{DiagnosticCode, Emmyrc, VirtualWorkspace};
 
     #[test]
+    fn test_generic_bound_by_a_table_literal_widens_to_a_later_arg() {
+        // luagnd's `chk.eq.deep(act: T, exp: T)` with a literal first: the literal binds T, and
+        // a later `integer[]` arg the literal fits widens T to it instead of failing. A literal
+        // that does not fit is still caught, field by field, against the widened T.
+        let diagnostics = check_source(
+            r#"
+            ---@generic T
+            ---@param act T
+            ---@param exp T
+            local function eq(act, exp) return act, exp end
+            ---@type integer[]
+            local ints = {}
+            ---@type (string|integer)[][]
+            local rows = {}
+            eq({ 1, 2 }, ints)
+            eq({ { 5, ' ' } }, rows)
+            eq(ints, { 1, 2 })
+            eq({ 'x' }, ints)
+            "#,
+        );
+        let mismatches: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.code,
+                    DiagnosticCode::ParamTypeMismatch | DiagnosticCode::AssignTypeMismatch
+                )
+            })
+            .filter_map(|d| d.message.lines().next())
+            .collect();
+        assert_eq!(
+            mismatches,
+            ["expected `integer` but found `\"x\"`."],
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     #[ignore = "Known bug before ef507415: overload contracts and candidate selection"]
     fn test_overloaded_function_values_keep_each_supported_contract() {
         for (setup, value) in [
