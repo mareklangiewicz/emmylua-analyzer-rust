@@ -714,6 +714,38 @@ fn test_expr_logic_unknown_right_is_unknown() {
     }
 }
 
+/// A call the shell cannot resolve is unknown because the shell cannot tell, not because of a
+/// self-reference: `unknown_call() or 1` is not a definite `integer` (`tonumber(s) or 30000`
+/// read `integer` while the VM said `number`). A plain name or index read still is the empty
+/// set (`local a = a or 1` converges; see the cycle tests).
+#[test]
+fn test_expr_logic_unknown_call_left_is_unknown() {
+    let mut db = setup();
+    let fid = set_test_file(
+        &mut db,
+        1,
+        "a.lua",
+        "local a = unknown_call() or 1\nlocal T = {}\nT.x = unknown_call() or 1",
+    );
+    let facts = db.analysis().file_facts(fid).expect("facts");
+    let a = db.analysis().decl_type(fid, decl_local(&facts, "a"));
+    assert!(
+        a.as_ref().is_none_or(|shell| shell.is_unknown()),
+        "a: {a:?}"
+    );
+    let x = facts
+        .members
+        .iter()
+        .find(|m| m.key.name() == Some("x"))
+        .map(|m| m.id.clone())
+        .expect("member x");
+    let x = db.analysis().member_type(fid, x);
+    assert!(
+        x.as_ref().is_none_or(|shell| shell.is_unknown()),
+        "x: {x:?}"
+    );
+}
+
 #[test]
 fn test_expr_logic_and_comparison() {
     let mut db = setup();

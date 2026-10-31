@@ -3295,13 +3295,14 @@ fn expr_type_node(
             match op {
                 Some(op @ (BinaryOperator::OpOr | BinaryOperator::OpAnd)) => {
                     if let Some((left, right)) = binary.get_exprs() {
-                        let left_is_logical = is_logical_expr(&left);
+                        let left_may_self_refer = is_plain_read(&left);
                         let left = expr_type(db, facts, file, config, left).first_result();
                         let right = expr_type(db, facts, file, config, right).first_result();
-                        // Unknown is the empty set, the identity that lets `a = a or 1` converge.
-                        // An unknown right operand (or an unknown inner logical result) instead
+                        // An unknown name or index read is the empty set, the identity that lets
+                        // `a = a or 1` converge. Any other unknown left operand (a call the shell
+                        // cannot resolve, an inner logical result), and an unknown right one,
                         // means the shell cannot tell what passes, so the result is unknown.
-                        if right.is_unknown() || (left_is_logical && left.is_unknown()) {
+                        if right.is_unknown() || (!left_may_self_refer && left.is_unknown()) {
                             return TypeShell::unknown();
                         }
                         let mut shell = logical_left_part(left, op == BinaryOperator::OpOr);
@@ -3380,15 +3381,12 @@ fn length_type(operand: &TypeShell) -> TypeShell {
     }
 }
 
-fn is_logical_expr(expr: &LuaExpr) -> bool {
+/// A name or index read: the only operand whose unknown type may be a self-reference
+/// still converging (`a = a or 1`, `t.x = t.x or {}`), rather than "cannot tell".
+fn is_plain_read(expr: &LuaExpr) -> bool {
     match expr {
-        LuaExpr::BinaryExpr(binary) => matches!(
-            binary.get_op_token().map(|token| token.get_op()),
-            Some(BinaryOperator::OpAnd | BinaryOperator::OpOr)
-        ),
-        LuaExpr::ParenExpr(paren) => paren
-            .get_expr()
-            .is_some_and(|inner| is_logical_expr(&inner)),
+        LuaExpr::NameExpr(_) | LuaExpr::IndexExpr(_) => true,
+        LuaExpr::ParenExpr(paren) => paren.get_expr().is_some_and(|inner| is_plain_read(&inner)),
         _ => false,
     }
 }
