@@ -142,6 +142,12 @@ fn check_comparison(
         return Ok(());
     }
 
+    // A `TypeGuard<T>` result is a boolean at runtime: any boolean value, including the
+    // `false|boolean` of `a and b`, is a valid one.
+    if matches!(compact_type, LuaType::TypeGuard(_)) && is_boolean_like(source) {
+        return Ok(());
+    }
+
     // `self` parameter accepts receiver instances (class/table/object).
     if matches!(compact_type, LuaType::SelfInfer) {
         if matches!(
@@ -471,5 +477,13 @@ fn is_like_any(ty: &LuaType) -> bool {
         LuaType::Any | LuaType::Unknown => true,
         LuaType::TplRef(tpl) => tpl.get_constraint().is_none(),
         _ => false,
+    }
+}
+
+/// A boolean, boolean literal, or a union of only those.
+fn is_boolean_like(ty: &LuaType) -> bool {
+    match ty {
+        LuaType::Union(union) => union.into_vec().iter().all(is_boolean_like),
+        _ => ty.is_boolean(),
     }
 }

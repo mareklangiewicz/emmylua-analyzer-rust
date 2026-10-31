@@ -1049,4 +1049,29 @@ mod tests {
         ];
         assert_clean_cases(code, "", &cases);
     }
+
+    #[test]
+    fn test_type_guard_accepts_any_boolean_union() {
+        // `a and b` over booleans is `false|boolean`: still a boolean, so a fine TypeGuard result.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let prefix =
+            "---@param c any\n---@return TypeGuard<string> s\nlocal function is(c) return ";
+        let cases = [
+            ("type(c) == 'table' and type(c.id) == 'string' end", true),
+            ("type(c) == 'string' end", true),
+            ("false end", true),
+            // Control: a non-boolean is still not a guard result.
+            ("c ~= nil and 1 end", false),
+        ];
+        let wrong: Vec<_> = cases
+            .iter()
+            .filter(|(src, clean)| {
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ReturnTypeMismatch,
+                    &format!("{prefix}{src}"),
+                ) != *clean
+            })
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
 }
