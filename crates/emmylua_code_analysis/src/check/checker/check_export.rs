@@ -10,6 +10,7 @@ use crate::DiagnosticCode;
 use crate::semantic_db::def::{ModuleExport, SemanticId};
 use crate::semantic_db::facts::FileFacts;
 use crate::semantic_model::SemanticModel;
+use crate::semantic_model::member::{index_signature_type, member_key_type};
 use crate::{FileId, InFiled, LuaMemberKey, LuaType};
 
 use super::{CheckContext, Checker};
@@ -95,7 +96,10 @@ fn check_index_expr(
         .member_infos_with_key(&export_ty, &key)
         .into_iter()
         .any(|info| info.file_id.is_none_or(|file_id| file_id == module_file));
-    if is_surface_member || is_declared_class_field(semantic_model, &prefix_ty, &key) {
+    if is_surface_member
+        || is_declared_class_field(semantic_model, &prefix_ty, &key)
+        || admits_by_index_signature(semantic_model, &prefix_ty, &key)
+    {
         return;
     }
     let field_name = index_key.get_path_part();
@@ -147,6 +151,19 @@ fn is_declared_class_field(
                 .file_facts_of(file_id)
                 .and_then(|facts| facts.member_by_id(&id))
                 .is_some_and(|member| matches!(member.owner, SemanticId::TypeDef(_)))
+        })
+}
+
+/// A `---@field [K] V` of the class the export table is bound to declares every key `K` admits
+/// (`---@field [string] V`: any name), so writing one is not an injection.
+fn admits_by_index_signature(
+    semantic_model: &SemanticModel<'_>,
+    prefix_ty: &LuaType,
+    key: &LuaMemberKey,
+) -> bool {
+    matches!(prefix_ty, LuaType::Ref(_) | LuaType::Def(_))
+        && member_key_type(key).is_some_and(|key_ty| {
+            index_signature_type(semantic_model, prefix_ty, &key_ty).is_some()
         })
 }
 

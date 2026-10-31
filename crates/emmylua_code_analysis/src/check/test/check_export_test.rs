@@ -119,3 +119,26 @@ fn test_local_table_not_limited() {
     assert_eq!(count_by_code(&diags, DiagnosticCode::InjectField), 0);
     assert_eq!(count_by_code(&diags, DiagnosticCode::UndefinedField), 0);
 }
+
+/// A class's `---@field [string] V` index signature admits any name key: snacks' picker sources
+/// (`---@class snacks.picker.sources.Config` + `---@field [string] ...`) register a custom source
+/// as `require('snacks.picker.config.sources').mine = {...}`, which 0.25.1 accepted. An integer key
+/// the signature does not cover is still an injection.
+#[test]
+fn test_export_class_index_signature_admits_keys() {
+    let diags = check_export(
+        r#"
+        ---@class Srcs
+        ---@field [string] { live: boolean? }
+        local M = {}
+        M.a = { live = true }
+        return M
+        "#,
+        r#"
+        local srcs = require("mod")
+        srcs.mine = { live = false }
+        srcs[1] = { live = true }
+        "#,
+    );
+    assert_eq!(count_by_code(&diags, DiagnosticCode::InjectField), 1);
+}
