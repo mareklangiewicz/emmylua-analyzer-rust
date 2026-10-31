@@ -549,6 +549,35 @@ fn type_of_member_access_at(
         .unwrap_or_else(fallback)
 }
 
+/// Target type for a member assignment check: the member's flow type at `offset` with casts
+/// applied and this assignment excluded, but **no branch narrowing**, as for declarations
+/// (`type_of_decl_assign_target_at`): inside `if t.x == 'none' then` the write `t.x = false`
+/// is checked against what `t.x` holds, not against `'none'`.
+pub fn type_of_member_assign_target_at(
+    model: &SemanticModel,
+    member: &SemanticId,
+    offset: TextSize,
+) -> LuaType {
+    let Some(tree) = model.flow_tree() else {
+        return type_of_member_at(model, member, offset);
+    };
+    // No guard anywhere: the ordinary (cached, fast-pathed) member type is the same answer.
+    if !tree.has_condition() {
+        return type_of_member_at(model, member, offset);
+    }
+    let Some(flow_id) = tree.get_flow_id_at(offset) else {
+        return type_of_member_at(model, member, offset);
+    };
+    let start = skip_own_member_assign(member, &tree, flow_id, offset);
+    let mut visited = HashSet::new();
+    let mut path = PathState {
+        assign_target: true,
+        ..PathState::default()
+    };
+    trace_member(model, member, None, &tree, start, &mut visited, &mut path)
+        .unwrap_or_else(|| member_entry_type(model, member, None).unwrap_or(LuaType::Unknown))
+}
+
 /// Skip this assignment only when `offset` is inside the `t.x = value` assignment and that node assigns this member.
 pub(crate) fn skip_own_member_assign(
     member: &SemanticId,
@@ -2080,6 +2109,8 @@ struct PathState {
     /// Most recent cast operation first, each with `narrowings.len()` when it was met: the guards
     /// before that index lie between the cast and the read, so they apply after it.
     casts: Vec<(usize, CastOp)>,
+    /// Tracing a member's assignment target: guards do not narrow (see `type_of_member_assign_target_at`).
+    assign_target: bool,
 }
 
 /// Checks from an antecedent toward the declaration whether a narrowing node already exists.
@@ -2335,6 +2366,7 @@ fn trace_decl_uncached(
                             let assign_path = PathState {
                                 narrowings,
                                 casts: path.casts.clone(),
+                                assign_target: path.assign_target,
                             };
                             let base_before = model.type_of_decl(decl).unwrap_or(LuaType::Unknown);
                             // Ordinary linear assignment with a single predecessor: push onto the explicit stack and keep backtracking forward,
@@ -2595,6 +2627,7 @@ fn trace_member(
         subject: cache::TraceSubject::Member {
             member: member.clone(),
             access: access.map(|access| access.get_syntax_id()),
+            guards: !path.assign_target,
         },
         flow_id: flow_id.0,
     };
@@ -2666,6 +2699,7 @@ fn trace_member_uncached(
                         let assign_path = PathState {
                             narrowings: Vec::new(),
                             casts: path.casts.clone(),
+                            assign_target: path.assign_target,
                         };
                         let mut value_ty = type_of_expr_with_cast(model, *value_syntax, AsOnly);
                         if let Some(annotation) = member_annotation_type(model, member) {
@@ -2692,14 +2726,14 @@ fn trace_member_uncached(
             FlowNodeKind::TagCast(cast_ptr) => {
                 collect_member_cast(model, member, cast_ptr, path);
             }
-            FlowNodeKind::TrueCondition(cond_ptr) => {
+            FlowNodeKind::TrueCondition(cond_ptr) if !path.assign_target => {
                 if let Some(narrowing) =
                     narrow_member_condition(model, member, access, cond_ptr, true)
                 {
                     path.narrowings.push(narrowing);
                 }
             }
-            FlowNodeKind::FalseCondition(cond_ptr) => {
+            FlowNodeKind::FalseCondition(cond_ptr) if !path.assign_target => {
                 if let Some(narrowing) =
                     narrow_member_condition(model, member, access, cond_ptr, false)
                 {
@@ -6018,6 +6052,7 @@ impl PathState {
         Self {
             narrowings: self.narrowings.iter().map(|n| n.clone_ref()).collect(),
             casts: self.casts.clone(),
+            assign_target: self.assign_target,
         }
     }
 }

@@ -183,6 +183,8 @@ pub(crate) enum TraceSubject {
     Member {
         member: SemanticId,
         access: Option<LuaSyntaxId>,
+        /// False for an assignment-target trace, which ignores guards.
+        guards: bool,
     },
 }
 

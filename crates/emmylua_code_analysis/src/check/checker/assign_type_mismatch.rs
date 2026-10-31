@@ -432,7 +432,15 @@ fn check_self_member_assign(
                 && member.key.name() == Some(key.as_str())
                 && member.value_syntax != Some(value_expr.get_syntax_id())
         })
-        .map(|member| semantic_model.type_of_member_at(&member.id, index_expr.get_range().start()))
+        .map(|member| {
+            unnarrowed_if_rejected(
+                semantic_model,
+                &member.id,
+                index_expr.get_range().start(),
+                value_expr,
+                |ty| ty,
+            )
+        })
         .or_else(|| {
             semantic_model.member_type(&owner_ty, &LuaMemberKey::Name(key.clone().into()))
         })?;
@@ -447,10 +455,10 @@ fn check_member_assign(
     target_offset: rowan::TextSize,
     value_expr: &LuaExpr,
 ) {
-    let mut target = semantic_model.member_assignment_type(
-        member_id,
-        semantic_model.type_of_member_at(member_id, target_offset),
-    );
+    let mut target =
+        unnarrowed_if_rejected(semantic_model, member_id, target_offset, value_expr, |ty| {
+            semantic_model.member_assignment_type(member_id, ty)
+        });
     // `t.x = value`: resolve_member returns a member some assignment synthesized (this one, or an
     // earlier `t.x = ...`, whose value would otherwise become the contract); prefer the same-named
     // member on the prefix's declared type.
@@ -496,6 +504,27 @@ fn check_member_assign(
         return;
     }
     check_value_against_target(context, semantic_model, &target, value_expr);
+}
+
+/// The member's type at `offset` as the target of a write of `value_expr`. The flow type
+/// (cached) is the answer whenever it admits the value: guards only narrow, so the
+/// guard-free target admits it too. Only a rejected value pays for the guard-free trace,
+/// which decides the write (`if t.x == 'none' then t.x = false end` is not checked against
+/// `'none'`). `contract` maps either trace to the assignment contract.
+fn unnarrowed_if_rejected(
+    semantic_model: &SemanticModel<'_>,
+    member_id: &SemanticId,
+    offset: rowan::TextSize,
+    value_expr: &LuaExpr,
+    contract: impl Fn(LuaType) -> LuaType,
+) -> LuaType {
+    let target = contract(semantic_model.type_of_member_at(member_id, offset));
+    let value_ty =
+        semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
+    if semantic_model.type_check(&value_ty, &target) {
+        return target;
+    }
+    contract(semantic_model.type_of_member_assign_target_at(member_id, offset))
 }
 
 fn check_value_against_target(

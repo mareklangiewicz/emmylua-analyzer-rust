@@ -3983,4 +3983,33 @@ return t
             "#
         ));
     }
+
+    #[test]
+    fn test_member_guard_does_not_narrow_its_assignment_target() {
+        let mut ws = VirtualWorkspace::new();
+        // Inside `t.x == 'none'`, `t.x = false` is checked against what `t.x` holds, not `'none'`.
+        for guard in ["over.submit == 'none'", "type(over.submit) == 'string'"] {
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::AssignTypeMismatch,
+                    &format!(
+                        "---@param over table\nlocal function f(over)\n  if {guard} then over.submit = false end\nend"
+                    )
+                ),
+                "{guard}"
+            );
+        }
+        // Control: a declared field still binds the write inside the guard.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@class MT2.O
+            ---@field submit string
+            ---@param over MT2.O
+            local function f(over)
+                if over.submit == 'none' then over.submit = false end
+            end
+            "#
+        ));
+    }
 }
