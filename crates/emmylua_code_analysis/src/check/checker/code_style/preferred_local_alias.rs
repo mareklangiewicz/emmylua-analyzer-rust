@@ -45,6 +45,18 @@ impl Checker for PreferredLocalAliasChecker {
                                 &assign_stat,
                             );
                         }
+                        // `function s.next()` writes `s.next` as an assignment does.
+                        LuaAst::LuaFuncStat(func_stat) => {
+                            if let Some(LuaVarExpr::IndexExpr(index_expr)) =
+                                func_stat.get_func_name()
+                            {
+                                invalidate_written_alias(
+                                    &mut alias_set,
+                                    semantic_model,
+                                    &index_expr,
+                                );
+                            }
+                        }
                         LuaAst::LuaIndexExpr(index_expr) => {
                             check_index_expr_preference(
                                 context,
@@ -253,15 +265,23 @@ fn invalidate_assigned_aliases(
 ) {
     let (vars, _) = assign_stat.get_var_and_expr_list();
     for var in vars {
-        let LuaVarExpr::IndexExpr(index_expr) = var else {
-            continue;
-        };
-        let Some(resolved) = semantic_model.resolve_member(&index_expr) else {
-            continue;
-        };
-        if let Some(member_id) = resolved.member_id {
-            alias_set.remove_by_field(&member_id);
+        if let LuaVarExpr::IndexExpr(index_expr) = var {
+            invalidate_written_alias(alias_set, semantic_model, &index_expr);
         }
+    }
+}
+
+/// A write to `index_expr`'s field: the aliases of its old value no longer stand for it.
+fn invalidate_written_alias(
+    alias_set: &mut LocalAliasSet,
+    semantic_model: &SemanticModel<'_>,
+    index_expr: &LuaIndexExpr,
+) {
+    if let Some(member_id) = semantic_model
+        .resolve_member(index_expr)
+        .and_then(|resolved| resolved.member_id)
+    {
+        alias_set.remove_by_field(&member_id);
     }
 }
 

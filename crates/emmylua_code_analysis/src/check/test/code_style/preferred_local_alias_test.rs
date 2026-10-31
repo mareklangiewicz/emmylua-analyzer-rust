@@ -27,4 +27,19 @@ mod test {
             "#,
         ));
     }
+
+    #[test]
+    fn test_function_stat_redefining_the_field_is_not_an_alias_use() {
+        let mut ws = VirtualWorkspace::new();
+        // `function s.next()` replaces `s.next`: it cannot be spelled through the alias of the old one.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::PreferredLocalAlias,
+            "---@param s table\nlocal function f(s)\n  local pull = s.next\n  function s.next(self) return pull(self) end\n  return s\nend\nreturn f\n"
+        ));
+        // Control: a READ of the aliased field still prefers the alias.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::PreferredLocalAlias,
+            "---@param s table\nlocal function f(s)\n  local pull = s.next\n  return pull, s.next\nend\nreturn f\n"
+        ));
+    }
 }
