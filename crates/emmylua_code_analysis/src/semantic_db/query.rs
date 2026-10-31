@@ -3940,7 +3940,7 @@ pub(crate) fn member_ref_from_index_expr(
 /// `member_ref_from_index_expr`, and whether the owner is the table the prefix holds: a local
 /// root whose segment reaches no runtime table (`self.sub` with `sub` only a `---@field`) stops
 /// at the last table it reached instead.
-fn member_ref_with_exactness(
+pub(crate) fn member_ref_with_exactness(
     facts: &FileFacts,
     index_expr: &LuaIndexExpr,
 ) -> Option<(SemanticId, SmolStr, bool)> {

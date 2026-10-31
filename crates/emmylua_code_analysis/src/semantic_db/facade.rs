@@ -383,6 +383,23 @@ impl<'db> AnalysisView<'db> {
         query::member_ref_from_index_expr(facts, &index_expr)
     }
 
+    /// `member_ref_of_index`, and whether the owner is the table the prefix holds (see
+    /// `member_ref_with_exactness`): `M.rc.x` with `M.rc = define()` stops at `M`, inexact.
+    pub fn member_ref_of_index_exact(
+        &self,
+        file_id: FileId,
+        index_syntax: LuaSyntaxId,
+    ) -> Option<(SemanticId, SmolStr, bool)> {
+        let (file, _config) = file_and_config(self.db, file_id)?;
+        let facts = file_facts(self.db, file);
+        let tree = self.db.vfs().get_syntax_tree(&file)?;
+        let expr = query::find_expr_by_syntax_id(tree, &index_syntax)?;
+        let emmylua_parser::LuaExpr::IndexExpr(index_expr) = expr else {
+            return None;
+        };
+        query::member_ref_with_exactness(facts, &index_expr)
+    }
+
     /// Direct member names of a local declaration (completion candidates).
     #[allow(unused)]
     pub fn member_keys_of_decl(&self, file_id: FileId, decl: SemanticId) -> Vec<SmolStr> {

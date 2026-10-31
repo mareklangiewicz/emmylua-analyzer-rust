@@ -382,4 +382,35 @@ mod test {
             "#
         ));
     }
+
+    #[test]
+    fn test_nested_member_does_not_borrow_a_same_named_parent_member() {
+        let mut ws = VirtualWorkspace::new();
+        // `M.rc` holds a call result, not a table literal: `M.rc.send` is not `M.send`.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::MissingParameter,
+            r#"
+            ---@return table
+            local function define() return {} end
+            local M = {}
+            M.rc = define()
+            ---@param a string
+            ---@param b string
+            function M.send(a, b) return a .. b end
+            local x = M.rc.send { to = 'x' }
+            return M, x
+            "#
+        ));
+        // Control: `M.send` itself still needs both.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::MissingParameter,
+            r#"
+            local M = {}
+            ---@param a string
+            ---@param b string
+            function M.send(a, b) return a .. b end
+            return M.send('x')
+            "#
+        ));
+    }
 }

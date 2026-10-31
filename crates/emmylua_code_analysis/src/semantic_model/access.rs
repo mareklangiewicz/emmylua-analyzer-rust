@@ -807,11 +807,12 @@ impl<'db> SemanticModel<'db> {
         result
     }
     pub(crate) fn resolve_member_impl(&self, index_expr: &LuaIndexExpr) -> Option<ResolvedMember> {
-        let (owner, name) = self
+        let (owner, name, exact) = self
             .analysis()
-            .member_ref_of_index(self.view.file_id(), index_expr.get_syntax_id())?;
+            .member_ref_of_index_exact(self.view.file_id(), index_expr.get_syntax_id())?;
 
-        // 1. Same-file members (owner key). Members with explicit `---@type` take priority over purely inferred runtime members;
+        // 1. Same-file members (owner key), only when the owner IS the prefix's table: for
+        // `M.rc.send` with `M.rc = define()` the owner stops at `M`, whose `send` is another member. Members with explicit `---@type` take priority over purely inferred runtime members;
         // if only runtime members exist and the prefix type is a named type with a same-named `@field`, skip this step --
         // under `---@param data CreateData`, `data.owner = ""` should resolve to the class field rather than this assignment.
         {
@@ -824,7 +825,7 @@ impl<'db> SemanticModel<'db> {
                 .all(|member| member.doc_type_syntax.is_none())
                 && (self.prefix_has_named_member(index_expr, &name)
                     || self.require_module_has_member(index_expr, &name));
-            if !prefer_typed {
+            if exact && !prefer_typed {
                 let member_id = same_name
                     .iter()
                     .find(|member| member.doc_type_syntax.is_some())
