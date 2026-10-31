@@ -2532,7 +2532,7 @@ pub(crate) fn member_type(
                     .type_def_by_id(&member.owner)
                     .map(|def| def.generic_params.as_slice())
                     .unwrap_or(&[]);
-                let shell = lower_doc_type(db, file, value_syntax, generics);
+                let shell = lower_field_type(db, file, member, value_syntax, generics);
                 if !shell.is_unknown() {
                     return shell;
                 }
@@ -2609,6 +2609,22 @@ pub(crate) fn member_keys_of_type(
 }
 
 /// Type of a named type's member (including parent types). Pure function; caller must be in a tracked context.
+/// A `---@field`'s type: its doc type node, plus nil for `---@field x? T`, whose `?` sits on
+/// the name rather than on the type node (the VM adds it the same way, `apply_field_nullable`).
+fn lower_field_type(
+    db: &SemanticDatabase,
+    file: FileId,
+    member: &crate::semantic_db::def::Member,
+    type_syntax: LuaSyntaxId,
+    generics: &[DocGenericParam],
+) -> TypeShell {
+    let mut shell = lower_doc_type(db, file, type_syntax, generics);
+    if member.is_nullable && !shell.is_unknown() {
+        shell.merge(&TypeShell::from_primitive(PrimitiveType::Nil));
+    }
+    shell
+}
+
 pub(crate) fn type_member(
     db: &SemanticDatabase,
     facts: &FileFacts,
@@ -2628,7 +2644,7 @@ pub(crate) fn type_member(
                 .type_def_by_id(&type_def)
                 .map(|def| def.generic_params.as_slice())
                 .unwrap_or(&[]);
-            let shell = lower_doc_type(db, file, value_syntax, generics);
+            let shell = lower_field_type(db, file, member, value_syntax, generics);
             if !shell.is_unknown() {
                 return Some(shell);
             }

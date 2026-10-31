@@ -3983,4 +3983,40 @@ return t
             "#
         ));
     }
+
+    #[test]
+    fn test_optional_field_marker_keeps_nil_in_the_shell() {
+        let mut ws = VirtualWorkspace::new();
+        // `---@field version? string` holds nil too: copying it into an open table under a
+        // condition is not a `string` contract (the shell dropped the `?`, the VM kept it).
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@class MT3.R
+            ---@field version? string
+            ---@param nf MT3.R
+            ---@param x boolean
+            local function f(nf, x)
+                local w = {}
+                if x then w.v = nf.version end
+                return w
+            end
+            "#
+        ));
+        // Control: a declared non-optional target still rejects the optional value.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@class MT4.R
+            ---@field version? string
+            ---@class MT4.W
+            ---@field v string
+            ---@param nf MT4.R
+            ---@param w MT4.W
+            local function f(nf, w)
+                w.v = nf.version
+            end
+            "#
+        ));
+    }
 }
