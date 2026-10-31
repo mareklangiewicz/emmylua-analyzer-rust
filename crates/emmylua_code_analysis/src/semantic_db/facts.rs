@@ -1955,7 +1955,7 @@ impl FactsBuilder {
             && let Some(owner_syntax) = self.current_owner_syntax
             && let Some(type_syntaxes) = self.doc_type_map.get(&owner_syntax)
         {
-            member.doc_type_syntax = type_syntaxes.first().copied();
+            member.doc_type_syntax = slot_doc_type(type_syntaxes, assign_target_slot(index_expr));
         }
         self.mark_member(&mut member);
         if let Some(owner_syntax) = self.current_owner_syntax {
@@ -2272,12 +2272,14 @@ impl FactsBuilder {
         // `---@type T` above `xx.aaa = value`: the owner is the assignment
         // statement, so resolve the LHS IndexExpr range explicitly. Above a table field it is
         // the field's own key: the keys of a literal value belong to that literal.
-        let target_ranges = |owner: &LuaSyntaxId| -> Vec<TextRange> {
+        // Each range comes with its target's slot in the assignment's var list, which picks its
+        // type from a multi-type `---@type A, B`.
+        let target_ranges = |owner: &LuaSyntaxId| -> Vec<(usize, TextRange)> {
             match owner.get_kind() {
                 LuaSyntaxKind::TableFieldAssign => owner
                     .to_node_from_root(&root)
                     .and_then(LuaTableField::cast)
-                    .map(|field| field_key_range(&field))
+                    .map(|field| (0, field_key_range(&field)))
                     .into_iter()
                     .collect(),
                 LuaSyntaxKind::AssignStat => {
@@ -2291,8 +2293,11 @@ impl FactsBuilder {
                         .get_var_and_expr_list()
                         .0
                         .iter()
-                        .filter_map(|var| match var {
-                            LuaVarExpr::IndexExpr(index_expr) => Some(index_expr.get_range()),
+                        .enumerate()
+                        .filter_map(|(slot, var)| match var {
+                            LuaVarExpr::IndexExpr(index_expr) => {
+                                Some((slot, index_expr.get_range()))
+                            }
                             _ => None,
                         })
                         .collect()
@@ -2307,7 +2312,7 @@ impl FactsBuilder {
         let mut module_assigned = vec![false; self.members.len()];
 
         for (owner, type_syntaxes) in &self.doc_type_map {
-            for owner_range in target_ranges(owner) {
+            for (slot, owner_range) in target_ranges(owner) {
                 for index in member_indices_in_range(owner_range) {
                     if doc_assigned[index] {
                         continue;
@@ -2323,7 +2328,7 @@ impl FactsBuilder {
                     if !owner_range.contains_range(key_range) {
                         continue;
                     }
-                    if let Some(type_syntax) = type_syntaxes.first().copied() {
+                    if let Some(type_syntax) = slot_doc_type(type_syntaxes, slot) {
                         doc_type_assignments.push((index, type_syntax));
                     }
                     doc_assigned[index] = true;
@@ -2332,7 +2337,7 @@ impl FactsBuilder {
         }
 
         for (owner, module_path) in &self.doc_module_map {
-            for owner_range in target_ranges(owner) {
+            for (_, owner_range) in target_ranges(owner) {
                 for index in member_indices_in_range(owner_range) {
                     if module_assigned[index] {
                         continue;
@@ -2816,4 +2821,27 @@ fn documenting_call_stat(closure: &LuaClosureExpr) -> Option<LuaSyntaxId> {
         _ => None,
     })?;
     (first.get_syntax_id() == closure.get_syntax_id()).then(|| stat.get_syntax_id())
+}
+
+/// The type a multi-type `---@type A, B` gives the target in `slot`; a single type covers every
+/// target, as for local declarations.
+fn slot_doc_type(type_syntaxes: &[LuaSyntaxId], slot: usize) -> Option<LuaSyntaxId> {
+    type_syntaxes
+        .get(slot)
+        .or_else(|| type_syntaxes.first())
+        .copied()
+}
+
+/// `index_expr`'s position in its assignment statement's var list (0 elsewhere).
+fn assign_target_slot(index_expr: &LuaIndexExpr) -> usize {
+    index_expr
+        .get_parent::<LuaAssignStat>()
+        .and_then(|assign| {
+            assign
+                .get_var_and_expr_list()
+                .0
+                .iter()
+                .position(|var| var.get_range() == index_expr.get_range())
+        })
+        .unwrap_or(0)
 }

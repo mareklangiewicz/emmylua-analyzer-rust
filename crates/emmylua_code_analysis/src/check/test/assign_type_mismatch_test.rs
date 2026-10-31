@@ -3955,4 +3955,32 @@ return t
             "#
         ));
     }
+
+    #[test]
+    fn test_multi_type_doc_maps_member_targets_by_position() {
+        let mut ws = VirtualWorkspace::new();
+        // `---@type A, B` on `w.a, w.b = ...`: `w.b` gets B, not A.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@class MT1.W
+            ---@field argvs string[][]
+            ---@field cur string?
+            ---@param w MT1.W
+            ---@param s string
+            local function f(w, s)
+                w.argvs, w.cur = {}, nil ---@type string[][], string?
+                w.cur = s
+            end
+            "#
+        ));
+        // Control: positions still bind, so a wrong second type is reported.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            local T = {}
+            T.a, T.b = {}, 'x' ---@type string[], integer
+            "#
+        ));
+    }
 }
