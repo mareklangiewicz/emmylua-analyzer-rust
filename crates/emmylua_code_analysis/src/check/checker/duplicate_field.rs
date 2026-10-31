@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaClosureExpr, LuaExpr, LuaIndexExpr, LuaSyntaxId, LuaSyntaxNode,
-    LuaVarExpr, PathTrait,
+    LuaSyntaxTree, LuaVarExpr, PathTrait,
 };
 
 use rowan::TextRange;
@@ -35,7 +35,8 @@ impl Checker for DuplicateFieldChecker {
         let Some(facts) = semantic_model.file_facts() else {
             return;
         };
-        let root = semantic_model.syntax_tree().map(|tree| tree.get_red_root());
+        let tree = semantic_model.syntax_tree();
+        let root = tree.map(|tree| tree.get_red_root());
         if let Some(root) = &root {
             check_cross_file_member_assign(context, semantic_model, root);
         }
@@ -58,6 +59,12 @@ impl Checker for DuplicateFieldChecker {
                 Vec<(Option<LuaType>, Vec<&Member>)>,
             > = HashMap::new();
             for member in members {
+                if root
+                    .as_ref()
+                    .is_some_and(|root| restores_saved_member(semantic_model, root, member))
+                {
+                    continue;
+                }
                 let domain = if let Some(syntax) = member.index_key_syntax {
                     let generics = facts
                         .type_def_by_id(&member.owner)
@@ -92,7 +99,7 @@ impl Checker for DuplicateFieldChecker {
                     }
                     let all_function = dupes
                         .iter()
-                        .all(|member| is_function_like(semantic_model, member));
+                        .all(|member| is_function_like(semantic_model, tree, member));
                     // `@field a fun()` may be declared repeatedly (function overloads);
                     // ordinary repeated non-function field writes are also intentional
                     // (for example a global config table assigning the same key twice).
@@ -183,9 +190,14 @@ fn check_cross_file_member_assign(
             let Some(module_facts) = semantic_model.file_facts_of(module_file) else {
                 continue;
             };
+            // `self.go = nil` sets no function: clearing a field is not a method to reimplement.
+            let module_tree = semantic_model.syntax_tree_of(module_file);
             if !module_facts
                 .members_named(resolved.name.as_str())
-                .any(|member| member.value_syntax.is_some())
+                .any(|member| {
+                    member.value_syntax.is_some()
+                        && is_function_like(semantic_model, module_tree, member)
+                })
             {
                 continue;
             }
@@ -193,6 +205,9 @@ fn check_cross_file_member_assign(
             let Some(rhs) = exprs.get(index) else {
                 continue;
             };
+            if reads_back(semantic_model, root, rhs, index_expr) {
+                continue;
+            }
             let rhs_ty = semantic_model.type_of_expr(rhs.get_syntax_id());
             if !matches!(
                 rhs_ty,
@@ -233,10 +248,84 @@ fn required_module_file(semantic_model: &SemanticModel<'_>, prefix: &LuaExpr) ->
     semantic_model.module_file_of(&module_name)
 }
 
-/// Whether a member resolves to a function or has a closure value.
-fn is_function_like(semantic_model: &SemanticModel<'_>, member: &Member) -> bool {
+/// Whether `member` (set through an index expression) is a restore: `t.f = saved` where
+/// `saved` is a local read from that same `t.f` (`local saved = t.f`).
+fn restores_saved_member(
+    semantic_model: &SemanticModel<'_>,
+    root: &LuaSyntaxNode,
+    member: &Member,
+) -> bool {
+    let Some(value_syntax) = member.value_syntax else {
+        return false;
+    };
+    let Some(value) = value_syntax.to_node_from_root(root).and_then(LuaExpr::cast) else {
+        return false;
+    };
+    let Some(key_range) = member.id.member_key_range() else {
+        return false;
+    };
+    let Some(token) = root.token_at_offset(key_range.start()).right_biased() else {
+        return false;
+    };
+    let Some(target) = token.parent_ancestors().find_map(LuaIndexExpr::cast) else {
+        return false;
+    };
+    reads_back(semantic_model, root, &value, &target)
+}
+
+/// Whether `rhs` is a local that was initialized from `target`'s own access path and never
+/// reassigned: putting a saved original back reimplements nothing.
+fn reads_back(
+    semantic_model: &SemanticModel<'_>,
+    root: &LuaSyntaxNode,
+    rhs: &LuaExpr,
+    target: &LuaIndexExpr,
+) -> bool {
+    let LuaExpr::NameExpr(name_expr) = rhs else {
+        return false;
+    };
+    let Some(target_path) = target.get_access_path() else {
+        return false;
+    };
+    let Some(decl_id) = semantic_model.resolve_name(name_expr.get_position()) else {
+        return false;
+    };
+    let Some(decl) = semantic_model
+        .file_facts()
+        .and_then(|facts| facts.decl_by_id(&decl_id))
+    else {
+        return false;
+    };
+    let Some(init) = decl
+        .value_expr_syntax
+        .and_then(|syntax| syntax.to_node_from_root(root))
+        .and_then(LuaIndexExpr::cast)
+    else {
+        return false;
+    };
+    if init.get_access_path().as_deref() != Some(target_path.as_str()) {
+        return false;
+    }
+    // A reassigned local may no longer hold the original.
+    !root
+        .descendants()
+        .filter_map(LuaAssignStat::cast)
+        .any(|assign| {
+            assign.get_var_and_expr_list().0.iter().any(|var| {
+                matches!(var, LuaVarExpr::NameExpr(name)
+                if semantic_model.resolve_name(name.get_position()).as_ref() == Some(&decl_id))
+            })
+        })
+}
+
+/// Whether a member resolves to a function or has a closure value; `tree` is the member's file.
+fn is_function_like(
+    semantic_model: &SemanticModel<'_>,
+    tree: Option<&LuaSyntaxTree>,
+    member: &Member,
+) -> bool {
     if let Some(value_syntax) = member.value_syntax
-        && let Some(tree) = semantic_model.syntax_tree()
+        && let Some(tree) = tree
         && let Some(node) = value_syntax.to_node_from_root(&tree.get_red_root())
         && LuaClosureExpr::cast(node).is_some()
     {

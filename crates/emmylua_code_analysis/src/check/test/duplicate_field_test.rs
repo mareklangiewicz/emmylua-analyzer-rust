@@ -346,4 +346,110 @@ mod test {
             "{diagnostics:?}"
         );
     }
+
+    #[test]
+    fn test_module_field_only_nilled_is_not_a_method() {
+        // The module only clears `go` (`= nil`): no runtime function to reimplement.
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "1.lua",
+            r#"
+                ---@class D32.J
+                ---@field go (fun())?
+                local J = {}
+                function J:stop() self.go = nil end
+                return J
+            "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::DuplicateSetField,
+            r#"
+            local J = require("1")
+            J.go = function() end
+        "#
+        ));
+    }
+
+    #[test]
+    fn test_restoring_a_saved_member_is_not_a_redefinition() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "1.lua",
+            r#"
+                local M = {}
+                function M.f() end
+                function M.g() end
+                return M
+            "#,
+        );
+        // Restoring the saved originals reimplements nothing (the stub itself is
+        // test_duplicate_function_2's case).
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::DuplicateSetField,
+            r#"
+            local M = require("1")
+            local f, g = M.f, M.g
+            M.f, M.g = f, g
+        "#
+        ));
+        // Control: a local NOT read from that member still reimplements it.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::DuplicateSetField,
+            r#"
+            local M = require("1")
+            local f = M.g
+            M.f = f
+        "#
+        ));
+        // Control: a saved local reassigned before the "restore" no longer holds the original.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::DuplicateSetField,
+            r#"
+            local M = require("1")
+            local f = M.f
+            f = function() end
+            M.f = f
+        "#
+        ));
+    }
+
+    #[test]
+    fn test_restoring_a_saved_field_in_the_same_file() {
+        let diagnostics = check_source(
+            r#"
+                ---@class D32.Ctx
+                ---@field log fun(s: string)
+
+                ---@param c D32.Ctx
+                local function rec(c)
+                    local saved = c.log
+                    c.log = function(s) end
+                    c.log = saved
+                end
+        "#,
+        );
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::DuplicateSetField),
+            0,
+            "{diagnostics:?}"
+        );
+        // Control: two stubs in one body still are a duplicate.
+        let diagnostics = check_source(
+            r#"
+                ---@class D32.Ctx
+                ---@field log fun(s: string)
+
+                ---@param c D32.Ctx
+                local function rec(c)
+                    c.log = function(s) end
+                    c.log = function(s) end
+                end
+        "#,
+        );
+        assert_eq!(
+            count_by_code(&diagnostics, DiagnosticCode::DuplicateSetField),
+            2,
+            "{diagnostics:?}"
+        );
+    }
 }
