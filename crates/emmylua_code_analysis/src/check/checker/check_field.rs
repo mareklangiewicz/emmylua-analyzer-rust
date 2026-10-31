@@ -9,7 +9,7 @@ use rowan::TextRange;
 use crate::DiagnosticCode;
 use crate::semantic_db::def::{DeclKind, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::SemanticModel;
-use crate::semantic_model::type_eval::{expand_alias_branches, expand_alias_generic};
+use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{FileId, LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
 use super::assign_type_mismatch::index_key_type;
@@ -239,19 +239,6 @@ fn expand_alias_type(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option
     }
 }
 
-/// Instantiates a generic alias (`Partial<T>`); `None` for anything else or when it does not expand.
-fn expand_generic_alias(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<LuaType> {
-    let LuaType::Generic(generic) = ty else {
-        return None;
-    };
-    let def = semantic_model.type_def_of(&generic.get_base_type_id())?;
-    if def.kind != TypeDefKind::Alias {
-        return None;
-    }
-    let expanded = expand_alias_generic(semantic_model, ty);
-    (&expanded != ty).then_some(expanded)
-}
-
 /// Static table key -> `LuaMemberKey` (dynamic keys are not checked).
 pub(super) fn static_member_key(
     semantic_model: &SemanticModel<'_>,
@@ -380,11 +367,6 @@ fn check_against_type(
     // Expand aliases before checking table literals against them. This makes alias-to-object,
     // alias-to-class and alias-to-unknown behave like their target types.
     if let Some(expanded) = expand_alias_type(semantic_model, target) {
-        check_against_type(context, semantic_model, &expanded, table);
-        return;
-    }
-    // A generic alias (`Partial<Linter>`) is checked as its instantiation (an `Object`).
-    if let Some(expanded) = expand_generic_alias(semantic_model, target) {
         check_against_type(context, semantic_model, &expanded, table);
         return;
     }
