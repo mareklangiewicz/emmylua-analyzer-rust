@@ -62,23 +62,24 @@ fn check_scope(
     #[cfg(test)]
     scope_metrics::record_cloned_local_entries(parent_locals.len() as u64);
     let mut current_locals = parent_locals.clone();
-    check_decls(
-        context,
-        semantic_model,
-        facts,
-        &scope.children,
-        &mut current_locals,
-    );
-
+    // In source order: a child scope sees only the locals declared before it, so a later
+    // `local function need` is not shadowed by an earlier function's `need` parameter.
     for child in &scope.children {
-        if let ScopeChild::Scope(child_idx) = child {
-            check_scope(
+        match child {
+            ScopeChild::Scope(child_idx) => check_scope(
                 context,
                 semantic_model,
                 facts,
                 *child_idx,
                 &mut current_locals,
-            );
+            ),
+            _ => check_decls(
+                context,
+                semantic_model,
+                facts,
+                std::slice::from_ref(child),
+                &mut current_locals,
+            ),
         }
     }
 
