@@ -1429,14 +1429,27 @@ impl<'db> SemanticModel<'db> {
     pub(crate) fn type_of_decl_unwidened_at(&self, decl: &SemanticId, offset: TextSize) -> LuaType {
         flow::type_of_decl_assign_target_at(self, decl, offset)
     }
-    /// Member assignment contract, keeping explicit field annotations exact.
+    /// Member assignment contract, keeping explicit field annotations exact. A runtime member's
+    /// own `---@type T` (`---@type boolean` + `M.loaded = false`) IS the contract, as for a
+    /// declaration: the flow type at a later write is only the literal last stored there.
     pub(crate) fn member_assignment_type(&self, member: &SemanticId, target: LuaType) -> LuaType {
-        let inferred = match member {
-            SemanticId::Member(key) => self.file_facts_of(key.file_id),
+        let member_file = match member {
+            SemanticId::Member(key) => Some(key.file_id),
             _ => None,
+        };
+        let def = member_file
+            .and_then(|file| self.file_facts_of(file))
+            .and_then(|facts| facts.member_by_id(member));
+        if let (Some(file), Some(def)) = (member_file, def)
+            && !matches!(def.owner, SemanticId::TypeDef(_))
+            && let Some(syntax) = def.doc_type_syntax
+        {
+            let annotation = self.doc_type_lua_in(file, syntax, &[]);
+            if !matches!(annotation, LuaType::Unknown) {
+                return annotation;
+            }
         }
-        .and_then(|facts| facts.member_by_id(member))
-        .is_some_and(|member| {
+        let inferred = def.is_some_and(|member| {
             member.doc_type_syntax.is_none() && !matches!(member.owner, SemanticId::TypeDef(_))
         });
         if inferred {

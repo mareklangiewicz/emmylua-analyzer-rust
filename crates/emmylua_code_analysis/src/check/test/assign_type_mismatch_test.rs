@@ -3983,4 +3983,25 @@ return t
             "#
         ));
     }
+
+    #[test]
+    fn test_annotated_member_contract_is_its_annotation() {
+        let mut ws = VirtualWorkspace::new();
+        // `---@type boolean` on `M.loaded = false`: a later `M.loaded = true` fits `boolean`,
+        // not the flow's literal `false`.
+        for src in [
+            "local M = {}\n---@type boolean\nM.loaded = false\nM.loaded = true\nreturn M\n",
+            "local M = {}\nM.loaded = false ---@type boolean\nfunction M.f() M.loaded = true end\nreturn M\n",
+        ] {
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, src),
+                "{src}"
+            );
+        }
+        // Control: the annotation still rejects what it does not admit.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            "local M = {}\n---@type boolean\nM.loaded = false\nM.loaded = 1\nreturn M\n"
+        ));
+    }
 }
