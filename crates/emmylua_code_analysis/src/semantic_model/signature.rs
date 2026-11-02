@@ -736,10 +736,17 @@ impl<'db> SemanticModel<'db> {
             } else {
                 param_index
             };
-            if let Some(ty) = expected_fun
-                .get_params()
-                .get(expected_index)
-                .and_then(|(_, ty)| ty.clone())
+            // Past the fixed parameters, a trailing `...: T` types the rest (`fun(self, ...: any)`
+            // declares an override's `init(name, id)`).
+            let params = expected_fun.get_params();
+            let expected_ty = match params.get(expected_index) {
+                Some((_, ty)) => ty.clone(),
+                None => params
+                    .last()
+                    .filter(|(name, _)| name == "...")
+                    .map(|(_, ty)| ty.clone().unwrap_or(LuaType::Any)),
+            };
+            if let Some(ty) = expected_ty
                 && !types.contains(&ty)
             {
                 types.push(ty);

@@ -405,4 +405,36 @@ mod tests {
             "#
         ));
     }
+
+    /// An override's parameters past a declared `fun(self: Base, ...: any)` field's fixed ones
+    /// take the vararg's type, so `function Sub:init(name, id)` is typed by the field.
+    #[test]
+    fn test_override_params_typed_by_declared_vararg() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@class Base
+                ---@field init fun(self: Base, ...: any) ctor
+                local Base = {}
+                ---@class Sub : Base
+                local Sub = {}
+                function Sub:init(name, id) self.name = name; self.id = id end
+            "#
+        ));
+        // Control: a fixed-arity field gives no type past its last parameter.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@class Base2
+                ---@field init fun(self: Base2, name: string) ctor
+                local Base2 = {}
+                ---@class Sub2 : Base2
+                local Sub2 = {}
+                function Sub2:init(name, id) self.name = name; self.id = id end
+            "#
+        ));
+    }
 }
