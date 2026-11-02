@@ -448,7 +448,7 @@ fn check_against_type(
                     LuaMemberKey::Integer(i) => i.to_string(),
                     _ => continue,
                 };
-                if !field_keys.contains(key) && !ty.is_nullable() {
+                if !field_keys.contains(key) && !is_optional(semantic_model, ty) {
                     missing.push(name);
                 }
             }

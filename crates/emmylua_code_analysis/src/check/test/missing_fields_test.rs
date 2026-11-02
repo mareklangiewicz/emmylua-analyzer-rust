@@ -382,4 +382,34 @@ foo({})
             );
         }
     }
+    /// A field typed `any` admits nil, so an inline object type doesn't require it, the same rule
+    /// as a `---@class` field (0.25.1 parity).
+    #[test]
+    fn test_inline_object_any_field_is_optional() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::MissingFields,
+            r#"
+            local seen = {} ---@type { request: any, answer: any }
+            return seen
+        "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::MissingFields,
+            r#"
+            ---@param o { a: integer, b: any }
+            local function f(o) return o end
+            f({ a = 1 })
+        "#
+        ));
+        // Control: a non-nullable inline field is still required.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::MissingFields,
+            r#"
+            ---@type { a: integer, c: integer }
+            local t3 = { a = 1 }
+            return t3
+        "#
+        ));
+    }
 }
