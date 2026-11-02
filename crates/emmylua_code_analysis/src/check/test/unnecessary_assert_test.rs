@@ -127,4 +127,35 @@ mod test {
             "#
         ));
     }
+
+    /// A method's own `...` after fixed params is not the field's first slots: `init(issue, ...)`
+    /// overriding `fun(self: Obj, ...: any)` keeps a vararg of any length, so
+    /// `select('#', ...) == 0` can hold.
+    #[test]
+    fn test_override_vararg_keeps_its_length_open() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let code = r#"
+            ---@class Obj
+            ---@field init fun(self: Obj, ...: any) ctor
+            local Obj = {}
+
+            ---@class Ask : Obj
+            local Ask = setmetatable({}, { __index = Obj })
+
+            DOC
+            function Ask:init(issue, ...)
+                assert(select('#', ...) == 0, 'no extra')
+                self.issue = issue
+            end
+            return Ask
+        "#;
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryAssert,
+            &code.replace(
+                "DOC",
+                "---@param issue string what\n---@param ... any must be empty"
+            )
+        ));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::UnnecessaryAssert, &code.replace("DOC", "")));
+    }
 }

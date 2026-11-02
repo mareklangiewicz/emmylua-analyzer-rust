@@ -424,6 +424,21 @@ mod tests {
                 function Sub:init(name, id) self.name = name; self.id = id end
             "#
         ));
+        // A nested owner path (`function M.Sub:init`) finds the field through its prefix's type.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@class NBase
+                ---@field init fun(self: NBase, ...: any) ctor
+                local NBase = {}
+                local M = {}
+                ---@class NSub : NBase
+                ---@type NSub
+                M.Sub = setmetatable({}, { __index = NBase })
+                function M.Sub:init(name, id) self.name = name; self.id = id end
+                return M
+            "#
+        ));
         // Control: a fixed-arity field gives no type past its last parameter.
         assert!(!ws.has_no_diagnostic(
             DiagnosticCode::IncompleteSignatureDoc,

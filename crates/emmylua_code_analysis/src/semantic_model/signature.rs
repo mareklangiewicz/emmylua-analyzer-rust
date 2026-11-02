@@ -525,6 +525,13 @@ impl<'db> SemanticModel<'db> {
                         }
                     })
                     .collect()
+            } else if signature
+                .docs
+                .as_ref()
+                .is_some_and(|docs| docs.param_types.iter().any(|(name, _)| name == "..."))
+            {
+                // The function's own `---@param ... T` wins over the field's slots.
+                Vec::new()
             } else {
                 self.expected_member_signatures_for_closure(closure_syntax)
                     .unwrap_or_default()
@@ -535,17 +542,44 @@ impl<'db> SemanticModel<'db> {
                         name == "self" || matches!(ty, Some(LuaType::SelfInfer))
                     })
                 });
-                let param_start = usize::from(has_self);
+                // `...` starts after the function's own fixed params (`init(issue, ...)`).
+                let fixed = params.iter().filter(|(name, _)| name != "...").count();
+                let param_start = usize::from(has_self) + fixed;
+                // A trailing `...: T` covers every later position, including ones past its index.
+                fn param_at(
+                    fun: &LuaFunctionType,
+                    index: usize,
+                ) -> Option<&(String, Option<LuaType>)> {
+                    let fun_params = fun.get_params();
+                    fun_params
+                        .get(index)
+                        .or_else(|| fun_params.last().filter(|(name, _)| name == "..."))
+                }
                 let max_len = overload_funcs
                     .iter()
-                    .map(|fun| fun.get_params().len().saturating_sub(param_start))
+                    .map(|fun| {
+                        let open = fun
+                            .get_params()
+                            .last()
+                            .is_some_and(|(name, _)| name == "...");
+                        fun.get_params()
+                            .len()
+                            .saturating_sub(param_start)
+                            .max(usize::from(open))
+                    })
                     .max()
                     .unwrap_or(0);
                 let mut slots = Vec::new();
+                let mut open_tail = false;
                 for slot in 0..max_len {
                     let mut parts = Vec::new();
                     for fun in &overload_funcs {
-                        if let Some((_, Some(ty))) = fun.get_params().get(param_start + slot) {
+                        let param = param_at(fun, param_start + slot);
+                        // A `...: T` slot repeats: the rest has no fixed length.
+                        if param.is_some_and(|(name, _)| name == "...") {
+                            open_tail = true;
+                        }
+                        if let Some((_, Some(ty))) = param {
                             let ty = type_eval::expand_alias_generic(self, ty);
                             let ty = if ty.any_type(|t| matches!(t, LuaType::Any)) {
                                 LuaType::Any
@@ -560,6 +594,12 @@ impl<'db> SemanticModel<'db> {
                     // Unions containing any, such as `any[] | any`, should collapse to any directly.
                     if parts.iter().any(|ty| matches!(ty, LuaType::Any)) {
                         parts = vec![LuaType::Any];
+                    }
+                    if open_tail {
+                        slots.push(LuaType::Variadic(Rc::new(VariadicType::Repeat(
+                            LuaType::from_vec(parts),
+                        ))));
+                        break;
                     }
                     slots.push(LuaType::from_vec(parts));
                 }
@@ -901,6 +941,13 @@ impl<'db> SemanticModel<'db> {
             _ => return None,
         };
 
+        // `function M.E:m()`: the runtime path is owned by its root local (`M`), but the field
+        // belongs to the value at its prefix (`M.E`), as in `method_owner_type`.
+        let owner_ty = self
+            .nested_method_prefix(closure_syntax)
+            .map(|prefix| self.type_of_expr(prefix.get_syntax_id()))
+            .filter(|ty| !ty.is_unknown())
+            .unwrap_or(owner_ty);
         let infos = member::member_infos_with_key_all(self, &owner_ty, &key);
         let mut out = Vec::new();
         for info in &infos {
