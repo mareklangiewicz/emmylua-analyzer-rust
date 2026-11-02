@@ -739,6 +739,40 @@ impl<'db> SemanticModel<'db> {
         };
         Some(owner_ty)
     }
+    /// The declared type at a member path (`L.out`): the root name's declared type, walked
+    /// through the path's keys. Read without flow, since a closure stored in a field must fit
+    /// the field's declared type, not the value an initializer narrowed it to (`{ to = nil }`).
+    fn declared_path_type(&self, path: &LuaIndexExpr) -> Option<LuaType> {
+        let mut keys = Vec::new();
+        let mut expr = LuaExpr::IndexExpr(path.clone());
+        let root = loop {
+            match expr {
+                LuaExpr::IndexExpr(index) => {
+                    keys.push(match index.get_index_key()? {
+                        emmylua_parser::LuaIndexKey::Name(name) => {
+                            SmolStr::new(name.get_name_text())
+                        }
+                        emmylua_parser::LuaIndexKey::String(string) => {
+                            SmolStr::new(string.get_value())
+                        }
+                        _ => return None,
+                    });
+                    expr = index.get_prefix_expr()?;
+                }
+                LuaExpr::NameExpr(name) => break name,
+                _ => return None,
+            }
+        };
+        let mut ty = self.type_of_decl(&self.resolve_name(root.get_position())?)?;
+        for key in keys.into_iter().rev() {
+            let infos = member::member_infos_with_key_all(self, &ty, &LuaMemberKey::Name(key));
+            ty = LuaType::from_vec(infos.into_iter().map(|info| info.typ).collect());
+            if ty.is_unknown() {
+                return None;
+            }
+        }
+        Some(ty)
+    }
     /// The prefix `a.b` of a closure stored at a nested path: `function a.b:m()`,
     /// `function a.b.f()` or `a.b.f = function() end`.
     fn nested_member_prefix(&self, closure_syntax: LuaSyntaxId) -> Option<LuaIndexExpr> {
@@ -897,8 +931,7 @@ impl<'db> SemanticModel<'db> {
         // prefix (`M.E`), as in `method_owner_type`.
         let prefix_ty = self
             .nested_member_prefix(closure_syntax)
-            .map(|prefix| self.type_of_expr(prefix.get_syntax_id()))
-            .filter(|ty| !ty.is_unknown());
+            .and_then(|prefix| self.declared_path_type(&prefix));
         let owner_ty = if let Some(prefix_ty) = prefix_ty {
             prefix_ty
         } else {
