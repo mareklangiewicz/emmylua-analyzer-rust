@@ -260,4 +260,149 @@ mod tests {
             "#
         ));
     }
+
+    /// A closure that implements a declared field (`self.next = function(s)`, a subclass
+    /// overriding a `---@field init fun(...)`) is documented by that field (0.25.1 parity).
+    #[test]
+    fn test_declared_member_implementation_needs_no_comment() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@class Box
+                ---@field next fun(s: any): any the pull
+                local Box = {}
+
+                ---@return Box self it
+                function Box:wrap()
+                    local next = self.next
+                    self.next = function(s)
+                        return next(s)
+                    end
+                    return self
+                end
+            "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@class Base
+                ---@field init fun(self: Base, name?: string) ctor
+                local Base = {}
+                ---@class Sub : Base
+                local Sub = {}
+                function Sub:init(name) self.name = name end
+            "#
+        ));
+        // Control: an undeclared member of a class still needs its comment.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@class Other
+                local Other = {}
+                function Other:make(name) return name end
+            "#
+        ));
+    }
+
+    /// A plain description comment is a comment: the `@param`/`@return` checks run instead of
+    /// "Missing comment" (0.25.1 parity).
+    #[test]
+    fn test_description_only_comment_counts() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                local M = {}
+                ---Return all arguments unchanged.
+                function M.id(...) return ... end
+                return M
+            "#
+        ));
+        // Control: a named param still needs its `@param` under a plain comment.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                local M = {}
+                ---Double it.
+                function M.twice(x) return x end
+                return M
+            "#
+        ));
+    }
+
+    /// A trailing `...` may be zero values, so `return x, ...` fits one `@return`.
+    #[test]
+    fn test_trailing_vararg_return_counts_its_minimum() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@param x integer the x
+                ---@return integer x it
+                local function step(x, ...)
+                    return x, ...
+                end
+                return step
+            "#
+        ));
+        // Control: a fixed second value still needs its `@return`.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@param x integer the x
+                ---@return integer x it
+                local function step2(x)
+                    return x, x
+                end
+                return step2
+            "#
+        ));
+    }
+
+    /// Without a comment, a non-global function is reported only when its signature cannot be
+    /// inferred: a parameterless helper with returns is fine (0.25.1 parity).
+    #[test]
+    fn test_inferable_undocumented_local_needs_no_comment() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                local n = 0
+                local function fire()
+                    n = n + 1
+                    return n
+                end
+                return fire
+            "#
+        ));
+    }
+
+    /// A trailing comment of an earlier statement is not the function's comment.
+    #[test]
+    fn test_trailing_comment_of_previous_statement_is_not_attached() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@class E
+                local E = {}
+                ---@param self E it
+                function E.throw(self) error(self) end -- error() takes any value
+
+                function E:loc() return 'here' end
+                return E
+            "#
+        ));
+    }
 }

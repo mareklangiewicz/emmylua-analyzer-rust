@@ -3,7 +3,10 @@
 //! Uses only semantic facts: `Signature.docs` is `None` = no comment (global functions report `MissingGlobalDoc`,
 //! others report `IncompleteSignatureDoc`); additionally report missing `@param` and return values exceeding the documented count.
 
-use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaStat, LuaSyntaxKind};
+use emmylua_parser::{
+    LuaAstNode, LuaAstToken, LuaClosureExpr, LuaComment, LuaExpr, LuaLiteralToken, LuaStat,
+    LuaSyntaxKind,
+};
 
 use crate::DiagnosticCode;
 use crate::LuaType;
@@ -67,19 +70,17 @@ fn check_signature(
     }
 
     let Some(docs) = &signature.docs else {
-        // No comment: always report for global functions; for local functions only when there are parameters/return values.
-        let has_signature_content = closure.get_params_list().is_some_and(|params| {
-            params
-                .get_params()
-                .any(|param| param.get_name_token().is_some())
-        }) || own_return_stats(&closure)
-            .iter()
-            .any(|stat| stat.get_expr_list().count() > 0);
-        // A leading pure `---` comment on a global function counts as documentation (no report when there are no parameters/return values).
-        if is_global && !has_signature_content && has_comment_before(&closure) {
+        // A plain description comment is a comment: check its (absent) `@param`/`@return`s.
+        if has_attached_comment(&closure) {
+            check_params(context, &closure, &[], code);
+            check_returns(context, semantic_model, &closure, 0, code);
             return;
         }
-        if is_global || has_signature_content {
+        // No comment: a global function always needs one; another only when its signature
+        // cannot be inferred, i.e. some named parameter's type is unknown. A parameter typed
+        // by a declared field (`self.next = function(s)`, an override of `---@field init
+        // fun(...)`) or a call site's callback type is known; returns are inferred.
+        if is_global || !param_types_known(semantic_model, &closure) {
             context.add_diagnostic(
                 code,
                 closure.get_range(),
@@ -92,31 +93,12 @@ fn check_signature(
         return;
     };
 
-    // Missing @param for parameters.
     let doc_param_names: Vec<&str> = docs
         .param_types
         .iter()
         .map(|(name, _)| name.as_str())
         .collect();
-    if let Some(params_list) = closure.get_params_list() {
-        for param in params_list.get_params() {
-            let Some(name_token) = param.get_name_token() else {
-                continue;
-            };
-            let name = name_token.get_name_text();
-            if name == "_" || doc_param_names.contains(&name) {
-                continue;
-            }
-            context.add_diagnostic(
-                code,
-                param.get_range(),
-                t!(
-                    "Incomplete signature. Missing @param annotation for parameter `%{name}`.",
-                    name = name
-                ),
-            );
-        }
-    }
+    check_params(context, &closure, &doc_param_names, code);
 
     // The actual number of return values exceeds the documented count. return_overload is computed per line (taking the widest line);
     // If any line is variadic (`integer...`), there is no limit.
@@ -133,22 +115,87 @@ fn check_signature(
     if variadic_overload {
         return;
     }
-    for return_stat in own_return_stats(&closure) {
-        if return_stat.get_expr_list().count() > doc_return_len {
-            for (index, expr) in return_stat.get_expr_list().enumerate() {
-                if index >= doc_return_len {
-                    context.add_diagnostic(
-                        code,
-                        expr.get_range(),
-                        t!(
-                            "Incomplete signature. Missing @return annotation at index `%{index}`.",
-                            index = index + 1
-                        ),
-                    );
-                }
-            }
+    check_returns(context, semantic_model, &closure, doc_return_len, code);
+}
+
+/// Missing `@param` for each named parameter (`_` is exempt).
+fn check_params(
+    context: &mut CheckContext<'_>,
+    closure: &LuaClosureExpr,
+    doc_param_names: &[&str],
+    code: DiagnosticCode,
+) {
+    let Some(params_list) = closure.get_params_list() else {
+        return;
+    };
+    for param in params_list.get_params() {
+        let Some(name_token) = param.get_name_token() else {
+            continue;
+        };
+        let name = name_token.get_name_text();
+        if name == "_" || doc_param_names.contains(&name) {
+            continue;
+        }
+        context.add_diagnostic(
+            code,
+            param.get_range(),
+            t!(
+                "Incomplete signature. Missing @param annotation for parameter `%{name}`.",
+                name = name
+            ),
+        );
+    }
+}
+
+/// Returned values past the documented count. A trailing `...` or call counts as its minimum
+/// number of values, so `return x, ...` fits one `@return`.
+fn check_returns(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    closure: &LuaClosureExpr,
+    doc_return_len: usize,
+    code: DiagnosticCode,
+) {
+    for return_stat in own_return_stats(closure) {
+        let exprs: Vec<LuaExpr> = return_stat.get_expr_list().collect();
+        let value_len = returned_min_len(semantic_model, &exprs);
+        if value_len <= doc_return_len {
+            continue;
+        }
+        // Report only the expressions that add values past the documented count.
+        let reported = value_len.min(exprs.len());
+        for (index, expr) in exprs.iter().enumerate().take(reported).skip(doc_return_len) {
+            context.add_diagnostic(
+                code,
+                expr.get_range(),
+                t!(
+                    "Incomplete signature. Missing @return annotation at index `%{index}`.",
+                    index = index + 1
+                ),
+            );
         }
     }
+}
+
+/// The fewest values `return_stat` yields: one per expression, except a trailing `...` (0) or
+/// call (its result's minimum length).
+fn returned_min_len(semantic_model: &SemanticModel<'_>, exprs: &[LuaExpr]) -> usize {
+    let Some((last, fixed)) = exprs.split_last() else {
+        return 0;
+    };
+    let last_len = match last {
+        LuaExpr::LiteralExpr(literal)
+            if matches!(literal.get_literal(), Some(LuaLiteralToken::Dots(_))) =>
+        {
+            0
+        }
+        LuaExpr::CallExpr(_) => match semantic_model.type_of_expr(last.get_syntax_id()) {
+            LuaType::Variadic(variadic) => variadic.get_min_len().unwrap_or(0),
+            _ => 1,
+        },
+        _ => 1,
+    };
+    fixed.len() + last_len
 }
 
 /// Whether the closure is declared by a statement that can carry its doc comment: `function f`,
@@ -166,13 +213,35 @@ fn is_declared_function(closure: &LuaClosureExpr) -> bool {
     })
 }
 
-/// Whether there is a comment directly before the function statement (a pure `---` also counts).
-fn has_comment_before(closure: &LuaClosureExpr) -> bool {
+/// Whether a comment is attached to the function statement (a pure `---` also counts). A trailing
+/// comment of an earlier statement is not.
+fn has_attached_comment(closure: &LuaClosureExpr) -> bool {
     let Some(stat) = closure.ancestors::<LuaStat>().next() else {
         return false;
     };
-    let Some(prev) = stat.syntax().prev_sibling() else {
+    let Some(comment) = stat.syntax().prev_sibling().and_then(LuaComment::cast) else {
         return false;
     };
-    matches!(prev.kind().into(), LuaSyntaxKind::Comment)
+    comment
+        .get_owner()
+        .is_some_and(|owner| owner.syntax() == stat.syntax())
+}
+
+/// Whether every named parameter has a known type (from a call site, a declared field, ...).
+fn param_types_known(semantic_model: &SemanticModel<'_>, closure: &LuaClosureExpr) -> bool {
+    let Some(params_list) = closure.get_params_list() else {
+        return true;
+    };
+    let Some(facts) = semantic_model.file_facts() else {
+        return false;
+    };
+    params_list.get_params().all(|param| {
+        let Some(name_token) = param.get_name_token() else {
+            return true;
+        };
+        facts
+            .decl_at_offset(name_token.syntax().text_range().start())
+            .and_then(|decl| semantic_model.type_of_decl(&decl.id))
+            .is_some_and(|ty| !ty.is_unknown())
+    })
 }
