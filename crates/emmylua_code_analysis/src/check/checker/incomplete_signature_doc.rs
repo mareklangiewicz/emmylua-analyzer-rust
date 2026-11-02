@@ -5,7 +5,7 @@
 
 use emmylua_parser::{
     LuaAstNode, LuaAstToken, LuaClosureExpr, LuaComment, LuaExpr, LuaLiteralToken, LuaStat,
-    LuaSyntaxKind,
+    LuaSyntaxId, LuaSyntaxKind,
 };
 
 use crate::DiagnosticCode;
@@ -101,18 +101,23 @@ fn check_signature(
     check_params(context, &closure, &doc_param_names, code);
 
     // The actual number of return values exceeds the documented count. return_overload is computed per line (taking the widest line);
-    // If any line is variadic (`integer...`), there is no limit.
+    // If the main `@return` rows or any overload line end variadic (`any ...`, `integer...`), there is no limit.
     let mut doc_return_len = docs.returns.len();
     for row_len in &docs.return_overload_rows {
         doc_return_len = doc_return_len.max(*row_len);
     }
-    let variadic_overload = docs.return_overloads.iter().any(|(_, syntax)| {
+    let is_variadic = |syntax: &LuaSyntaxId| {
         matches!(semantic_model.doc_type_lua(*syntax), LuaType::Variadic(_))
             || syntax
                 .to_node_from_root(&root)
                 .is_some_and(|node| node.text().to_string().ends_with("..."))
-    });
-    if variadic_overload {
+    };
+    if docs.returns.last().is_some_and(is_variadic)
+        || docs
+            .return_overloads
+            .iter()
+            .any(|(_, syntax)| is_variadic(syntax))
+    {
         return;
     }
     check_returns(context, semantic_model, &closure, doc_return_len, code);

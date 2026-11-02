@@ -452,4 +452,48 @@ mod tests {
             "#
         ));
     }
+    /// A variadic main `@return` (`---@return any ...`) has no upper bound (0.25.1 parity), so any
+    /// number of returned values fits it.
+    #[test]
+    fn test_variadic_doc_return_has_no_limit() {
+        let mut ws = VirtualWorkspace::new();
+        ws.enable_full_diagnostic();
+
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@param x integer the x
+                ---@return any ... the values
+                local function var(x)
+                    if x then return 1, 2 end
+                    return nil, 'e'
+                end
+                return var
+            "#
+        ));
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@param x integer the x
+                ---@return integer first
+                ---@return string... rest
+                local function var2(x)
+                    return x, 'a', 'b', 'c'
+                end
+                return var2
+            "#
+        ));
+        // Control: a non-variadic `@return any` still bounds the count to one.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+                ---@param x integer the x
+                ---@return any v the value
+                local function fixed(x)
+                    return x, x
+                end
+                return fixed
+            "#
+        ));
+    }
 }
