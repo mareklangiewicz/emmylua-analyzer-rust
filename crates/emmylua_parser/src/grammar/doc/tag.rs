@@ -7,7 +7,7 @@ use crate::{
 };
 
 use super::{
-    expect_token, if_token_bump, parse_description, parse_line_description,
+    expect_token, if_token_bump, parse_description,
     types::{parse_fun_type, parse_type, parse_type_list},
 };
 
@@ -319,7 +319,7 @@ fn parse_tag_field(p: &mut LuaDocParser) -> DocParseResult {
     parse_type(p)?;
 
     p.set_lexer_state(LuaDocLexerState::Description);
-    parse_line_description(p);
+    parse_description(p);
     Ok(m.complete(p))
 }
 
