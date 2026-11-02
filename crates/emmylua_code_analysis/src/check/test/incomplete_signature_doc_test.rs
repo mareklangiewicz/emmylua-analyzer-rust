@@ -496,4 +496,57 @@ mod tests {
             "#
         ));
     }
+
+    /// An undocumented function that forwards a call into a `require`d module returns what that
+    /// call returns, seen from any file: `delay` forwards `sleep`, which forwards `suspend`.
+    #[test]
+    fn test_cross_file_forwarded_variadic_return() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "susp.lua",
+            r#"
+            local S = {}
+            ---@param x integer
+            ---@return any ...
+            function S.suspend(x) return x end
+            return S
+        "#,
+        );
+        ws.def_file(
+            "slp.lua",
+            r#"
+            local susp = require 'susp'
+            local V = {}
+            ---@param x integer
+            function V.sleep(x) return susp.suspend(x) end
+            return V
+        "#,
+        );
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::IncompleteSignatureDoc,
+            r#"
+            local slp = require 'slp'
+            local M = {}
+            ---@param x integer
+            function M.delay(x) return slp.sleep(x) end
+            return M
+            "#
+        ));
+    }
+
+    /// The same forward, typed: a caller in a third file sees the forwarded `integer`.
+    #[test]
+    fn test_cross_file_forwarded_call_return_type() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "one.lua",
+            "local O = {}\n---@return integer\nfunction O.get() return 1 end\nreturn O\n",
+        );
+        ws.def_file(
+            "fwd.lua",
+            "local one = require 'one'\nlocal F = {}\nfunction F.get() return one.get() end\nreturn F\n",
+        );
+        let ty = ws.expr_ty("require('fwd').get()");
+        assert_eq!(ws.humanize_type(ty), "integer");
+    }
 }
