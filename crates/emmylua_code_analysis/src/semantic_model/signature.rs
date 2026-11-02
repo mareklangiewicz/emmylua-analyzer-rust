@@ -674,7 +674,7 @@ impl<'db> SemanticModel<'db> {
     pub(crate) fn method_owner_type(&self, closure_syntax: LuaSyntaxId) -> Option<LuaType> {
         // `function M.E:m()`: a nested runtime path is owned by its root local (`M`), but the
         // method belongs to the value at its prefix (`M.E`).
-        if let Some(prefix) = self.nested_method_prefix(closure_syntax) {
+        if let Some(prefix) = self.nested_member_prefix(closure_syntax) {
             let ty = self.type_of_expr(prefix.get_syntax_id());
             if !ty.is_unknown() {
                 return Some(ty);
@@ -739,12 +739,21 @@ impl<'db> SemanticModel<'db> {
         };
         Some(owner_ty)
     }
-    /// The prefix `a.b` of a method closure named by a nested path (`function a.b:m()`).
-    fn nested_method_prefix(&self, closure_syntax: LuaSyntaxId) -> Option<LuaIndexExpr> {
+    /// The prefix `a.b` of a closure stored at a nested path: `function a.b:m()`,
+    /// `function a.b.f()` or `a.b.f = function() end`.
+    fn nested_member_prefix(&self, closure_syntax: LuaSyntaxId) -> Option<LuaIndexExpr> {
         let root = self.syntax_tree()?.get_red_root();
-        let func_stat =
-            emmylua_parser::LuaFuncStat::cast(closure_syntax.to_node_from_root(&root)?.parent()?)?;
-        let Some(emmylua_parser::LuaVarExpr::IndexExpr(name)) = func_stat.get_func_name() else {
+        let closure = closure_syntax.to_node_from_root(&root)?;
+        let parent = closure.parent()?;
+        let target = if let Some(func_stat) = emmylua_parser::LuaFuncStat::cast(parent.clone()) {
+            func_stat.get_func_name()?
+        } else {
+            let assign = LuaAssignStat::cast(parent)?;
+            let (vars, values) = assign.get_var_and_expr_list();
+            let index = values.iter().position(|value| value.syntax() == &closure)?;
+            vars.into_iter().nth(index)?
+        };
+        let emmylua_parser::LuaVarExpr::IndexExpr(name) = target else {
             return None;
         };
         match name.get_prefix_expr()? {
@@ -883,71 +892,76 @@ impl<'db> SemanticModel<'db> {
         let owner = member.owner.clone();
         let key = member.key.clone();
 
-        let owner_ty = match &owner {
-            SemanticId::Decl(decl) => {
-                let mut owner_ty = self.type_of_decl(&SemanticId::Decl(decl.clone()))?;
-                // `---@class ClosureTest` + `local Test`: differently named locals should also be associated with the class definition,
-                // otherwise `function Test:e` cannot fill parameter types from class fields.
-                if !matches!(
-                    owner_ty,
-                    LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
-                ) && let Some(facts) = self.file_facts_of(decl.file_id)
-                    && let Some(decl_info) = facts.decl_by_id(&SemanticId::Decl(decl.clone()))
-                    && let Some(def) = decl_info
-                        .owner_syntax
-                        .and_then(|syntax| facts.type_def_by_owner_syntax(syntax))
-                {
-                    owner_ty = self.type_def_ref(def);
-                }
-                owner_ty
-            }
-            SemanticId::TypeDef(def) => {
-                let id = match &def.scope {
-                    TypeScope::Global => LuaTypeDeclId::global(&def.full_name),
-                    TypeScope::Internal(workspace_id) => {
-                        LuaTypeDeclId::internal(*workspace_id, &def.full_name)
-                    }
-                    TypeScope::File(file_id) => LuaTypeDeclId::file(*file_id, &def.full_name),
-                };
-                let def = self.type_def_of(&id)?;
-                self.type_def_ref(&def)
-            }
-            SemanticId::Name(name) => {
-                let owner_id = SemanticId::Name(name.clone());
-                match self.resolve_owner(&owner_id) {
-                    Some(SemanticId::Decl(decl)) => self.type_of_decl(&SemanticId::Decl(decl))?,
-                    Some(SemanticId::TypeDef(def)) => {
-                        let id = match &def.scope {
-                            TypeScope::Global => LuaTypeDeclId::global(&def.full_name),
-                            TypeScope::Internal(workspace_id) => {
-                                LuaTypeDeclId::internal(*workspace_id, &def.full_name)
-                            }
-                            TypeScope::File(file_id) => {
-                                LuaTypeDeclId::file(*file_id, &def.full_name)
-                            }
-                        };
-                        let def = self.type_def_of(&id)?;
-                        self.type_def_ref(&def)
-                    }
-                    _ => return None,
-                }
-            }
-            SemanticId::Member(table_key) => {
-                // Table-literal field (`---@type D31; local f = { func = function(...) end }`):
-                // the member owner is a synthetic table identity; go back to the declaration that initializes the table and use its declared type as the field type source.
-                let decl = facts.decl_by_value_range(table_key.key_range)?;
-                self.type_of_decl(&decl.id)?
-            }
-            _ => return None,
-        };
-
-        // `function M.E:m()`: the runtime path is owned by its root local (`M`), but the field
-        // belongs to the value at its prefix (`M.E`), as in `method_owner_type`.
-        let owner_ty = self
-            .nested_method_prefix(closure_syntax)
+        // `function M.E:m()` / `M.E.f = function() end`: the runtime path is owned by its root
+        // local (`M`) or by a nested table literal, but the field belongs to the value at its
+        // prefix (`M.E`), as in `method_owner_type`.
+        let prefix_ty = self
+            .nested_member_prefix(closure_syntax)
             .map(|prefix| self.type_of_expr(prefix.get_syntax_id()))
-            .filter(|ty| !ty.is_unknown())
-            .unwrap_or(owner_ty);
+            .filter(|ty| !ty.is_unknown());
+        let owner_ty = if let Some(prefix_ty) = prefix_ty {
+            prefix_ty
+        } else {
+            match &owner {
+                SemanticId::Decl(decl) => {
+                    let mut owner_ty = self.type_of_decl(&SemanticId::Decl(decl.clone()))?;
+                    // `---@class ClosureTest` + `local Test`: differently named locals should also be associated with the class definition,
+                    // otherwise `function Test:e` cannot fill parameter types from class fields.
+                    if !matches!(
+                        owner_ty,
+                        LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_)
+                    ) && let Some(facts) = self.file_facts_of(decl.file_id)
+                        && let Some(decl_info) = facts.decl_by_id(&SemanticId::Decl(decl.clone()))
+                        && let Some(def) = decl_info
+                            .owner_syntax
+                            .and_then(|syntax| facts.type_def_by_owner_syntax(syntax))
+                    {
+                        owner_ty = self.type_def_ref(def);
+                    }
+                    owner_ty
+                }
+                SemanticId::TypeDef(def) => {
+                    let id = match &def.scope {
+                        TypeScope::Global => LuaTypeDeclId::global(&def.full_name),
+                        TypeScope::Internal(workspace_id) => {
+                            LuaTypeDeclId::internal(*workspace_id, &def.full_name)
+                        }
+                        TypeScope::File(file_id) => LuaTypeDeclId::file(*file_id, &def.full_name),
+                    };
+                    let def = self.type_def_of(&id)?;
+                    self.type_def_ref(&def)
+                }
+                SemanticId::Name(name) => {
+                    let owner_id = SemanticId::Name(name.clone());
+                    match self.resolve_owner(&owner_id) {
+                        Some(SemanticId::Decl(decl)) => {
+                            self.type_of_decl(&SemanticId::Decl(decl))?
+                        }
+                        Some(SemanticId::TypeDef(def)) => {
+                            let id = match &def.scope {
+                                TypeScope::Global => LuaTypeDeclId::global(&def.full_name),
+                                TypeScope::Internal(workspace_id) => {
+                                    LuaTypeDeclId::internal(*workspace_id, &def.full_name)
+                                }
+                                TypeScope::File(file_id) => {
+                                    LuaTypeDeclId::file(*file_id, &def.full_name)
+                                }
+                            };
+                            let def = self.type_def_of(&id)?;
+                            self.type_def_ref(&def)
+                        }
+                        _ => return None,
+                    }
+                }
+                SemanticId::Member(table_key) => {
+                    // Table-literal field (`---@type D31; local f = { func = function(...) end }`):
+                    // the member owner is a synthetic table identity; go back to the declaration that initializes the table and use its declared type as the field type source.
+                    let decl = facts.decl_by_value_range(table_key.key_range)?;
+                    self.type_of_decl(&decl.id)?
+                }
+                _ => return None,
+            }
+        };
         let infos = member::member_infos_with_key_all(self, &owner_ty, &key);
         let mut out = Vec::new();
         for info in &infos {
