@@ -169,16 +169,48 @@ impl<T> CacheEntry<T> {
     }
 }
 
+/// Immutable signature projection supplied by the caller. Equality includes the
+/// generic bindings and whether the caller included the main signature.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct OriginalSignatures {
+    pub(super) closure: LuaSyntaxId,
+    pub(super) signatures: Rc<Vec<LuaFunctionType>>,
+}
+
+/// The three declaration queries supported by the shared flow walk.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum DeclTracePurpose {
+    /// `capture`: a read of a reassigned local that can see any of its values, inside a closure
+    /// that captures it or after a closure that writes it may have run. Code outside this range
+    /// may run after any assignment outside it, so those are skipped and the declaration
+    /// contributes its initializer widened to its kind (`widen_loop_carried`).
+    ReadValue {
+        capture: Option<rowan::TextRange>,
+    },
+    /// Use the declaration type and casts, without assignments or branch guards.
+    AssignTarget,
+    OriginalSignatures(OriginalSignatures),
+}
+
+impl DeclTracePurpose {
+    pub(crate) const READ_VALUE: Self = Self::ReadValue { capture: None };
+}
+
+/// Syntax facts used to choose a safe return-type query for a local function.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalCallableFlow {
+    Reassigned,
+    Unchanged,
+    /// The value is unchanged, but a named cast can change its exposed type.
+    Cast,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum TraceSubject {
     Decl {
         decl: SemanticId,
-        guards: bool,
-        casts: bool,
-        assignments: bool,
+        purpose: DeclTracePurpose,
         merge_branch: bool,
-        /// The capturing closure of a captured-local read (see `TraceOptions::capture`).
-        capture: Option<rowan::TextRange>,
     },
     Member {
         member: SemanticId,
@@ -187,6 +219,8 @@ pub(crate) enum TraceSubject {
 }
 
 /// Memo key for one flow-trace state on a loop-free graph: `(file, subject, flow node)`.
+/// Original-signature traces keep incoming PathState empty and memoize each
+/// node's transfer during unwind, so a cached node never contains later casts.
 ///
 /// The state is the one for an empty incoming path: `super::flow` applies the guards a
 /// query collected before reaching the node on top of it. The memo is consulted only for
@@ -230,6 +264,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) builtin_function: HashMap<(FileId, BuiltinKey), Option<SmolStr>>,
     /// Whether all writes to a local occur in its own closure.
     pub(crate) builtin_local_writes: HashMap<(FileId, SemanticId), bool>,
+    pub(crate) callable_local_flow: HashMap<(FileId, SemanticId), LocalCallableFlow>,
     pub(crate) resolve_owner_set: HashMap<SemanticId, Vec<SemanticId>>,
     pub(crate) member_type_at: HashMap<(FileId, SemanticId, TextSize), LuaType>,
     pub(crate) flow_decl: HashMap<(FileId, SemanticId, FlowId), LuaType>,

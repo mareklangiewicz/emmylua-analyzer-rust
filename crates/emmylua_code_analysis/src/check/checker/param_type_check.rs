@@ -158,26 +158,13 @@ pub(crate) fn callable_candidates_uncached(
     candidates
 }
 
-/// The `---@overload`s of `decl`'s function value, while that value is what a read at `offset`
-/// sees: for a local, an assignment before it replaces the function and its overloads. (A
-/// global's `function G()` is itself an assignment; its overloads always apply.)
+/// The `---@overload`s of `decl`'s function value that a read at `offset` sees.
 fn live_decl_overloads(
     semantic_model: &SemanticModel<'_>,
     decl: &SemanticId,
     offset: TextSize,
 ) -> Vec<LuaFunctionType> {
-    let is_local = semantic_model
-        .file_facts()
-        .and_then(|facts| facts.decl_by_id(decl))
-        .is_some_and(|info| matches!(info.kind, crate::DeclKind::Local { .. }));
-    if is_local
-        && semantic_model
-            .flow_tree()
-            .is_some_and(|tree| tree.latest_decl_assignment(decl, offset).is_some())
-    {
-        return Vec::new();
-    }
-    InferVm::new(semantic_model, &[]).overload_candidates_for_decl(decl)
+    InferVm::new(semantic_model, &[]).overload_candidates_for_decl(decl, offset)
 }
 
 /// The signatures of the definition an argument names, when it declares `---@overload`s:

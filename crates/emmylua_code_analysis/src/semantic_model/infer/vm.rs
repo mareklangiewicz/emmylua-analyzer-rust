@@ -24,7 +24,9 @@ use crate::semantic_db::def::{
 };
 use crate::semantic_db::facts::member_key_from_index_key;
 use crate::semantic_db::types::PrimitiveType;
-use crate::semantic_model::flow::{ExprCastMode, apply_expr_casts, type_of_expr_with_cast};
+use crate::semantic_model::flow::{
+    ExprCastMode, apply_expr_casts, original_decl_signatures_at, type_of_expr_with_cast,
+};
 use crate::semantic_model::member::{
     MemberInfo, attached_global_table_member, index_signature_type, member_key_type,
     table_const_class_type, table_metatable_type,
@@ -52,6 +54,12 @@ use crate::{
     LuaAliasCallType, LuaConditionalType, LuaInstanceType, LuaIntersectionType, LuaMappedType,
     LuaMultiLineUnion,
 };
+
+/// Signatures from one function definition, before candidate ordering or flow filtering.
+pub(crate) struct SignatureProjection {
+    pub(crate) main: Option<LuaFunctionType>,
+    pub(crate) overloads: Vec<LuaFunctionType>,
+}
 
 /// The operand determines both the index metadata and the stack shape.
 #[derive(Debug, Clone)]
@@ -2646,14 +2654,6 @@ impl<'a> InferVm<'a> {
         self.model.constructor_attribute_of_type(&def.id)
     }
 
-    /// Cross-file callable candidate projection for an owner identity.
-    pub(crate) fn callable_candidates_for_owner(
-        &self,
-        owner: &SemanticId,
-    ) -> Option<Vec<LuaFunctionType>> {
-        self.signature_candidates(owner)
-    }
-
     /// Single-identity candidate projection (no cross-file global expansion).
     pub(crate) fn callable_candidates_for_owner_single(
         &self,
@@ -2691,27 +2691,16 @@ impl<'a> InferVm<'a> {
 
     /// Single-identity signature projection: main signature + `---@overload`.
     fn signature_candidates_single(&self, owner: &SemanticId) -> Option<Vec<LuaFunctionType>> {
-        let (file_id, value_syntax, overload_syntaxes) = match owner {
+        let (file_id, value_syntax) = match owner {
             SemanticId::Decl(key) => {
                 let facts = self.model.file_facts_of(key.file_id)?;
                 let decl = facts.decl_by_id(owner)?;
-                let overloads = facts
-                    .signature_by_closure(decl.value_expr_syntax?)
-                    .and_then(|sig| sig.docs.as_ref())
-                    .map(|docs| docs.overloads.clone())
-                    .unwrap_or_default();
-                (key.file_id, decl.value_expr_syntax?, overloads)
+                (key.file_id, decl.value_expr_syntax?)
             }
             SemanticId::Member(key) => {
                 let facts = self.model.file_facts_of(key.file_id)?;
                 let member = facts.member_by_id(owner)?;
-                let mut overload_syntaxes: Vec<LuaSyntaxId> = Vec::new();
-                if let Some(signature) = facts.signature_by_closure(member.value_syntax?)
-                    && let Some(docs) = signature.docs.as_ref()
-                {
-                    overload_syntaxes = docs.overloads.clone();
-                }
-                (key.file_id, member.value_syntax?, overload_syntaxes)
+                (key.file_id, member.value_syntax?)
             }
             SemanticId::Name(name) => {
                 // Cross-file global overloads: a global call owns `Name("f")`, but
@@ -2746,33 +2735,61 @@ impl<'a> InferVm<'a> {
             }
             return None;
         }
-        let docs = signature.docs.as_ref()?;
-        let generic_params = docs.generic_params.clone();
-
-        let mut out = self.overload_functions(file_id, &overload_syntaxes, &generic_params);
-        if let Some(main_fun) = self.main_signature_function(file_id, signature, &generic_params) {
-            out.push(main_fun);
-        }
+        let projection = self.signature_projection(file_id, signature)?;
+        let mut out = projection.overloads;
+        out.extend(projection.main);
         Some(out)
     }
 
-    /// Only the `---@overload`s of a declaration's function value (no main signature).
-    pub(crate) fn overload_candidates_for_decl(&self, owner: &SemanticId) -> Vec<LuaFunctionType> {
+    /// Project one definition, keeping its main signature separate from overloads.
+    pub(crate) fn signature_projection(
+        &self,
+        file_id: FileId,
+        signature: &Signature,
+    ) -> Option<SignatureProjection> {
+        let docs = signature.docs.as_ref()?;
+        let generic_params = &docs.generic_params;
+        let overloads = self.overload_functions(file_id, &docs.overloads, generic_params);
+        Some(SignatureProjection {
+            main: self.main_signature_function(file_id, signature, generic_params),
+            overloads,
+        })
+    }
+
+    /// The `---@overload`s of a declaration's function value that a read at `offset` sees (no
+    /// main signature). For a local, an assignment or cast on the way to the read can remove
+    /// them. A global's `function G()` is itself an assignment, so its overloads always apply.
+    pub(crate) fn overload_candidates_for_decl(
+        &self,
+        owner: &SemanticId,
+        offset: rowan::TextSize,
+    ) -> Vec<LuaFunctionType> {
         let SemanticId::Decl(key) = owner else {
             return Vec::new();
         };
         let Some(facts) = self.model.file_facts_of(key.file_id) else {
             return Vec::new();
         };
+        let Some(decl) = facts.decl_by_id(owner) else {
+            return Vec::new();
+        };
+        let Some(original) = decl.value_expr_syntax else {
+            return Vec::new();
+        };
         let Some(docs) = facts
-            .decl_by_id(owner)
-            .and_then(|decl| decl.value_expr_syntax)
-            .and_then(|syntax| facts.signature_by_closure(syntax))
+            .signature_by_closure(original)
             .and_then(|sig| sig.docs.as_ref())
         else {
             return Vec::new();
         };
-        self.overload_functions(key.file_id, &docs.overloads, &docs.generic_params)
+        let overloads = self.overload_functions(key.file_id, &docs.overloads, &docs.generic_params);
+        if overloads.is_empty()
+            || key.file_id != self.model.file_id()
+            || !matches!(decl.kind, DeclKind::Local { .. })
+        {
+            return overloads;
+        }
+        original_decl_signatures_at(self.model, owner, original, offset, overloads)
     }
 
     fn overload_functions(
