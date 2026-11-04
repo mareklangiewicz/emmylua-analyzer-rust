@@ -595,28 +595,36 @@ mod tests {
     /// field it is stored in, as one stored through a one-level path does.
     #[test]
     fn test_nested_member_closure_params_from_field() {
+        fn param_type(ws: &mut VirtualWorkspace, file: &str, src: &str) -> String {
+            let file_id = ws.def_file(file, src);
+            let model = ws.analysis.semantic_model(file_id);
+            let facts = model.file_facts().expect("facts");
+            let decl = facts
+                .decls
+                .iter()
+                .find(|decl| decl.name == "line")
+                .expect("param decl")
+                .id
+                .clone();
+            let ty = model.type_of_decl(&decl).unwrap_or(crate::LuaType::Unknown);
+            ws.humanize_type(ty)
+        }
         let mut ws = VirtualWorkspace::new();
-        ws.enable_check(DiagnosticCode::IncompleteSignatureDoc);
         let decl =
             "local L = { out = { to = nil } } ---@type { out: { to: fun(line: string)? } }\n";
-        assert!(ws.has_no_diagnostic(
-            DiagnosticCode::IncompleteSignatureDoc,
-            &format!("{decl}L.out.to = function(line) return line end\n")
-        ));
-        assert!(ws.has_no_diagnostic(
-            DiagnosticCode::IncompleteSignatureDoc,
-            &format!("{decl}function L.out.to(line) return line end\n")
-        ));
-        // Across files: the gradle registry's `gradle.out.to = function(line)`.
+        let assigned = format!("{decl}L.out.to = function(line) return line end\n");
+        assert_eq!(param_type(&mut ws, "a.lua", &assigned), "string");
+        let declared = format!("{decl}function L.out.to(line) return line end\n");
+        assert_eq!(param_type(&mut ws, "f.lua", &declared), "string");
+        // Across files, the shape luagnd's `gradle.out.to = function(line)` has.
         ws.def_file(
             "reg.lua",
             "local out = { to = nil } ---@type { to: fun(line: string)? }\nlocal M = { out = out }\nreturn M\n",
         );
-        assert!(ws.has_no_diagnostic(
-            DiagnosticCode::IncompleteSignatureDoc,
-            "local reg = require 'reg'\nreg.out.to = function(line) return line end\n"
-        ));
+        let required = "local reg = require 'reg'\nreg.out.to = function(line) return line end\n";
+        assert_eq!(param_type(&mut ws, "r.lua", required), "string");
         // No field to take them from: still undocumented.
+        ws.enable_check(DiagnosticCode::IncompleteSignatureDoc);
         assert!(!ws.has_no_diagnostic(
             DiagnosticCode::IncompleteSignatureDoc,
             "local N = { out = {} }\nN.out.to = function(line) return line end\n"
