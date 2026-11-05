@@ -29,7 +29,7 @@ use crate::semantic_model::flow::{
 };
 use crate::semantic_model::member::{
     MemberInfo, attached_global_table_member, index_signature_type, member_key_type,
-    table_const_class_type, table_metatable_type,
+    table_const_class_type, table_metatable_type, table_owners,
 };
 use crate::semantic_model::type_eval::{
     eval_conditionals, expand_alias_generic, expand_alias_head, instantiate_for_receiver,
@@ -1334,25 +1334,28 @@ impl<'a> InferVm<'a> {
         // look up the Name owner from the global path holding the TableConst (`zz = {}` →
         // `zz`, `zz.api = {}` → `zz.api`), or, for a value of the class attached to such a
         // table (`local b = bit`), from that class.
-        let name_owner_member = if let LuaType::TableConst(_table) = &owner.ty
-            && let Some(path) = owner.owner.as_ref().and_then(|id| self.global_path_of(id))
-        {
-            let name_owner = SemanticId::name(path);
-            let members = self.model.members_of_owner(&name_owner);
-            match key {
-                LuaMemberKey::Name(name) => members.into_iter().find(|m| &m.name == name),
-                LuaMemberKey::Integer(_) => members.into_iter().find(|m| {
-                    self.model
-                        .file_facts_of(m.file_id)
-                        .and_then(|facts| facts.member_by_id(&m.id))
-                        .is_some_and(|member| &member.key == key)
-                }),
-                _ => None,
-            }
-            .cloned()
+        let name_owner_member = if let LuaType::TableConst(table) = &owner.ty {
+            table_owners(self.model, table)
+                .into_iter()
+                .filter(|owner| matches!(owner, SemanticId::Name(_)))
+                .find_map(|name_owner| {
+                    let members = self.model.members_of_owner(&name_owner);
+                    match key {
+                        LuaMemberKey::Name(name) => members.into_iter().find(|m| &m.name == name),
+                        LuaMemberKey::Integer(_) => members.into_iter().find(|m| {
+                            self.model
+                                .file_facts_of(m.file_id)
+                                .and_then(|facts| facts.member_by_id(&m.id))
+                                .is_some_and(|member| &member.key == key)
+                        }),
+                        _ => None,
+                    }
+                    .cloned()
+                })
         } else {
-            attached_global_table_member(self.model, &owner.ty, key)
-        };
+            None
+        }
+        .or_else(|| attached_global_table_member(self.model, &owner.ty, key));
         if let Some(member) = name_owner_member {
             let mut ty = self
                 .model
@@ -2231,29 +2234,6 @@ impl<'a> InferVm<'a> {
             types.pop().expect("len checked")
         } else {
             LuaType::from_vec(types)
-        }
-    }
-
-    /// The `Name` path a table holder is written under: a declaration's own name, or `head.key`
-    /// for a member of the global path `head` (`function zz.api.f()` lives under `Name("zz.api")`
-    /// while `zz.api = {}` is a member of `Name("zz")`).
-    fn global_path_of(&self, holder: &SemanticId) -> Option<SmolStr> {
-        match holder {
-            SemanticId::Decl(key) => {
-                let facts = self.model.file_facts_of(key.file_id)?;
-                Some(facts.decl_by_id(holder)?.name.clone())
-            }
-            SemanticId::Member(key) => {
-                let facts = self.model.file_facts_of(key.file_id)?;
-                let member = facts.member_by_id(holder)?;
-                let (SemanticId::Name(head), LuaMemberKey::Name(tail)) =
-                    (&member.owner, &member.key)
-                else {
-                    return None;
-                };
-                Some(SmolStr::new(format!("{head}.{tail}")))
-            }
-            _ => None,
         }
     }
 

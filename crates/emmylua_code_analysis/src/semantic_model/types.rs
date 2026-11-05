@@ -1084,6 +1084,10 @@ impl<'db> SemanticModel<'db> {
         });
         value
     }
+    /// Members written through the member path `expr`, beside those of its type.
+    pub fn place_member_infos(&self, expr: &LuaExpr) -> Vec<member::MemberInfo> {
+        member::place_member_infos(self, expr)
+    }
     /// Whether a type is an instance of a `---@class` (`Foo`, `Box<T>`).
     pub(crate) fn is_class_instance(&self, ty: &LuaType) -> bool {
         let id = match ty {

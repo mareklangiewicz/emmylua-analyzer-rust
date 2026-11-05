@@ -35,6 +35,56 @@ mod tests {
         })
     }
 
+    fn member_labels(code: &str) -> Result<Vec<String>> {
+        let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+        let items = get_completion_items(&mut ws, code, CompletionTriggerKind::TRIGGER_CHARACTER)?;
+        Ok(items.into_iter().map(|item| item.label).collect())
+    }
+
+    /// Members reach a table through what holds it, however the value got there.
+    #[gtest]
+    fn test_member_completion_through_table_holder() -> Result<()> {
+        for code in [
+            "G = {}\nG.sub = {}\nG.sub.leaf = 1\nG.sub.<??>\n",
+            "G = {}\nG.a = {}\nG.a.sub = {}\nG.a.sub.leaf = 1\nG.a.sub.<??>\n",
+            "G = {}\nG.sub = {}\nG.sub.leaf = 1\nlocal a = G.sub\na.<??>\n",
+            "G = {}\nG.sub = setmetatable({}, {})\nG.sub.leaf = 1\nG.sub.<??>\n",
+            "G = {}\nG.sub = setmetatable({}, {})\nG.sub.leaf = 1\nlocal a = G.sub\na.<??>\n",
+            "G = G or {}\nG.leaf = 1\nG.<??>\n",
+            "G = (G or {})\nG.leaf = 1\nG.<??>\n",
+            "G = setmetatable({}, {})\nG.leaf = 1\nG.<??>\n",
+            "_G.G = _G.G or {}\nG.leaf = 1\nG.<??>\n",
+            "local t = setmetatable({}, {})\nt.leaf = 1\nt.<??>\n",
+            "local t = X or {}\nt.leaf = 1\nt.<??>\n",
+            "local L = {}\nL.sub = setmetatable({}, {})\nL.sub.leaf = 1\nL.sub.<??>\n",
+        ] {
+            assert_eq!(member_labels(code)?, ["leaf"], "{code}");
+        }
+        Ok(())
+    }
+
+    /// A value with no table identity still has the members written through its path.
+    #[gtest]
+    fn test_member_completion_through_place() -> Result<()> {
+        for code in [
+            "G = {} --[[@as table]]\nG.leaf = 1\nG.<??>\n",
+            "_G.G = _G.G or {} --[[@as table]]\nG.leaf = 1\nG.<??>\n",
+            "local t = {} --[[@as table]]\nt.leaf = 1\nt.<??>\n",
+            "---@class (private) C: { [string]: any }\nG = {}\nG.sub = F() --[[@as C]]\nG.sub.leaf = 1\nG.sub.<??>\n",
+        ] {
+            assert_eq!(member_labels(code)?, ["leaf"], "{code}");
+        }
+        Ok(())
+    }
+
+    /// A local is not the global of the same name: its members stay its own.
+    #[gtest]
+    fn test_member_completion_local_shadows_global_path() -> Result<()> {
+        let code = "G = {}\nG.ghost = 1\nlocal function f()\n  local G = {}\n  G.real = 1\n  G.<??>\nend\n";
+        assert_eq!(member_labels(code)?, ["real"]);
+        Ok(())
+    }
+
     #[gtest]
     fn test_require_completion_skips_removed_module() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();

@@ -112,7 +112,8 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     let mut members = builder.semantic_model.member_infos(&prefix_type);
     // `---@class B : A local b = {}`: merge table-identity members with associated type definition members.
     let associated = associated_type_member_infos(&builder.semantic_model, &prefix_expr);
-    for info in associated {
+    let place = builder.semantic_model.place_member_infos(&prefix_expr);
+    for info in associated.into_iter().chain(place) {
         if !members.iter().any(|member| member.key == info.key) {
             members.push(info);
         }

@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use emmylua_parser::{LuaAstNode, LuaTableExpr, LuaTableField};
+use emmylua_parser::{LuaAstNode, LuaExpr, LuaTableExpr, LuaTableField};
 use hashbrown::HashMap;
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
@@ -49,6 +49,57 @@ pub(super) fn member_infos_all(model: &SemanticModel, prefix_type: &LuaType) -> 
     let mut visited = Vec::new();
     collect_members(model, prefix_type, None, None, &mut visited, &mut out, None);
     out
+}
+
+/// Every owner a table's members are stored under: the literal itself (its fields), then what
+/// holds it, since writes go through the holder. `local t = {}; t.a = 1` is owned by the local;
+/// a global path owns its writes by name, across files: `string.rep` for `string = {}`,
+/// `zz.api.f` for `zz.api = {}`.
+pub(crate) fn table_owners(
+    model: &SemanticModel,
+    table: &InFiled<rowan::TextRange>,
+) -> Vec<SemanticId> {
+    let mut owners = vec![SemanticId::member(table.file_id, table.value)];
+    let Some(facts) = model.file_facts_of(table.file_id) else {
+        return owners;
+    };
+    if let Some(decl) = facts.decl_by_value_range(table.value) {
+        owners.push(decl.id.clone());
+        if matches!(decl.kind, DeclKind::Global) {
+            owners.push(SemanticId::name(decl.name.clone()));
+        }
+    }
+    if let Some(member) = facts.member_by_value_range(table.value)
+        && let (SemanticId::Name(head), LuaMemberKey::Name(tail)) = (&member.owner, &member.key)
+    {
+        let path = match head.as_str() {
+            "_G" | "_ENV" => tail.clone(),
+            head => SmolStr::new(format!("{head}.{tail}")),
+        };
+        let path = SemanticId::name(path);
+        if !owners.contains(&path) {
+            owners.push(path);
+        }
+    }
+    owners
+}
+
+/// Members written through the member path `expr` itself, whatever its value's type says: a value
+/// typed plain `table` or a class has no table identity to reach them by. This is where a read of
+/// one member already looks (`member_ref_of_index`); `member_infos` only sees the type.
+pub fn place_member_infos(model: &SemanticModel, expr: &LuaExpr) -> Vec<MemberInfo> {
+    let Some(owner) = model
+        .analysis()
+        .place_owner_of_expr(model.file_id(), expr.get_syntax_id())
+    else {
+        return Vec::new();
+    };
+    let members = model
+        .members_of_owner(&owner)
+        .iter()
+        .filter_map(|member_ref| member_info_of(model, &member_ref, None, None))
+        .collect();
+    dedup_by_key(members)
 }
 
 /// Member with the given key of a prefix type (first match).
@@ -306,27 +357,9 @@ fn direct_member_info(
                 &mut visited,
             )
         }
-        LuaType::TableConst(table) => {
-            let owner = SemanticId::member(table.file_id, table.value);
-            if let Some(info) = find_member_in_owner(model, &owner, key, None, None) {
-                return Some(info);
-            }
-            if let Some(decl) = model
-                .file_facts_of(table.file_id)
-                .and_then(|facts| facts.decl_by_value_range(table.value))
-            {
-                let mut owners = vec![decl.id.clone()];
-                if matches!(decl.kind, DeclKind::Global) {
-                    owners.push(SemanticId::name(decl.name.clone()));
-                }
-                for owner in owners {
-                    if let Some(info) = find_member_in_owner(model, &owner, key, None, None) {
-                        return Some(info);
-                    }
-                }
-            }
-            None
-        }
+        LuaType::TableConst(table) => table_owners(model, table)
+            .iter()
+            .find_map(|owner| find_member_in_owner(model, owner, key, None, None)),
         LuaType::Object(object) => object.get_fields().get(key).cloned().map(|typ| MemberInfo {
             key: key.clone(),
             typ,
@@ -865,24 +898,11 @@ fn collect_members(
                     }
                 }
             }
-            // `local t = {}; t.a = 1`: the table identity is also bound to the local that declares it,
-            // so its runtime members (`t.a = 1`) belong to the table as well.
-            if let Some(decl) = model
-                .file_facts_of(table.file_id)
-                .and_then(|facts| facts.decl_by_value_range(table.value))
-            {
-                let mut owners = vec![decl.id.clone()];
-                // Global table: runtime members are collected by Name key (`string.rep` for `string = {}`).
-                if matches!(decl.kind, DeclKind::Global) {
-                    owners.push(SemanticId::name(decl.name.clone()));
-                }
-                for decl_owner in owners {
-                    for member_ref in owner_member_refs(model, &decl_owner, filter) {
-                        if let Some(info) =
-                            member_info_of(model, &member_ref, bindings, name_bindings)
-                        {
-                            push_member_info(out, filter, info);
-                        }
+            for holder in table_owners(model, table).iter().skip(1) {
+                for member_ref in owner_member_refs(model, holder, filter) {
+                    if let Some(info) = member_info_of(model, &member_ref, bindings, name_bindings)
+                    {
+                        push_member_info(out, filter, info);
                     }
                 }
             }

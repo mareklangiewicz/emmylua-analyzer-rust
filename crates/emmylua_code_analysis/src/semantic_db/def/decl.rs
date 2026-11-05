@@ -36,6 +36,8 @@ pub struct Decl {
     pub scope_id: u32,
     /// Initializer expression (uniquely identified by `LuaSyntaxId`; position alone cannot distinguish parent/child expressions).
     pub value_expr_syntax: Option<LuaSyntaxId>,
+    /// The table literal the initializer evaluates to, which may be the initializer itself.
+    pub value_table_syntax: Option<LuaSyntaxId>,
     /// Multi-return assignment slot (`payload = 1` for `local ok, payload = f()`).
     pub multi_return_index: Option<usize>,
     /// Name index within the same `local` statement (`b = 1` for `local a, b ---@type A, B`).
@@ -71,6 +73,7 @@ impl Decl {
             name_range,
             scope_id: 0,
             value_expr_syntax: None,
+            value_table_syntax: None,
             multi_return_index: None,
             doc_type_index: None,
             owner_syntax: None,

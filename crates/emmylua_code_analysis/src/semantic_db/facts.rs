@@ -7,10 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use emmylua_parser::{
-    LuaAssignStat, LuaAst, LuaAstNode, LuaAstToken, LuaBlock, LuaCallArgList, LuaCallExpr,
-    LuaCallExprStat, LuaChunk, LuaClosureExpr, LuaComment, LuaDocFieldKey, LuaDocGenericDeclList,
-    LuaDocTag, LuaDocTagAttributeUse, LuaDocTagDiagnostic, LuaDocTagField, LuaDocType,
-    LuaDocTypeFlag, LuaExpr, LuaFuncStat, LuaIfClauseStat, LuaIndexExpr, LuaIndexKey,
+    BinaryOperator, LuaAssignStat, LuaAst, LuaAstNode, LuaAstToken, LuaBlock, LuaCallArgList,
+    LuaCallExpr, LuaCallExprStat, LuaChunk, LuaClosureExpr, LuaComment, LuaDocFieldKey,
+    LuaDocGenericDeclList, LuaDocTag, LuaDocTagAttributeUse, LuaDocTagDiagnostic, LuaDocTagField,
+    LuaDocType, LuaDocTypeFlag, LuaExpr, LuaFuncStat, LuaIfClauseStat, LuaIndexExpr, LuaIndexKey,
     LuaLiteralExpr, LuaLiteralToken, LuaLocalStat, LuaNameExpr, LuaNameToken, LuaReturnStat,
     LuaStat, LuaSyntaxId, LuaSyntaxKind, LuaTableExpr, LuaTableField, LuaVarExpr,
     LuaVersionCondition, NumberResult, UnaryOperator,
@@ -960,6 +960,11 @@ impl FactsBuilder {
                     .entry(syntax.get_range())
                     .or_insert(index);
             }
+            if let Some(syntax) = member.value_table_syntax {
+                member_by_value_range
+                    .entry(syntax.get_range())
+                    .or_insert(index);
+            }
         }
         let type_def_by_id = self
             .type_defs
@@ -1065,7 +1070,12 @@ impl FactsBuilder {
             .decls
             .iter()
             .enumerate()
-            .filter_map(|(i, decl)| decl.value_expr_syntax.map(|syntax| (syntax.get_range(), i)))
+            .flat_map(|(i, decl)| {
+                [decl.value_expr_syntax, decl.value_table_syntax]
+                    .into_iter()
+                    .flatten()
+                    .map(move |syntax| (syntax.get_range(), i))
+            })
             .collect::<HashMap<_, _>>();
         let mut decls_by_owner_syntax: HashMap<LuaSyntaxId, Vec<usize>> = HashMap::new();
         for (index, decl) in self.decls.iter().enumerate() {
@@ -1828,6 +1838,7 @@ impl FactsBuilder {
                 value_expr_syntax,
             );
             if let Some(decl) = self.decls.last_mut() {
+                decl.value_table_syntax = value_exprs.get(index).and_then(value_table_syntax);
                 decl.doc_type_index = Some(index);
                 if let Some(multi_return_index) = multi_return_index {
                     decl.multi_return_index = Some(multi_return_index);
@@ -1844,6 +1855,7 @@ impl FactsBuilder {
         let (vars, value_exprs) = stat.get_var_and_expr_list();
         for (idx, var) in vars.iter().enumerate() {
             let value_expr_syntax = value_exprs.get(idx).map(|expr| expr.get_syntax_id());
+            let value_table = value_exprs.get(idx).and_then(value_table_syntax);
             match var {
                 LuaVarExpr::NameExpr(name_expr) => {
                     let Some(name_token) = name_expr.get_name_token() else {
@@ -1863,15 +1875,21 @@ impl FactsBuilder {
                             name_token.get_range(),
                             value_expr_syntax,
                         );
-                        if let Some(multi_return_index) = multi_return_index
-                            && let Some(decl) = self.decls.last_mut()
-                        {
-                            decl.multi_return_index = Some(multi_return_index);
+                        if let Some(decl) = self.decls.last_mut() {
+                            decl.value_table_syntax = value_table;
+                            if let Some(multi_return_index) = multi_return_index {
+                                decl.multi_return_index = Some(multi_return_index);
+                            }
                         }
                     }
                 }
                 LuaVarExpr::IndexExpr(index_expr) => {
-                    self.collect_member_from_index_expr(index_expr, value_expr_syntax, false);
+                    self.collect_member_from_index_expr(
+                        index_expr,
+                        value_expr_syntax,
+                        value_table,
+                        false,
+                    );
                 }
             }
         }
@@ -1909,6 +1927,7 @@ impl FactsBuilder {
                 self.collect_member_from_index_expr(
                     &index_expr,
                     Some(closure.get_syntax_id()),
+                    None,
                     is_method,
                 );
             }
@@ -1922,6 +1941,7 @@ impl FactsBuilder {
         &mut self,
         index_expr: &LuaIndexExpr,
         value_syntax: Option<LuaSyntaxId>,
+        value_table: Option<LuaSyntaxId>,
         is_method: bool,
     ) {
         let Some(member_key) = index_expr
@@ -1949,6 +1969,9 @@ impl FactsBuilder {
                 .is_none()
         {
             self.add_decl_with_value(global_name.clone(), DeclKind::Global, range, value_syntax);
+            if let Some(decl) = self.decls.last_mut() {
+                decl.value_table_syntax = value_table;
+            }
         }
         let mut member = Member::new(
             self.file_id,
@@ -1957,6 +1980,7 @@ impl FactsBuilder {
             owner,
         );
         member.value_syntax = value_syntax;
+        member.value_table_syntax = value_table;
         member.is_method = is_method;
         member.implicit_self = implicit_self;
         member.deprecated = self.current_comment_deprecated;
@@ -2077,7 +2101,9 @@ impl FactsBuilder {
                 member_key,
                 owner.clone(),
             );
-            member.value_syntax = field.get_value_expr().map(|expr| expr.get_syntax_id());
+            let value = field.get_value_expr();
+            member.value_syntax = value.as_ref().map(|expr| expr.get_syntax_id());
+            member.value_table_syntax = value.as_ref().and_then(value_table_syntax);
             self.mark_member(&mut member);
             self.members.push(member);
         }
@@ -2415,16 +2441,7 @@ impl FactsBuilder {
             let Some(call) = LuaCallExpr::cast(node) else {
                 continue;
             };
-            let is_setmetatable = match call.get_prefix_expr() {
-                Some(LuaExpr::NameExpr(name_expr)) => {
-                    name_expr.get_name_text().as_deref() == Some("setmetatable")
-                }
-                Some(LuaExpr::IndexExpr(index_expr)) => index_expr
-                    .get_index_name_token()
-                    .is_some_and(|name| name.text() == "setmetatable"),
-                _ => false,
-            };
-            if !is_setmetatable {
+            if !is_setmetatable_call(&call) {
                 continue;
             }
             let Some(mut args) = call.get_args_list().map(|list| list.get_args()) else {
@@ -2551,8 +2568,8 @@ fn is_scope_owner(node: &LuaAst) -> bool {
 
 /// The owner of `owner.key`'s own members, for a local-rooted path like `M.A` in `M.A.f`: the table
 /// literal last stored in `owner.key` before `offset` (`M.A = {}` / `local M = { A = {} }`), whose
-/// fields already use the literal as their owner. Any other value (`M.A = f()`, a typed param's
-/// field) → None. Shared by member collection and member reads, so both agree on the owner.
+/// fields already use the literal as their owner. A value that isn't a table literal (`M.A = f()`,
+/// a typed param's field) → None. Shared by member collection and member reads, so both agree on the owner.
 pub(crate) fn nested_table_owner<'a>(
     members: impl Iterator<Item = &'a Member>,
     owner: &SemanticId,
@@ -2568,10 +2585,41 @@ pub(crate) fn nested_table_owner<'a>(
     let SemanticId::Member(id) = &member.id else {
         return None;
     };
-    let table = member
-        .value_syntax
-        .filter(|value| LuaTableExpr::can_cast(value.get_kind()))?;
+    let table = member.value_table_syntax?;
     Some(SemanticId::member(id.file_id, table.get_range()))
+}
+
+/// The table literal `value` evaluates to, through what keeps a table's identity: parens, the
+/// `or` default in `M = M or {}`, and `setmetatable(t, mt)`, which returns `t`.
+fn value_table_syntax(value: &LuaExpr) -> Option<LuaSyntaxId> {
+    let mut current = value.clone();
+    loop {
+        current = match current {
+            LuaExpr::TableExpr(table) => return Some(table.get_syntax_id()),
+            LuaExpr::ParenExpr(paren) => paren.get_expr()?,
+            LuaExpr::BinaryExpr(binary)
+                if binary.get_op_token()?.get_op() == BinaryOperator::OpOr =>
+            {
+                binary.get_exprs()?.1
+            }
+            LuaExpr::CallExpr(call) if is_setmetatable_call(&call) => {
+                call.get_args_list()?.get_args().next()?
+            }
+            _ => return None,
+        };
+    }
+}
+
+fn is_setmetatable_call(call: &LuaCallExpr) -> bool {
+    match call.get_prefix_expr() {
+        Some(LuaExpr::NameExpr(name_expr)) => {
+            name_expr.get_name_text().as_deref() == Some("setmetatable")
+        }
+        Some(LuaExpr::IndexExpr(index_expr)) => index_expr
+            .get_index_name_token()
+            .is_some_and(|name| name.text() == "setmetatable"),
+        _ => false,
+    }
 }
 
 /// `LuaIndexKey` → file-independent member key, the one conversion for writes and reads. A

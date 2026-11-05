@@ -26,6 +26,8 @@ pub struct Member {
     pub owner: SemanticId,
     /// Value: `TypeDef` members = doc type nodes; others = expressions.
     pub value_syntax: Option<LuaSyntaxId>,
+    /// The table literal the value evaluates to, which may be the value itself.
+    pub value_table_syntax: Option<LuaSyntaxId>,
     /// Inline `---@type` annotation on a table field (`{ ---@type number? vvv = 1 }`).
     pub doc_type_syntax: Option<LuaSyntaxId>,
     /// Module name from `---@module "name"` (resolved as ModuleRef type).
@@ -58,6 +60,7 @@ impl Member {
             key,
             owner,
             value_syntax: None,
+            value_table_syntax: None,
             doc_type_syntax: None,
             module_path: None,
             is_method: false,

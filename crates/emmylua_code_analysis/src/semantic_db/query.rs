@@ -4033,6 +4033,16 @@ fn member_ref_with_exactness(
     Some((owner, name, exact))
 }
 
+/// The owner of writes through the member path `expr`, as a write's own owner resolves:
+/// `Name("vim.api")` for `vim.api`, the local for `t`. None for anything else, or when a local
+/// path reaches no table.
+pub(crate) fn place_owner_of_expr(facts: &FileFacts, expr: LuaExpr) -> Option<SemanticId> {
+    let mut segments = Vec::new();
+    let mut exact = true;
+    let owner = resolve_expr_root(facts, expr, &mut segments, &mut exact)?;
+    exact.then_some(owner)
+}
+
 fn resolve_expr_root(
     facts: &FileFacts,
     expr: LuaExpr,

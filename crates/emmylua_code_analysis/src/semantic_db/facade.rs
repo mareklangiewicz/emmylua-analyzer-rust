@@ -368,6 +368,18 @@ impl<'db> AnalysisView<'db> {
     }
 
     /// Index expression (by syntax position) → `(owner, name)` member reference (for deprecated etc. checks).
+    pub fn place_owner_of_expr(
+        &self,
+        file_id: FileId,
+        expr_syntax: LuaSyntaxId,
+    ) -> Option<SemanticId> {
+        let (file, _config) = file_and_config(self.db, file_id)?;
+        let facts = file_facts(self.db, file);
+        let tree = self.db.vfs().get_syntax_tree(&file)?;
+        let expr = query::find_expr_by_syntax_id(tree, &expr_syntax)?;
+        query::place_owner_of_expr(facts, expr)
+    }
+
     pub fn member_ref_of_index(
         &self,
         file_id: FileId,

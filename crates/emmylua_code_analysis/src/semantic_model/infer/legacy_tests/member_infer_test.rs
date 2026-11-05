@@ -639,6 +639,33 @@ mod test {
         assert_eq!(ws.humanize_type(ty), "1");
     }
 
+    /// A table carries its holder's members wherever the value goes, not only through the path.
+    #[test]
+    fn test_table_members_reach_through_its_holder() {
+        for source in [
+            "G = {}\nG.sub = {}\nG.sub.leaf = 1\nlocal a = G.sub\nA = a.leaf",
+            "G = {}\nG.sub = setmetatable({}, {})\nG.sub.leaf = 1\nlocal a = G.sub\nA = a.leaf",
+            "G = G or {}\nG.leaf = 1\nlocal a = G\nA = a.leaf",
+            "_G.G = _G.G or {}\nG.leaf = 1\nlocal a = G\nA = a.leaf",
+            "local L = {}\nL.sub = setmetatable({}, {})\nL.sub.leaf = 1\nlocal a = L.sub\nA = a.leaf",
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def(source);
+            let ty = ws.expr_ty("A");
+            assert_eq!(ws.humanize_type(ty), "1", "{source}");
+        }
+    }
+
+    /// `function a.b.f()` in another file reaches a table held by the path, through an alias.
+    #[test]
+    fn test_global_path_table_members_across_files() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def("zz = {}\nzz.api = setmetatable({}, {})");
+        ws.def("---@return integer\nfunction zz.api.f() end");
+        ws.def("local api = zz.api\nA = api.f()");
+        assert_eq!(ws.expr_ty("A"), LuaType::Integer);
+    }
+
     #[test]
     fn test_global_path_table_members() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
