@@ -1,10 +1,29 @@
 #[cfg(test)]
 mod tests {
+    use crate::handlers::definition::definition;
     use crate::handlers::test_lib::{ProviderVirtualWorkspace, VirtualLocation, check};
     use emmylua_code_analysis::{DocSyntax, Emmyrc};
     use googletest::prelude::*;
+    use lsp_types::{GotoDefinitionResponse, Position};
 
     type Expected = VirtualLocation;
+
+    // `gd` takes the first location, so order matters here and `check_definition` ignores it.
+    #[gtest]
+    fn test_declared_member_comes_before_this_files_write() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let file_id = ws.def_file("use.lua", "G.flag = true\nlocal r = G.flag\n");
+        ws.def_file("decl.lua", "G = {}\n---@type boolean\nG.flag = false\n");
+        for (line, character) in [(0, 3), (1, 13)] {
+            let response = definition(&ws.analysis, file_id, Position { line, character });
+            let Some(GotoDefinitionResponse::Array(locations)) = response else {
+                return fail!("unexpected response {response:?}");
+            };
+            verify_that!(locations.len(), eq(2))?;
+            verify_that!(locations[0].uri.as_str(), ends_with("decl.lua"))?;
+        }
+        Ok(())
+    }
 
     #[gtest]
     fn test_vararg_definition_uses_the_nearest_function() -> Result<()> {

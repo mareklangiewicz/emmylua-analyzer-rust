@@ -95,7 +95,9 @@ fn goto_member_definition(
 
     for prefix_type in &prefix_types {
         let infos = model.member_infos_with_key_all(&prefix_type, &key);
-        let infos = filter_overload_infos(model, token, &infos);
+        let mut infos = filter_overload_infos(model, token, &infos);
+        // A `---@type` beats a plain write, as it does for the member's type: `gd` takes the first.
+        infos.sort_by_key(|info| !has_doc_type(model, info));
         for info in infos {
             if let Some(id) = info.id
                 && let Some(range) = id.member_key_range()
@@ -123,6 +125,14 @@ fn goto_member_definition(
     }
 
     (!locations.is_empty()).then_some(GotoDefinitionResponse::Array(locations))
+}
+
+fn has_doc_type(model: &SemanticModel<'_>, info: &MemberInfo) -> bool {
+    info.id
+        .as_ref()
+        .zip(info.file_id)
+        .and_then(|(id, file_id)| model.file_facts_of(file_id)?.member_by_id(id))
+        .is_some_and(|member| member.doc_type_syntax.is_some())
 }
 
 fn filter_overload_infos(
