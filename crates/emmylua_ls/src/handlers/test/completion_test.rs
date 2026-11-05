@@ -85,6 +85,54 @@ mod tests {
         Ok(())
     }
 
+    /// A statement in a closure is not the value of the table field holding the closure.
+    #[gtest]
+    fn test_member_completion_in_closure_of_table_field() -> Result<()> {
+        let head = "G = {}\nG.leaf = 1\n\n\
+                    ---@class Sp\n---@field opts? table|fun(self: any, opts: table): table?\n\n\
+                    ---@param a any\nfunction F(a) end\n\n";
+        for body in [
+            "G.<??>",
+            "local x = G.<??>",
+            "return G.<??>",
+            "if G.<??> then end",
+            "F(G.<??>)",
+            "if true then\n  G.<??>\nend",
+            "do\n  G.<??>\nend",
+        ] {
+            for code in [
+                format!("{head}---@type Sp\nlocal s = {{ opts = function(_, o)\n{body}\nend }}\n"),
+                format!(
+                    "{head}---@type Sp[]\nreturn {{ {{ opts = function(_, o)\n{body}\nend }} }}\n"
+                ),
+            ] {
+                expect_eq!(member_labels(&code)?, ["leaf"], "{code}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The field's type answers only for its own value, not for what is nested in that value.
+    #[gtest]
+    fn test_completion_nested_in_table_field_value() -> Result<()> {
+        let head = "G = {}\nG.leaf = 1\n\n\
+                    ---@class Sp\n---@field opts? table|fun(self: any, opts: table): table?\n\
+                    ---@field kind? 'aa'|'bb'\n---@field cb? fun(a: integer)\n\n\
+                    ---@param m 'xx'|'yy'\nfunction F(m) end\n\n---@type Sp\n";
+        for (value, expected) in [
+            ("kind = '<??>'", vec!["aa", "bb"]),
+            ("opts = G.<??>", vec!["leaf"]),
+            ("kind = G.<??>", vec!["leaf"]),
+            ("kind = F('<??>')", vec!["xx", "yy"]),
+            ("kind = F(G.<??>)", vec!["leaf"]),
+            ("cb = function(a)\nG.<??>\nend", vec!["leaf"]),
+        ] {
+            let code = format!("{head}local s = {{ {value} }}\n");
+            expect_eq!(member_labels(&code)?, expected, "{code}");
+        }
+        Ok(())
+    }
+
     #[gtest]
     fn test_require_completion_skips_removed_module() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();

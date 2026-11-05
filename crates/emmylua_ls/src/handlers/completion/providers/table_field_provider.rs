@@ -82,20 +82,12 @@ fn table_field_context(builder: &CompletionBuilder) -> Option<TableFieldContext>
             .and_then(|field| field.get_parent::<LuaTableExpr>())
             .map(TableFieldContext::Key),
         LuaAst::LuaTableField(field) => Some(TableFieldContext::Value(field)),
-        _ => {
-            // String/number/name is inside a table field: walk up to LuaTableField.
-            let mut parent = node.syntax().parent();
-            for _ in 0..4 {
-                let Some(node) = parent else {
-                    break;
-                };
-                if let Some(field) = LuaTableField::cast(node.clone()) {
-                    return Some(TableFieldContext::Value(field));
-                }
-                parent = node.parent();
-            }
-            None
-        }
+        // Only a literal that IS the field's value: anything deeper has a context of its own,
+        // like `{ a = t.<??> }`, `{ a = f('<??>') }` or a statement in `{ a = function() <??> end }`.
+        LuaAst::LuaLiteralExpr(literal) => literal
+            .get_parent::<LuaTableField>()
+            .map(TableFieldContext::Value),
+        _ => None,
     }
 }
 
