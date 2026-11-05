@@ -4016,4 +4016,77 @@ return t
             "local M = {}\n---@type boolean\nM.loaded = false\nM.loaded = 1\nreturn M\n"
         ));
     }
+
+    const DOC_TYPED_LITERAL_SPEC: &str = r#"
+        ---@class Spec
+        ---@field name string
+        ---@field lazy? boolean
+        ---@field run? fun(count: integer)
+    "#;
+
+    /// A literal under `---@type` is checked wherever the annotation sits: on a `local`, or on
+    /// the `return` a plugin spec file ends with, and through array elements.
+    #[test]
+    fn test_doc_type_checks_literal_on_return_and_in_elements() {
+        for (doc, open, close) in [
+            ("Spec", "local spec = ", " return spec"),
+            ("Spec", "return ", ""),
+            ("Spec[]", "local spec = { ", " } return spec"),
+            ("Spec[]", "return { ", " }"),
+        ] {
+            let good = format!(
+                "{DOC_TYPED_LITERAL_SPEC}\n---@type {doc}\n{open}{{ name = 'a', lazy = true }}{close}"
+            );
+            let bad = format!(
+                "{DOC_TYPED_LITERAL_SPEC}\n---@type {doc}\n{open}{{ name = 'a', lazy = 'yes' }}{close}"
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &good),
+                "{good}"
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &bad),
+                "{bad}"
+            );
+        }
+    }
+
+    /// A closure in such a literal takes its parameter types from the field it fills.
+    #[test]
+    fn test_doc_type_literal_types_closure_params() {
+        for (doc, open, close) in [
+            ("Spec", "local spec = ", " return spec"),
+            ("Spec", "return ", ""),
+            ("Spec[]", "local spec = { ", " } return spec"),
+            ("Spec[]", "return { ", " }"),
+        ] {
+            let source = format!(
+                r#"{DOC_TYPED_LITERAL_SPEC}
+                ---@type {doc}
+                {open}{{ name = 'a', run = function(count)
+                    ---@type string
+                    local text = count
+                    return text
+                end }}{close}"#
+            );
+            let mut ws = VirtualWorkspace::new();
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &source),
+                "{source}"
+            );
+        }
+    }
+
+    /// A `---@type` on `return` says nothing about a value that is not a table literal's field,
+    /// and an unannotated `return` is not checked at all.
+    #[test]
+    fn test_return_without_doc_type_is_not_checked() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            &format!("{DOC_TYPED_LITERAL_SPEC}\nreturn {{ name = 1, lazy = 'yes' }}"),
+        ));
+    }
 }

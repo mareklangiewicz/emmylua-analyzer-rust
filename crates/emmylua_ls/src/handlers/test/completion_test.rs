@@ -3092,4 +3092,34 @@ items.<??>
         ));
         Ok(())
     }
+
+    #[gtest]
+    fn test_table_keys_under_doc_type_on_return_and_elements() -> Result<()> {
+        for (doc, open, close) in [
+            ("Spec", "local spec = ", ""),
+            ("Spec", "return ", ""),
+            ("Spec[]", "local spec = { ", " }"),
+            ("Spec[]", "return { ", " }"),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+            let source = format!(
+                r#"
+                ---@class Spec
+                ---@field lazy? boolean
+
+                ---@type {doc}
+                {open}{{ <??> }}{close}
+                "#
+            );
+            check!(ws.check_completion(
+                &source,
+                vec![VirtualCompletionItem {
+                    label: "lazy? = ".to_string(),
+                    kind: CompletionItemKind::PROPERTY,
+                    ..Default::default()
+                }],
+            ));
+        }
+        Ok(())
+    }
 }

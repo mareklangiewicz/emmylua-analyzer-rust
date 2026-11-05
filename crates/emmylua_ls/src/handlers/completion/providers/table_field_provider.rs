@@ -261,6 +261,10 @@ fn add_table_field_value_completion(
 }
 
 fn table_expected_type(builder: &CompletionBuilder, table_expr: &LuaTableExpr) -> Option<LuaType> {
+    if let Some(declared) = builder.semantic_model.expected_table_type(table_expr) {
+        return Some(declared);
+    }
+
     // `---@type T local t = {...}`: prefer the doc type of the containing local declaration / assignment target.
     let syntax_id = table_expr.get_syntax_id();
     if let Some(local_type) = local_table_decl_type(builder, table_expr, syntax_id)
@@ -273,14 +277,12 @@ fn table_expected_type(builder: &CompletionBuilder, table_expr: &LuaTableExpr) -
     if let Some(field) = table_expr.ancestors::<LuaTableField>().next()
         && let Some(parent) = field.get_parent::<LuaTableExpr>()
         && let Some(parent_type) = table_expected_type(builder, &parent)
-        && let Some(key) = field.get_field_key()
-        && let Some(info) = builder
-            .semantic_model
-            .member_infos(&parent_type)
-            .into_iter()
-            .find(|info| info.key.to_path() == key.get_path_part())
+        && let Some(field_type) =
+            builder
+                .semantic_model
+                .expected_field_type(&parent_type, &parent, &field)
     {
-        return Some(info.typ);
+        return Some(field_type);
     }
 
     // Table constructor argument: `buz({ ... })` completes by the parameter type.

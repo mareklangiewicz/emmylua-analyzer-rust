@@ -445,7 +445,7 @@ fn closure_expected_functions(
         return out;
     }
     if let Some((table_expr, field_key)) = closure_table_field_info(closure_expr) {
-        let Some(table_ty) = table_expected_type(semantic_model, &table_expr) else {
+        let Some(table_ty) = semantic_model.expected_table_type(&table_expr) else {
             return Vec::new();
         };
         let Some(member_ty) = semantic_model.member_type(&table_ty, &field_key) else {
@@ -479,20 +479,6 @@ pub(super) fn closure_table_field_info(
         _ => return None,
     };
     Some((table_expr, field_key))
-}
-
-/// The `---@type` target type on the assignment containing the table literal (`---@type A local a = { ... }`).
-pub(super) fn table_expected_type(
-    semantic_model: &SemanticModel<'_>,
-    table_expr: &LuaTableExpr,
-) -> Option<LuaType> {
-    let facts = semantic_model.file_facts()?;
-    let decl = facts
-        .decl_by_value_syntax(table_expr.get_syntax_id())
-        .filter(|decl| decl.doc_type_syntax.is_some())?;
-    let syntax = decl.doc_type_syntax?;
-    let ty = semantic_model.doc_type_lua(syntax);
-    (!matches!(ty, LuaType::Unknown)).then_some(ty)
 }
 
 /// Function components within a type (`DocFunction` / `Signature` / union).

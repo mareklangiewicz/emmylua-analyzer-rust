@@ -26,7 +26,7 @@ use crate::DiagnosticCode;
 use crate::semantic_model::SemanticModel;
 use crate::{AsyncState, LuaFunctionType, LuaType, LuaUnionType, SemanticId};
 
-use super::param_count::{closure_table_field_info, table_expected_type};
+use super::param_count::closure_table_field_info;
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 
@@ -277,7 +277,7 @@ fn closure_is_async(
         return false;
     };
     let mut table_types = expected_arg_types(semantic_model, table_expr.syntax());
-    table_types.extend(table_expected_type(semantic_model, &table_expr));
+    table_types.extend(semantic_model.expected_table_type(&table_expr));
     table_types.iter().any(|table_ty| {
         semantic_model
             .member_type(table_ty, &key)

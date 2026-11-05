@@ -775,6 +775,14 @@ impl<'db> SemanticModel<'db> {
     }
     /// The prefix `a.b` of a closure stored at a nested path: `function a.b:m()`,
     /// `function a.b.f()` or `a.b.f = function() end`.
+    /// The declared type of the table literal a closure is a field of.
+    fn expected_table_of_closure(&self, closure_syntax: LuaSyntaxId) -> Option<LuaType> {
+        let root = self.syntax_tree()?.get_red_root();
+        let closure = LuaClosureExpr::cast(closure_syntax.to_node_from_root(&root)?)?;
+        let field = closure.get_parent::<emmylua_parser::LuaTableField>()?;
+        self.expected_table_type(&field.get_parent::<LuaTableExpr>()?)
+    }
+
     fn nested_member_prefix(&self, closure_syntax: LuaSyntaxId) -> Option<LuaIndexExpr> {
         let root = self.syntax_tree()?.get_red_root();
         let closure = closure_syntax.to_node_from_root(&root)?;
@@ -989,8 +997,13 @@ impl<'db> SemanticModel<'db> {
                 SemanticId::Member(table_key) => {
                     // Table-literal field (`---@type D31; local f = { func = function(...) end }`):
                     // the member owner is a synthetic table identity; go back to the declaration that initializes the table and use its declared type as the field type source.
-                    let decl = facts.decl_by_value_range(table_key.key_range)?;
-                    self.type_of_decl(&decl.id)?
+                    match self.expected_table_of_closure(closure_syntax) {
+                        Some(ty) => ty,
+                        None => {
+                            let decl = facts.decl_by_value_range(table_key.key_range)?;
+                            self.type_of_decl(&decl.id)?
+                        }
+                    }
                 }
                 _ => return None,
             }

@@ -1071,4 +1071,35 @@ mod tests {
         };
         assert!(content.value.contains("a: integer"), "{}", content.value);
     }
+
+    #[gtest]
+    fn test_hover_field_docs_under_doc_type_on_return_and_elements() -> Result<()> {
+        for (doc, open, close) in [
+            ("Spec", "local spec = ", ""),
+            ("Spec", "return ", ""),
+            ("Spec[]", "local spec = { ", " }"),
+            ("Spec[]", "return { ", " }"),
+        ] {
+            let mut ws = ProviderVirtualWorkspace::new();
+            let source = format!(
+                r#"
+                ---@class Spec
+                ---@field lazy boolean Load it later.
+
+                ---@type {doc}
+                {open}{{ la<??>zy = true }}{close}
+                "#
+            );
+            check!(
+                ws.check_hover(
+                    &source,
+                    VirtualHoverResult {
+                        value: "```lua\n(field) lazy: boolean = true\n```\n\n---\n\nLoad it later."
+                            .to_string(),
+                    },
+                )
+            );
+        }
+        Ok(())
+    }
 }

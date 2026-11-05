@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use emmylua_parser::{
     LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaIndexExpr,
-    LuaIndexKey, LuaLiteralToken, LuaLocalStat, LuaTableExpr, LuaTableField, LuaVarExpr,
-    NumberResult,
+    LuaIndexKey, LuaLiteralToken, LuaLocalStat, LuaReturnStat, LuaTableExpr, LuaTableField,
+    LuaVarExpr, NumberResult,
 };
 
 use super::check_field::is_optional;
@@ -41,6 +41,7 @@ impl Checker for AssignTypeMismatchChecker {
             match node {
                 LuaAst::LuaLocalStat(stat) => check_local(context, semantic_model, &stat),
                 LuaAst::LuaAssignStat(stat) => check_assign(context, semantic_model, &stat),
+                LuaAst::LuaReturnStat(stat) => check_return(context, semantic_model, &stat),
                 LuaAst::LuaTableExpr(table) => {
                     check_inline_table_fields(context, semantic_model, &table)
                 }
@@ -293,6 +294,23 @@ fn check_local(
             continue;
         }
         check_against(context, semantic_model, &decl_id, &expr);
+    }
+}
+
+/// `---@type T` above a `return`: the returned value is held to `T`, as a `local`'s is.
+fn check_return(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    stat: &LuaReturnStat,
+) {
+    let Some(facts) = semantic_model.file_facts() else {
+        return;
+    };
+    for (slot, expr) in stat.get_expr_list().enumerate() {
+        if let Some(doc_type) = facts.return_doc_type(stat.get_syntax_id(), slot) {
+            let target = semantic_model.doc_type_lua_rich(doc_type);
+            check_value_against(context, semantic_model, &target, &expr);
+        }
     }
 }
 

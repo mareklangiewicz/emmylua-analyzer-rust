@@ -1,6 +1,9 @@
+use emmylua_parser::{LuaReturnStat, LuaTableField};
+
 use super::prelude::*;
 use crate::LuaTypeIdentifier;
 use crate::semantic_db::TypeDefList;
+use crate::semantic_db::facts::member_key_from_index_key;
 use crate::semantic_model::signature::needs_rich_doc_type;
 use crate::semantic_model::type_eval::substitute_named_refs;
 
@@ -1071,6 +1074,81 @@ impl<'db> SemanticModel<'db> {
         };
         def.generic_params.iter().map(|g| g.name.clone()).collect()
     }
+    /// The type a table literal is declared to be: the `---@type` on the `local` or `return`
+    /// holding it, carried down through the fields and elements of the literals around it.
+    pub fn expected_table_type(&self, table: &LuaTableExpr) -> Option<LuaType> {
+        if let Some(field) = table.get_parent::<LuaTableField>() {
+            let owner = field.get_parent::<LuaTableExpr>()?;
+            let owner_ty = self.expected_table_type(&owner)?;
+            return self.expected_field_type(&owner_ty, &owner, &field);
+        }
+        let facts = self.file_facts()?;
+        let syntax = table.get_syntax_id();
+        let doc_type = match table.get_parent::<LuaReturnStat>() {
+            Some(stat) => {
+                let slot = stat
+                    .get_expr_list()
+                    .position(|expr| expr.get_syntax_id() == syntax)?;
+                facts.return_doc_type(stat.get_syntax_id(), slot)?
+            }
+            None => facts.decl_by_value_syntax(syntax)?.doc_type_syntax?,
+        };
+        let ty = self.doc_type_lua_rich(doc_type);
+        (!matches!(ty, LuaType::Unknown)).then_some(ty)
+    }
+
+    /// What `field` of the literal `table` should hold when the literal is an `owner`: the member
+    /// it names, or for a positional field the array element too.
+    pub fn expected_field_type(
+        &self,
+        owner: &LuaType,
+        table: &LuaTableExpr,
+        field: &LuaTableField,
+    ) -> Option<LuaType> {
+        let (_, key) = table
+            .get_fields_with_keys()
+            .into_iter()
+            .find(|(candidate, _)| candidate == field)?;
+        let key = member_key_from_index_key(&key)?;
+        self.expected_key_type(owner, &key, &mut Vec::new())
+    }
+
+    fn expected_key_type(
+        &self,
+        owner: &LuaType,
+        key: &LuaMemberKey,
+        aliases: &mut Vec<LuaTypeDeclId>,
+    ) -> Option<LuaType> {
+        match owner {
+            LuaType::Union(union) => {
+                let types = union
+                    .into_vec()
+                    .iter()
+                    .filter_map(|component| self.expected_key_type(component, key, aliases))
+                    .collect::<Vec<_>>();
+                (!types.is_empty()).then(|| LuaType::from_vec(types))
+            }
+            LuaType::Array(array) if matches!(key, LuaMemberKey::Integer(_)) => {
+                Some(array.get_base().clone())
+            }
+            LuaType::Ref(id) | LuaType::Def(id) => {
+                let target = self
+                    .type_def_of(id)
+                    .filter(|def| def.kind == TypeDefKind::Alias)
+                    .and_then(|def| self.alias_target(&def));
+                match target {
+                    Some(_) if aliases.contains(id) => None,
+                    Some(target) => {
+                        aliases.push(id.clone());
+                        self.expected_key_type(&target, key, aliases)
+                    }
+                    None => self.member_type(owner, key),
+                }
+            }
+            _ => self.member_type(owner, key),
+        }
+    }
+
     /// All members of a prefix type (completion candidates; `@field` + inheritance + runtime values, with generic substitution).
     pub fn member_infos(&self, prefix_type: &LuaType) -> Vec<member::MemberInfo> {
         let key = (self.file_id(), prefix_type.clone());

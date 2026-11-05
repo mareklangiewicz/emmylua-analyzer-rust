@@ -95,6 +95,8 @@ pub struct FileFacts {
     pub member_uses: Vec<LuaSyntaxId>,
     pub signatures: Vec<Signature>,
     pub module_export: ModuleExport,
+    /// `---@type` above a `return`, by the return statement: one doc type per returned value.
+    return_doc_types: HashMap<LuaSyntaxId, Vec<LuaSyntaxId>>,
     /// Module export visibility (`---@meta no-require` → Hide; export target `---@internal/@public` tags).
     pub module_visibility: ModuleVisibility,
     /// Whether the file contains `---@meta`.
@@ -344,6 +346,11 @@ impl FileFacts {
     pub fn decl_by_value_syntax(&self, value_syntax: LuaSyntaxId) -> Option<&Decl> {
         let index = self.decl_by_value_syntax.get(&value_syntax)?;
         self.decls.get(*index)
+    }
+
+    /// The `---@type` above a `return` statement that names its value at `slot`.
+    pub fn return_doc_type(&self, return_stat: LuaSyntaxId, slot: usize) -> Option<LuaSyntaxId> {
+        self.return_doc_types.get(&return_stat)?.get(slot).copied()
     }
 
     /// Declaration whose initializer value has `range` (table-literal identity lookup).
@@ -1060,6 +1067,12 @@ impl FactsBuilder {
                     .push(index);
             }
         }
+        let return_doc_types = self
+            .doc_type_map
+            .iter()
+            .filter(|(owner, _)| owner.get_kind() == LuaSyntaxKind::ReturnStat)
+            .map(|(owner, types)| (*owner, types.clone()))
+            .collect::<HashMap<_, _>>();
         let decl_by_value_syntax = self
             .decls
             .iter()
@@ -1100,6 +1113,7 @@ impl FactsBuilder {
             member_uses: self.member_uses,
             signatures: self.signatures,
             module_export: self.module_export,
+            return_doc_types,
             module_visibility: self.module_visibility,
             is_meta: self.is_meta,
             version_conds: self.module_version_conds,

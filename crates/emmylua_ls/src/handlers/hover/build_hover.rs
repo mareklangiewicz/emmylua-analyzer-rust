@@ -466,6 +466,10 @@ fn table_context_type_for_expr(
     model: &SemanticModel<'_>,
     table_expr: &LuaTableExpr,
 ) -> Option<LuaType> {
+    if let Some(declared) = model.expected_table_type(table_expr) {
+        return Some(declared);
+    }
+
     let syntax_id = table_expr.get_syntax_id();
 
     // `---@type T local t = { ... }`: type from the local declaration.
