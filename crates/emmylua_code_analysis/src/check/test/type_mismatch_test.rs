@@ -1,6 +1,7 @@
 //! Tests for the param_type_check / return_type_mismatch checkers.
 
-use crate::DiagnosticCode;
+use crate::{DiagnosticCode, VirtualWorkspace};
+use tokio_util::sync::CancellationToken;
 
 use super::{check_last_file, check_source, count_by_code};
 
@@ -213,6 +214,38 @@ fn test_alias_recursive_no_crash() {
 
 /// A `---@type` on a global member is the contract in every file: a write elsewhere is checked
 /// against it, it does not become a new declaration.
+// neovim's languagetree.lua: `parse` reads as a union with a repeated member, which used to compare
+// unequal to itself, so expanding it as an alias arg never settled and overflowed the stack.
+#[test]
+fn test_union_arg_with_repeated_member_no_crash() {
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
+    let file_id = ws.def(
+        r#"
+        local Tree = {}
+        ---@param f fun(): R1, R2, R3
+        local function tcall(f, ...)
+        end
+        function Tree:_async_parse(range, on_parse)
+          ---@type fun(): table<integer, TSTree>, boolean
+          local parse = coroutine.wrap(self._parse)
+          local function step()
+            if type(source) == 'number' then
+              if buf.changedtick ~= ct then
+                parse = coroutine.wrap(self._parse)
+              end
+            end
+            local parse_time, trees, finished = tcall(parse, self, range, thread_state)
+          end
+        end
+        function Tree:_parse(range, thread_state)
+        end
+        "#,
+    );
+    ws.analysis
+        .diagnose_file(file_id, CancellationToken::new())
+        .unwrap();
+}
+
 #[test]
 fn test_write_to_global_member_declared_in_another_file() {
     let declaring = "G = {}\nG.sub = {}\n\n---@type boolean\nG.flag = false\n\n\
