@@ -70,6 +70,25 @@ mod tests {
 
     // M3 batch 2 retirement: function signature rendering stack (old HoverBuilder/overload matching/generic substitution); see migration notes §M3.
     #[gtest]
+    fn test_field_taking_an_object_type_is_not_a_method() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        check!(ws.check_hover(
+            r#"
+                ---@class Q
+                ---@field files fun(opts?: integer|{}): Q
+
+                ---@type Q
+                local p
+                local q = p.fi<??>les
+            "#,
+            VirtualHoverResult {
+                value: "```lua\n(field) Q.files(opts: ({  }|integer)?) -> Q\n```".to_string(),
+            },
+        ));
+        Ok(())
+    }
+
+    #[gtest]
     fn test_2() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         ws.def(
