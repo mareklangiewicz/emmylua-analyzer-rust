@@ -4089,4 +4089,42 @@ return t
             &format!("{DOC_TYPED_LITERAL_SPEC}\nreturn {{ name = 1, lazy = 'yes' }}"),
         ));
     }
+
+    /// A `---@type` on a table field holds its literal to that type, key by key, like the same
+    /// annotation on a `local`. The parent's own field type (`table|fun()`) accepts anything.
+    #[test]
+    fn test_field_doc_type_checks_table_literal_value() {
+        for (open, close) in [
+            ("local s = {", "}"),
+            ("---@type FieldDocParent\nlocal s = {", "}"),
+            ("---@type FieldDocParent[]\nlocal s = { {", "} }"),
+            ("---@type FieldDocParent[]\nreturn { {", "} }"),
+        ] {
+            let source = |value: &str| {
+                format!(
+                    r#"
+                    ---@class FieldDocOpts
+                    ---@field enabled? boolean
+                    ---@class FieldDocParent
+                    ---@field opts? table|fun()
+                    {open}
+                        ---@type FieldDocOpts
+                        opts = {value},
+                    {close}
+                    "#
+                )
+            };
+            let found = |value: &str, code| count_by_code(&check_source(&source(value)), code);
+            let (mismatch, inject) = (
+                DiagnosticCode::AssignTypeMismatch,
+                DiagnosticCode::InjectField,
+            );
+            assert_eq!(found("{ enabled = true }", mismatch), 0, "{open}");
+            assert_eq!(found("{ enabled = true }", inject), 0, "{open}");
+            assert_eq!(found("{ enabled = 'yes' }", mismatch), 1, "{open}");
+            assert_eq!(found("{ enabeld = true }", inject), 1, "{open}");
+            // A typed parent reports it too: `1` is neither `table|fun()` nor the field's type.
+            assert!(found("1", mismatch) >= 1, "{open}");
+        }
+    }
 }

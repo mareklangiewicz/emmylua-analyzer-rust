@@ -12,7 +12,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{FileId, LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
-use super::assign_type_mismatch::index_key_type;
+use super::assign_type_mismatch::{doc_typed_fields, index_key_type};
 use super::param_count::call_arg_param_index;
 use super::param_type_check::callable_candidates;
 use super::undefined_field::table_binding;
@@ -40,6 +40,13 @@ impl Checker for CheckFieldChecker {
                 }
                 LuaAst::LuaCallExpr(call_expr) => {
                     check_call_args(context, semantic_model, &call_expr)
+                }
+                LuaAst::LuaTableExpr(table) => {
+                    for (target, value) in doc_typed_fields(semantic_model, &table) {
+                        if let LuaExpr::TableExpr(value) = value {
+                            check_against_type(context, semantic_model, &target, &value);
+                        }
+                    }
                 }
                 _ => {}
             }

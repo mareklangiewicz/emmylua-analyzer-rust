@@ -219,7 +219,31 @@ fn check_inline_table_fields(
     semantic_model: &SemanticModel<'_>,
     table: &LuaTableExpr,
 ) {
+    for (target, value_expr) in doc_typed_fields(semantic_model, table) {
+        // A table literal takes its type from the annotation, so only its keys can disagree.
+        if matches!(value_expr, LuaExpr::TableExpr(_)) {
+            check_value_against_target(context, semantic_model, &target, &value_expr);
+            continue;
+        }
+        let value_ty = semantic_model.type_of_expr(value_expr.get_syntax_id());
+        if matches!(
+            value_ty,
+            LuaType::Unknown | LuaType::Any | LuaType::Never | LuaType::Nil
+        ) || is_compatible(semantic_model, &value_ty, &target)
+        {
+            continue;
+        }
+        add_mismatch(context, value_expr.get_range(), &target, &value_ty);
+    }
+}
+
+/// The fields of `table` with a `---@type` of their own, each with that type and its value.
+pub(super) fn doc_typed_fields(
+    semantic_model: &SemanticModel<'_>,
+    table: &LuaTableExpr,
+) -> Vec<(LuaType, LuaExpr)> {
     let owner = SemanticId::member(semantic_model.file_id(), table.get_range());
+    let mut fields = Vec::new();
     for member_ref in semantic_model.members_of_owner(&owner).iter() {
         let Some(facts) = semantic_model.file_facts_of(member_ref.file_id) else {
             continue;
@@ -241,17 +265,9 @@ fn check_inline_table_fields(
         else {
             continue;
         };
-        let target = semantic_model.doc_type_lua(doc_syntax);
-        let value_ty = semantic_model.type_of_expr(value_expr.get_syntax_id());
-        if matches!(
-            value_ty,
-            LuaType::Unknown | LuaType::Any | LuaType::Never | LuaType::Nil
-        ) || is_compatible(semantic_model, &value_ty, &target)
-        {
-            continue;
-        }
-        add_mismatch(context, value_expr.get_range(), &target, &value_ty);
+        fields.push((semantic_model.doc_type_lua(doc_syntax), value_expr));
     }
+    fields
 }
 
 fn check_local(
