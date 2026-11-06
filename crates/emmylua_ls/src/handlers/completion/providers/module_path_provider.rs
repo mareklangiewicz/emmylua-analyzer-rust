@@ -60,14 +60,14 @@ fn complete_provider(builder: &mut CompletionBuilder) -> Option<()> {
     Some(())
 }
 
-/// Enumerate direct child segments of workspace modules by prefix (module / folder).
+/// Enumerate direct child segments of every requirable module by prefix (module / folder).
 pub fn add_modules(
     builder: &mut CompletionBuilder,
     prefix_content: &str,
     text_edit_range: Option<lsp_types::Range>,
 ) -> Option<()> {
     let current_file = builder.semantic_model.file_id();
-    let mut file_ids = builder.semantic_model.main_workspace_file_ids();
+    let mut file_ids = builder.semantic_model.file_ids();
     file_ids.sort();
 
     // `a.b.cd` → parent path `a.b` + current segment prefix `cd`.

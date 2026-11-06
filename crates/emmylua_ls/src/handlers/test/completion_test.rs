@@ -192,6 +192,61 @@ mod tests {
     }
 
     #[gtest]
+    fn test_require_completion_offers_library_modules() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        let base = ws.virtual_url_generator.base.clone();
+        ws.analysis.add_main_workspace(base.join("app"));
+        ws.analysis
+            .add_library_workspace(&emmylua_code_analysis::WorkspaceFolder::new(
+                base.join("lib"),
+                false,
+            ));
+        ws.def_file("lib/lint.lua", "return {}");
+        ws.def_file("lib/lint/parser.lua", "return {}");
+        ws.def_file("app/own.lua", "return {}");
+        ws.virtual_url_generator.base = base.join("app");
+        for (typed, want) in [("", "lint"), ("li", "lint"), ("lint.", "parser")] {
+            let items = get_completion_items(
+                &mut ws,
+                &format!(r#"require("{typed}<??>")"#),
+                CompletionTriggerKind::INVOKED,
+            )?;
+            assert!(
+                items.iter().any(|item| item.label == want),
+                "missing {want} after {typed:?}: {items:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_table_arg_completes_past_an_overload_taking_nil() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def(
+            r#"
+            ---@class CfgOpts
+            ---@field signs? boolean
+
+            M = {}
+            ---@param opts CfgOpts?
+            ---@return CfgOpts?
+            ---@overload fun(opts?: nil, ns?: integer): CfgOpts
+            function M.config(opts, ns) end
+            "#,
+        );
+        let items = get_completion_items(
+            &mut ws,
+            "M.config({ <??> })",
+            CompletionTriggerKind::INVOKED,
+        )?;
+        assert!(
+            items.iter().any(|item| item.label.starts_with("signs")),
+            "missing signs: {items:?}"
+        );
+        Ok(())
+    }
+
+    #[gtest]
     fn test_1() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
 

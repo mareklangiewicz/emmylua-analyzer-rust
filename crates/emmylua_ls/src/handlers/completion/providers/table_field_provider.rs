@@ -315,7 +315,8 @@ fn expected_call_arg_table_type(
             .get_params()
             .get(param_idx)
             .and_then(|(_, ty)| ty.clone())
-            && !matches!(ty, LuaType::Unknown)
+            // A table is never the `nil` of an `---@overload fun(opts?: nil)`.
+            && !matches!(ty, LuaType::Unknown | LuaType::Nil)
         {
             return Some(ty);
         }
