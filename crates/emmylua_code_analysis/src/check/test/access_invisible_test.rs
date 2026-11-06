@@ -20,6 +20,43 @@ mod tests {
     }
 
     #[test]
+    fn test_private_local_table_keeps_its_fields_public() {
+        let mut ws = VirtualWorkspace::new();
+        ws.def_file(
+            "cfg.lua",
+            r#"
+            ---@class Cfg
+            ---@field discovery Disc
+
+            ---@class Disc
+            ---@field enabled boolean
+
+            ---@private
+            ---@type Cfg
+            local default = {
+                discovery = {
+                    enabled = true,
+                },
+            }
+
+            ---@private
+            ---@type Cfg
+            local M = {}
+            setmetatable(M, { __index = function(_, k) return default[k] end })
+            return M
+            "#,
+        );
+        assert!(ws.has_no_diagnostic_in_namespace(
+            DiagnosticCode::AccessInvisible,
+            r#"
+            local cfg = require("cfg")
+            local a = cfg.discovery
+            local b = cfg.discovery.enabled
+            "#
+        ));
+    }
+
+    #[test]
     fn test_1() {
         let mut ws = VirtualWorkspace::new();
         assert!(ws.has_no_diagnostic_in_namespace(

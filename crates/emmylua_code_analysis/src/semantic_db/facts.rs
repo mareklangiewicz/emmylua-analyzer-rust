@@ -2118,15 +2118,22 @@ impl FactsBuilder {
             let value = field.get_value_expr();
             member.value_syntax = value.as_ref().map(|expr| expr.get_syntax_id());
             member.value_table_syntax = value.as_ref().and_then(value_table_syntax);
-            self.mark_member(&mut member);
+            // A statement's `---@private` is about its own target, not the fields of its table.
+            self.mark_readonly(&mut member);
             self.members.push(member);
+        }
+    }
+
+    fn mark_readonly(&self, member: &mut Member) {
+        if let Some(owner) = self.current_owner_syntax {
+            member.readonly = self.doc_readonly_owners.contains(&owner);
         }
     }
 
     /// Member ownership flags: `---@readonly` / statement-level visibility tags like `---@private`.
     fn mark_member(&self, member: &mut Member) {
+        self.mark_readonly(member);
         if let Some(owner) = self.current_owner_syntax {
-            member.readonly = self.doc_readonly_owners.contains(&owner);
             // `---@private function M.init()` / `---@private M.log = 1`:
             // Statement-level visibility tags apply to runtime members (@field's own tags take precedence).
             if member.visibility == VisibilityKind::Public
