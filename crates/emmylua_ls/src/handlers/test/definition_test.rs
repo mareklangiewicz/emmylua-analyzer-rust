@@ -26,6 +26,30 @@ mod tests {
     }
 
     #[gtest]
+    fn test_member_of_a_required_module_held_by_a_global_field() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file(
+            "vim/keymap.lua",
+            "local keymap = {}\nfunction keymap.set(a) end\nreturn keymap\n",
+        );
+        ws.def_file("meta.lua", "vim = {}\nvim.keymap = require('vim.keymap')\n");
+        let file_id = ws.def_file("use.lua", "local q = vim.keymap.set\n");
+        let response = definition(
+            &ws.analysis,
+            file_id,
+            Position {
+                line: 0,
+                character: 22,
+            },
+        );
+        let Some(GotoDefinitionResponse::Array(locations)) = response else {
+            return fail!("unexpected response {response:?}");
+        };
+        verify_that!(locations[0].uri.as_str(), ends_with("vim/keymap.lua"))?;
+        Ok(())
+    }
+
+    #[gtest]
     fn test_vararg_definition_uses_the_nearest_function() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         check!(ws.check_definition(

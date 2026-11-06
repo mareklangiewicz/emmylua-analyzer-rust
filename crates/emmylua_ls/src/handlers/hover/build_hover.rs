@@ -12,7 +12,7 @@ use hashbrown::HashMap;
 use lsp_types::{Hover, HoverContents, MarkupContent};
 use rowan::TextRange;
 
-use crate::handlers::common::{resolve_alias_origin, semantic_id_file};
+use crate::handlers::common::{resolve_alias_origin, semantic_id_file, union_member_at_token};
 use crate::handlers::completion::providers::callable_candidates;
 use crate::handlers::hover::desc::HoverDescription;
 
@@ -548,23 +548,6 @@ fn table_context_type_for_expr(
 
     let ty = model.type_of_expr(syntax_id);
     (!matches!(ty, LuaType::Unknown)).then_some(ty)
-}
-
-/// Member declaration for `x.key` whose prefix is a union (`P?`, `P|Q`).
-///
-/// `resolve_member` leaves union prefixes to flow narrowing, so the access has no declaration
-/// of its own; hover still shows the field's signature and docs, like `P.key` does.
-fn union_member_at_token(model: &SemanticModel<'_>, token: &LuaSyntaxToken) -> Option<SemanticId> {
-    let index_expr = LuaIndexExpr::cast(token.parent()?)?;
-    if index_expr.get_index_name_token().as_ref() != Some(token) {
-        return None;
-    }
-    let prefix_ty = model.type_of_expr(index_expr.get_prefix_expr()?.get_syntax_id());
-    if !matches!(prefix_ty, LuaType::Union(_)) {
-        return None;
-    }
-    let key = LuaMemberKey::Name(token.text().into());
-    model.member_info(&prefix_ty, &key)?.id
 }
 
 /// Whether the member access (`x.foo` / `x:foo`) containing the current token is applied to an

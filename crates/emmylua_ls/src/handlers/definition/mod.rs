@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::RegisterCapabilities;
 use crate::context::{RequestOutcome, ServerContextSnapshot, snapshot_query};
+use crate::handlers::common::union_member_at_token;
 
 pub async fn on_goto_definition_handler(
     context: ServerContextSnapshot,
@@ -92,7 +93,9 @@ pub fn definition(
     }
 
     // 3. Semantic declarations (decl / member / typedef).
-    let decl = model.find_decl(token.clone().into())?;
+    let decl = model
+        .find_decl(token.clone().into())
+        .or_else(|| union_member_at_token(&model, &token))?;
     goto_def_definition::goto_def_definition(&model, &analysis.db, &decl, &token)
 }
 

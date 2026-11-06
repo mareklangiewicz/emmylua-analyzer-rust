@@ -7,7 +7,9 @@
 //! - type references: `resolve_type_def` per doc name type + `type_defs_in_scope` definition sites;
 //! - label references: same-file pure syntax (same-named goto/label in the same closure).
 
-use emmylua_code_analysis::{FileId, SemanticDatabase, SemanticId, SemanticModel, TypeDef};
+use emmylua_code_analysis::{
+    FileId, LuaMemberKey, LuaType, SemanticDatabase, SemanticId, SemanticModel, TypeDef,
+};
 use emmylua_parser::{
     LuaAstNode, LuaAstToken, LuaCallExpr, LuaDocNameType, LuaExpr, LuaGotoStat, LuaIndexExpr,
     LuaLabelStat, LuaLiteralToken, LuaSyntaxKind, LuaSyntaxToken,
@@ -507,4 +509,24 @@ fn push_unique_text(out: &mut Vec<(FileId, TextRange, String)>, item: (FileId, T
     if !out.iter().any(|(f, r, _)| (*f, *r) == key) {
         out.push(item);
     }
+}
+
+/// Member declaration for `x.key` whose prefix is a union (`P?`, `P|Q`).
+///
+/// `resolve_member` leaves union prefixes to flow narrowing, so the access has no declaration
+/// of its own; hover and `gd` still find the field, like they do for `P.key`.
+pub(crate) fn union_member_at_token(
+    model: &SemanticModel<'_>,
+    token: &LuaSyntaxToken,
+) -> Option<SemanticId> {
+    let index_expr = LuaIndexExpr::cast(token.parent()?)?;
+    if index_expr.get_index_name_token().as_ref() != Some(token) {
+        return None;
+    }
+    let prefix_ty = model.type_of_expr(index_expr.get_prefix_expr()?.get_syntax_id());
+    if !matches!(prefix_ty, LuaType::Union(_)) {
+        return None;
+    }
+    let key = LuaMemberKey::Name(token.text().into());
+    model.member_info(&prefix_ty, &key)?.id
 }
