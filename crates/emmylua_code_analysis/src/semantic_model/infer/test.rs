@@ -2118,3 +2118,20 @@ fn test_optional_object_field_is_nullable() {
     assert_eq!(ws.expr_ty("got"), ws.ty("boolean?"));
     assert_eq!(ws.expr_ty("nullable_got"), ws.ty("boolean?"));
 }
+
+/// `vim.g.x = f(vim.g.x or {})`: a member of a table held by a global path, assigned from a read
+/// of itself. Its value reads the member, which must not evaluate that value again.
+#[test]
+fn test_global_path_member_assigned_from_itself() {
+    let mut ws = crate::VirtualWorkspace::new();
+    ws.def(
+        r#"
+        G = {}
+        G.g = {}
+        local function id(x) return x end
+        G.g.x = id(G.g.x or {})
+        got = G.g.x
+    "#,
+    );
+    assert!(!matches!(ws.expr_ty("got"), LuaType::Nil));
+}

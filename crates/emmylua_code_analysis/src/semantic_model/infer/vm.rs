@@ -1365,8 +1365,10 @@ impl<'a> InferVm<'a> {
                 && let Some(facts) = self.model.file_facts_of(member.file_id)
                 && let Some(member_def) = facts.member_by_id(&member.id)
                 && let Some(value_syntax) = member_def.value_syntax
+                && self.computing.insert(member.id.clone())
             {
                 ty = self.type_of_expr_inherit(value_syntax);
+                self.computing.remove(&member.id);
             }
             return Value {
                 ty,
