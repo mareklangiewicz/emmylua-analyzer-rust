@@ -4127,4 +4127,35 @@ return t
             assert!(found("1", mismatch) >= 1, "{open}");
         }
     }
+
+    /// A guard narrows reads, not the contract of a write: inside `o.w == 'a'`, `o.w` may
+    /// still take anything its field declares, and nothing else.
+    #[test]
+    fn test_member_write_target_ignores_guards() {
+        for (write, expected) in [("function() return '' end", 0), ("1", 1)] {
+            for prefix in ["", "if flag then o.w = 'b' end"] {
+                let source = format!(
+                    r#"
+                    ---@class GuardedWrite
+                    ---@field w string|fun():string
+
+                    ---@param o GuardedWrite
+                    ---@param flag boolean
+                    local function f(o, flag)
+                        {prefix}
+                        if o.w == 'a' then
+                            o.w = {write}
+                        end
+                    end
+                    return f
+                    "#
+                );
+                assert_eq!(
+                    count_by_code(&check_source(&source), DiagnosticCode::AssignTypeMismatch),
+                    expected,
+                    "{prefix} / {write}"
+                );
+            }
+        }
+    }
 }

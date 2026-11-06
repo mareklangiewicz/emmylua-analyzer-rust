@@ -713,6 +713,19 @@ fn apply_field_nullable(model: &SemanticModel, member: &SemanticId, ty: LuaType)
 }
 
 /// Flow-sensitive type of the member at `offset` (member assignment flow + `---@cast t.x +T` widening).
+/// Target type for a member write, as `type_of_decl_assign_target_at`: guards narrow reads, and
+/// the field's contract stays whole under them. Only casts need the walk.
+pub fn type_of_member_assign_target_at(
+    model: &SemanticModel,
+    member: &SemanticId,
+    offset: TextSize,
+) -> LuaType {
+    if model.flow_tree().is_some_and(|tree| tree.has_tag_cast()) {
+        return type_of_member_at(model, member, offset);
+    }
+    member_entry_type(model, member, None).unwrap_or(LuaType::Unknown)
+}
+
 /// Same as `type_of_decl_at`: exclude this assignment when `offset` lies on `t.x = value`.
 pub fn type_of_member_at(model: &SemanticModel, member: &SemanticId, offset: TextSize) -> LuaType {
     type_of_member_access_at(model, member, None, offset)
