@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use emmylua_parser::{LuaExpr, LuaSyntaxId};
-use rowan::TextSize;
+use rowan::{TextRange, TextSize};
 use smol_str::SmolStr;
 
 use crate::member_key::LuaMemberKey;
@@ -185,7 +185,7 @@ pub(crate) enum DeclTracePurpose {
     /// may run after any assignment outside it, so those are skipped and the declaration
     /// contributes its initializer widened to its kind (`widen_loop_carried`).
     ReadValue {
-        capture: Option<rowan::TextRange>,
+        capture: Option<TextRange>,
     },
     /// Use the declaration type and casts, without assignments or branch guards.
     AssignTarget,
@@ -194,6 +194,15 @@ pub(crate) enum DeclTracePurpose {
 
 impl DeclTracePurpose {
     pub(crate) const READ_VALUE: Self = Self::ReadValue { capture: None };
+}
+
+/// Where the writes of a local sit, for the capture and loop-carry rules of a read.
+#[derive(Debug, Default)]
+pub(crate) struct DeclWriteSites {
+    /// The innermost closure of each write, `None` in the main chunk.
+    pub(crate) closures: HashSet<Option<TextRange>>,
+    /// Each loop around a write inside the write's closure, with that closure.
+    pub(crate) loops: HashSet<(Option<TextRange>, TextRange)>,
 }
 
 /// Syntax facts used to choose a safe return-type query for a local function.
@@ -264,6 +273,7 @@ pub(crate) struct SemanticLocalCache {
     pub(crate) builtin_function: HashMap<(FileId, BuiltinKey), Option<SmolStr>>,
     /// Whether all writes to a local occur in its own closure.
     pub(crate) builtin_local_writes: HashMap<(FileId, SemanticId), bool>,
+    pub(crate) decl_write_sites: HashMap<(FileId, SemanticId), Rc<DeclWriteSites>>,
     pub(crate) callable_local_flow: HashMap<(FileId, SemanticId), LocalCallableFlow>,
     pub(crate) resolve_owner_set: HashMap<SemanticId, Vec<SemanticId>>,
     pub(crate) member_type_at: HashMap<(FileId, SemanticId, TextSize), LuaType>,

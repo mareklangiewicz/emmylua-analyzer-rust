@@ -134,25 +134,13 @@ fn widen_if_loop_carried(
     offset: TextSize,
     ty: LuaType,
 ) -> LuaType {
-    use emmylua_parser::LuaSyntaxKind;
-
-    let mut writes = tree.decl_assignments_of(decl).peekable();
-    if writes.peek().is_none() {
+    if !tree.has_decl_assignment(decl) {
         return ty;
     }
     let Some(root) = model.syntax_tree().map(|tree| tree.get_red_root()) else {
         return ty;
     };
-    let closure_of = |pos: TextSize| {
-        let token = root.token_at_offset(pos).right_biased()?;
-        Some(
-            token
-                .parent_ancestors()
-                .find(|node| node.kind() == LuaSyntaxKind::ClosureExpr.into())
-                .map(|node| node.text_range()),
-        )
-    };
-    let Some(read_closure) = closure_of(offset) else {
+    let Some(read_closure) = closure_around(&root, offset) else {
         return ty;
     };
     // An annotated local keeps its declared type as the contract, as in `capturing_closure`.
@@ -165,36 +153,16 @@ fn widen_if_loop_carried(
     }
     // A local declared inside the loop is a new one on every pass: its writes do not carry.
     let decl_start = decl_owner_syntax_start(model, decl);
-    let carries = |pos: TextSize| {
-        if closure_of(pos) != Some(read_closure) {
-            return false;
-        }
-        let Some(token) = root.token_at_offset(pos).right_biased() else {
-            return false;
-        };
-        token
-            .parent_ancestors()
-            .take_while(|node| node.kind() != LuaSyntaxKind::ClosureExpr.into())
-            .filter(|node| {
-                matches!(
-                    LuaSyntaxKind::from(node.kind()),
-                    LuaSyntaxKind::WhileStat
-                        | LuaSyntaxKind::RepeatStat
-                        | LuaSyntaxKind::ForStat
-                        | LuaSyntaxKind::ForRangeStat
-                )
-            })
-            .map(|node| node.text_range())
-            .any(|range| {
-                decl_start.is_none_or(|start| !range.contains(start))
+    let carries =
+        decl_write_sites(model, tree, decl, &root)
+            .loops
+            .iter()
+            .any(|(closure, range)| {
+                *closure == read_closure
+                    && decl_start.is_none_or(|start| !range.contains(start))
                     && (range.contains(offset) || range.end() <= offset)
-            })
-    };
-    if writes.any(|(pos, _)| carries(pos)) {
-        widen_loop_carried(ty)
-    } else {
-        ty
-    }
+            });
+    if carries { widen_loop_carried(ty) } else { ty }
 }
 
 fn widen_loop_carried(ty: LuaType) -> LuaType {
@@ -230,20 +198,80 @@ fn capturing_closure(
         return None;
     }
     let root = model.syntax_tree()?.get_red_root();
-    let closure_at = |pos: TextSize| {
-        let token = root.token_at_offset(pos).right_biased()?;
-        token
-            .parent_ancestors()
-            .find(|node| node.kind() == emmylua_parser::LuaSyntaxKind::ClosureExpr.into())
-            .map(|closure| closure.text_range())
-    };
-    let range = closure_at(offset);
+    let range = closure_around(&root, offset).flatten();
     if range.is_some_and(|range| !range.contains(info.name_range.start())) {
         return range;
     }
-    tree.decl_assignments_of(decl)
-        .any(|(pos, _)| closure_at(pos) != range)
+    decl_write_sites(model, tree, decl, &root)
+        .closures
+        .iter()
+        .any(|closure| *closure != range)
         .then(|| range.unwrap_or_else(|| root.text_range()))
+}
+
+/// The innermost closure around `pos`, `Some(None)` in the main chunk, `None` with no token there.
+fn closure_around(
+    root: &emmylua_parser::LuaSyntaxNode,
+    pos: TextSize,
+) -> Option<Option<rowan::TextRange>> {
+    let token = root.token_at_offset(pos).right_biased()?;
+    Some(
+        token
+            .parent_ancestors()
+            .find(|node| node.kind() == emmylua_parser::LuaSyntaxKind::ClosureExpr.into())
+            .map(|node| node.text_range()),
+    )
+}
+
+/// The closures and loops around the writes of `decl`, found once per request: each read asks,
+/// and looking them up per read costs reads × writes descents through the syntax tree.
+fn decl_write_sites(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    decl: &SemanticId,
+    root: &emmylua_parser::LuaSyntaxNode,
+) -> Rc<cache::DeclWriteSites> {
+    use emmylua_parser::LuaSyntaxKind;
+
+    let key = (model.file_id(), decl.clone());
+    if let Some(sites) = model.cache.borrow().decl_write_sites.get(&key) {
+        return sites.clone();
+    }
+    let mut sites = cache::DeclWriteSites::default();
+    for (pos, _) in tree.decl_assignments_of(decl) {
+        #[cfg(test)]
+        flow_metrics::record_write_site_lookup();
+        let Some(token) = root.token_at_offset(pos).right_biased() else {
+            sites.closures.insert(None);
+            continue;
+        };
+        let mut loops = Vec::new();
+        let mut closure = None;
+        for node in token.parent_ancestors() {
+            match LuaSyntaxKind::from(node.kind()) {
+                LuaSyntaxKind::ClosureExpr => {
+                    closure = Some(node.text_range());
+                    break;
+                }
+                LuaSyntaxKind::WhileStat
+                | LuaSyntaxKind::RepeatStat
+                | LuaSyntaxKind::ForStat
+                | LuaSyntaxKind::ForRangeStat => loops.push(node.text_range()),
+                _ => {}
+            }
+        }
+        sites.closures.insert(closure);
+        sites
+            .loops
+            .extend(loops.into_iter().map(|range| (closure, range)));
+    }
+    let sites = Rc::new(sites);
+    model
+        .cache
+        .borrow_mut()
+        .decl_write_sites
+        .insert(key, sites.clone());
+    sites
 }
 
 /// Flow-sensitive type of `decl` at a concrete CFG start node.
@@ -6657,6 +6685,7 @@ pub(crate) mod flow_metrics {
         fast_member_hits: u64,
         fast_target_hits: u64,
         trace_decl_entries: u64,
+        write_site_lookups: u64,
     }
 
     impl FlowCounters {
@@ -6669,6 +6698,7 @@ pub(crate) mod flow_metrics {
             fast_member_hits: 0,
             fast_target_hits: 0,
             trace_decl_entries: 0,
+            write_site_lookups: 0,
         };
     }
 
@@ -6725,6 +6755,15 @@ pub(crate) mod flow_metrics {
     /// test run on the wall clock.
     pub(crate) fn record_trace_decl_entry() {
         bump(|c| c.trace_decl_entries += 1);
+    }
+
+    /// Syntax lookups of the closure and loops that enclose one write of a local.
+    pub(crate) fn record_write_site_lookup() {
+        bump(|c| c.write_site_lookups += 1);
+    }
+
+    pub(crate) fn write_site_lookups() -> u64 {
+        COUNTERS.with(|c| c.get().write_site_lookups)
     }
 
     pub(crate) fn reset() {
