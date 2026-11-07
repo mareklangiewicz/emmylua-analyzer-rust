@@ -2672,7 +2672,43 @@ fn trace_decl_uncached(
     let root_mode = mode;
     let mut current = flow_id;
     let mut frames = Vec::new();
+    // Set when the walk skipped a merge whose branches leave `decl` alone (below).
+    let mut skipped_to_common = false;
     let result = 'trace: loop {
+        // A value read that lands here after skipping a merge uses and fills the memo, as
+        // `trace_decl` does at its start: the memo holds the state for an empty incoming
+        // path, and the guards collected so far narrow it. Without this, each read of a
+        // long chain of such merges walks back through all of them.
+        if std::mem::take(&mut skipped_to_common)
+            && matches!(purpose, DeclTracePurpose::ReadValue { .. })
+            && mode == root_mode
+            && current != flow_id
+            && !tree.is_loop_reachable(current)
+            && !path
+                .narrowings
+                .iter()
+                .any(|narrowing| matches!(narrowing, Narrowing::Correlated { .. }))
+        {
+            let key = decl_trace_key(model, decl, current, purpose, mode);
+            // An entry still in progress belongs to an outer query: walk on, and leave it alone.
+            let (memo, absent) = {
+                let cache = model.cache.borrow();
+                match cache.trace_state.get(&key) {
+                    None => (None, true),
+                    Some(cache::CacheEntry::InProgress) => (None, false),
+                    Some(entry) => (entry.get(&cache).cloned(), false),
+                }
+            };
+            if let Some(state) = memo {
+                break 'trace state.map(|state| finalize(model, state, path));
+            }
+            if absent && path.narrowings.is_empty() && path.casts.is_empty() {
+                frames.push(DeclTraceFrame::Memo {
+                    key,
+                    revision: model.cache.borrow().revision(),
+                });
+            }
+        }
         // trace_decl owns the starting node's cache entry. Save intermediate
         // nodes here; casts use separate frames even when caching is disabled.
         if matches!(purpose, DeclTracePurpose::OriginalSignatures(_))
@@ -2924,6 +2960,7 @@ fn trace_decl_uncached(
                         decl_branch_is_pure(model, tree, decl, purpose, *branch, common)
                     }) {
                         current = common;
+                        skipped_to_common = true;
                         continue;
                     }
                     if matches!(purpose, DeclTracePurpose::OriginalSignatures(_))
