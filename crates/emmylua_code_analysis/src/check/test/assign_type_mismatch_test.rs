@@ -4188,6 +4188,40 @@ return t
         }
     }
 
+    /// A merge keeps `number` over `integer`: `integer|number` read after an `if` is `number`,
+    /// not `integer`. Reading it as `integer` held `R.c = s - 1` to `integer`, though `R.c` is
+    /// declared by that write alone (refactoring.nvim `debug/utils.lua`).
+    #[test]
+    fn test_merge_keeps_number_over_integer() {
+        for (body, expected) in [
+            // The undeclared member's only write must not be held to a narrower type than its own.
+            ("local ok, s = g()\nif ok then R.c = s - 1 end", 0),
+            // The control: an `integer|number` local may hold a non-integer after the merge.
+            (
+                "local x ---@type integer|number\nif c then end\n---@type integer\nlocal y = x",
+                1,
+            ),
+        ] {
+            let source = format!(
+                r#"
+                ---@return boolean, integer|nil
+                local function g() end
+
+                local function h(c)
+                    if c then end
+                    {body}
+                end
+                return h
+                "#
+            );
+            assert_eq!(
+                count_by_code(&check_source(&source), DiagnosticCode::AssignTypeMismatch),
+                expected,
+                "{body}"
+            );
+        }
+    }
+
     /// An undeclared member keeps following its writes, under a guard too.
     #[test]
     fn test_undeclared_member_write_target_ignores_guards() {

@@ -6767,7 +6767,6 @@ fn type_is_broader(broad: &LuaType, narrow: &LuaType) -> bool {
             | (LuaType::String, LuaType::DocStringConst(_))
             | (LuaType::Integer, LuaType::IntegerConst(_))
             | (LuaType::Integer, LuaType::DocIntegerConst(_))
-            | (LuaType::Integer, LuaType::Number)
             | (LuaType::Number, LuaType::Integer)
             | (LuaType::Number, LuaType::IntegerConst(_))
             | (LuaType::Number, LuaType::DocIntegerConst(_))
