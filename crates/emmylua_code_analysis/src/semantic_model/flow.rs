@@ -209,12 +209,28 @@ fn capturing_closure(
         .then(|| range.unwrap_or_else(|| root.text_range()))
 }
 
+/// `root.token_at_offset(pos).right_biased()`, found by binary search: the token holding the
+/// character at `pos`. `token_at_offset` scans each node's children in turn, so on a block of
+/// n statements a lookup per read costs n reads × n children.
+fn token_right_of(
+    root: &emmylua_parser::LuaSyntaxNode,
+    pos: TextSize,
+) -> Option<emmylua_parser::LuaSyntaxToken> {
+    let char_at = rowan::TextRange::at(pos, 1.into());
+    if root.text_range().contains_range(char_at)
+        && let rowan::NodeOrToken::Token(token) = root.covering_element(char_at)
+    {
+        return Some(token);
+    }
+    root.token_at_offset(pos).right_biased()
+}
+
 /// The innermost closure around `pos`, `Some(None)` in the main chunk, `None` with no token there.
 fn closure_around(
     root: &emmylua_parser::LuaSyntaxNode,
     pos: TextSize,
 ) -> Option<Option<rowan::TextRange>> {
-    let token = root.token_at_offset(pos).right_biased()?;
+    let token = token_right_of(root, pos)?;
     Some(
         token
             .parent_ancestors()
@@ -241,7 +257,7 @@ fn decl_write_sites(
     for (pos, _) in tree.decl_assignments_of(decl) {
         #[cfg(test)]
         flow_metrics::record_write_site_lookup();
-        let Some(token) = root.token_at_offset(pos).right_biased() else {
+        let Some(token) = token_right_of(root, pos) else {
             sites.closures.insert(None);
             continue;
         };
@@ -2675,12 +2691,18 @@ fn trace_decl_uncached(
     // Set when the walk skipped a merge whose branches leave `decl` alone (below).
     let mut skipped_to_common = false;
     let result = 'trace: loop {
-        // A value read that lands here after skipping a merge uses and fills the memo, as
-        // `trace_decl` does at its start: the memo holds the state for an empty incoming
-        // path, and the guards collected so far narrow it. Without this, each read of a
-        // long chain of such merges walks back through all of them.
-        if std::mem::take(&mut skipped_to_common)
-            && matches!(purpose, DeclTracePurpose::ReadValue { .. })
+        // A value read that lands here after skipping a merge, or that reaches a write of
+        // `decl`, uses and fills the memo, as `trace_decl` does at its start: the memo holds
+        // the state for an empty incoming path, and the guards collected so far narrow it.
+        // Without this, each read of a long chain of such merges or writes walks back
+        // through all of them. At a write, the memo frame sits under the write's own frame,
+        // so it saves the state after the write.
+        let landed = std::mem::take(&mut skipped_to_common);
+        if matches!(purpose, DeclTracePurpose::ReadValue { .. })
+            && (landed
+                || tree.get_flow_effects(current).iter().any(
+                    |effect| matches!(effect, FlowEffect::AssignDecl { decl: d, .. } if d == decl),
+                ))
             && mode == root_mode
             && current != flow_id
             && !tree.is_loop_reachable(current)

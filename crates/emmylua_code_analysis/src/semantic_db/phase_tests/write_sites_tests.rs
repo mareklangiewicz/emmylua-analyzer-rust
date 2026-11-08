@@ -54,3 +54,32 @@ fn write_sites_of_a_reassigned_local_are_looked_up_once() {
         );
     }
 }
+
+/// Flow steps to read every `x`: each read used to walk back through every earlier write.
+fn chain_trace_steps(n: usize) -> u64 {
+    let mut ws = VirtualWorkspace::new();
+    let fid = ws.def_file("chain.lua", &reassigned_chain(n));
+    let model = ws.analysis.semantic_model(fid);
+    flow_metrics::reset();
+    for name in model.chunk().expect("chunk").descendants::<LuaNameExpr>() {
+        let _ = model.type_of_expr_at(name.get_syntax_id(), name.get_position());
+    }
+    flow_metrics::trace_steps()
+}
+
+#[test]
+fn reads_of_a_reassigned_local_stop_at_the_previous_write() {
+    let measurements: Vec<_> = [16usize, 64, 256]
+        .into_iter()
+        .map(|n| (n, chain_trace_steps(n)))
+        .collect();
+    let (n_first, steps_first) = measurements[0];
+    for (n, steps) in &measurements {
+        let bound = steps_first * (*n as u64) / (n_first as u64) * 2;
+        assert!(
+            *steps <= bound,
+            "{steps} flow steps for {n} writes (bound {bound}, linear from n = {n_first}): \
+             each read walks back through every earlier write. All: {measurements:?}"
+        );
+    }
+}
