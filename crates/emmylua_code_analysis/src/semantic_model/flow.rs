@@ -212,7 +212,7 @@ fn capturing_closure(
 /// `root.token_at_offset(pos).right_biased()`, found by binary search: the token holding the
 /// character at `pos`. `token_at_offset` scans each node's children in turn, so on a block of
 /// n statements a lookup per read costs n reads × n children.
-fn token_right_of(
+pub(crate) fn token_right_of(
     root: &emmylua_parser::LuaSyntaxNode,
     pos: TextSize,
 ) -> Option<emmylua_parser::LuaSyntaxToken> {
