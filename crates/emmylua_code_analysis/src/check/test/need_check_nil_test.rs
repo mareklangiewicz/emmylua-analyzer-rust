@@ -845,6 +845,10 @@ mod test {
             ("return x * x", 2),
             ("return x / 2, x // 2, x % 2, x ^ 2", 4),
             ("return -x", 1),
+            // `#y` raises on nil, but a length is never nil: only `y` is reported.
+            ("return #y + 1", 1),
+            // A missing member is undefined-field's to report, its length too.
+            ("return #b.missing + 1", 0),
             // Guarded, defaulted, or not nil at all.
             ("return x and x - 1", 0),
             ("if x then return x - 1 end", 0),
@@ -856,10 +860,15 @@ mod test {
         ] {
             let source = format!(
                 r#"
+                ---@class NcnBox
+                local NcnBox = {{}}
+
                 ---@param x integer?
                 ---@param a any
                 ---@param t integer[]
-                local function f(x, a, t)
+                ---@param y any?
+                ---@param b NcnBox
+                local function f(x, a, t, y, b)
                     {body}
                 end
                 return f
