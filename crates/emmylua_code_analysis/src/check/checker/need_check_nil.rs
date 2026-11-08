@@ -142,7 +142,10 @@ fn check_arithmetic_operand(
     operand: &LuaExpr,
 ) {
     let ty = semantic_model.type_of_expr_at(operand.get_syntax_id(), operand.get_range().start());
-    if ty.is_nullable() && !is_missing_member(semantic_model, operand, &ty) {
+    // Only a value that may be nil: a bare `nil` operand is an inference gap far more often than
+    // nil arithmetic (a field of a `table` call result, `select` over unknown values, a member
+    // the class lacks), and its result type is unchanged, so nothing is hidden by skipping it.
+    if ty.is_nullable() && !ty.is_nil() {
         report_may_be_nil(context, operand);
     }
 }

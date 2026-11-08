@@ -849,6 +849,9 @@ mod test {
             ("return #y + 1", 1),
             // A missing member is undefined-field's to report, its length too.
             ("return #b.missing + 1", 0),
+            // An operand typed bare `nil` is an inference gap (a field of a `table` call result,
+            // `select` over unknown values), not a value that may be nil: left alone.
+            ("return tb().x + 1", 0),
             // Guarded, defaulted, or not nil at all.
             ("return x and x - 1", 0),
             ("if x then return x - 1 end", 0),
@@ -862,6 +865,11 @@ mod test {
                 r#"
                 ---@class NcnBox
                 local NcnBox = {{}}
+
+                ---@alias NcnInfo table
+
+                ---@return NcnInfo
+                local function tb() return {{}} end
 
                 ---@param x integer?
                 ---@param a any
