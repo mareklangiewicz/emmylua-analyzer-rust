@@ -581,6 +581,13 @@ pub(crate) fn index_signature_type(
             .iter()
             .find(|(index_key, _)| model.type_check(key_type, index_key))
             .map(|(_, value)| value.clone()),
+        // A name with no type declaration (a module's name identity, `local M = {}`) has no
+        // index signature. Asking the resolver anyway marks the outer query incomplete, which
+        // throws away everything it cached: on every member read of such a table.
+        LuaType::Ref(id) | LuaType::Def(id) if model.type_defs_of(id).is_empty() => None,
+        LuaType::Generic(generic) if model.type_defs_of(&generic.get_base_type_id()).is_empty() => {
+            None
+        }
         LuaType::Ref(_) | LuaType::Def(_) | LuaType::Generic(_) => model
             .applicable_index_infos(prefix_type, key_type)
             .ok()?

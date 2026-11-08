@@ -131,6 +131,13 @@ pub(crate) struct CallSiteAnalysis {
 }
 
 impl<'db> SemanticModel<'db> {
+    /// How many times a query has been marked incomplete: a read that moves it threw away
+    /// what its outer query cached (`QueryCacheScope`).
+    #[cfg(test)]
+    pub(crate) fn incomplete_revision(&self) -> u64 {
+        self.cache.borrow().revision()
+    }
+
     pub fn new(db: &'db SemanticDatabase, file_id: FileId) -> Self {
         Self {
             view: AnalysisView::new(db).file(file_id),

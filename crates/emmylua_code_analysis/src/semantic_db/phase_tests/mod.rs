@@ -14,4 +14,5 @@ mod p5_tests;
 mod p6_tests;
 mod p7_tests;
 mod p9_tests;
+mod undefined_index_owner_tests;
 mod write_sites_tests;
