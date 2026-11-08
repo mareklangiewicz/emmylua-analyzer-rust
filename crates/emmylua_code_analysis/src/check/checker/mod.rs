@@ -110,7 +110,7 @@ impl<'a> CheckContext<'a> {
     /// Collects a diagnostic (filtered first: disabled codes are dropped; severity/tags determined by config).
     ///
     /// Filter order mirrors legacy `DiagnosticContext::add_diagnostic`:
-    /// file-level force-enable -> global config -> file-level disable -> per-line `---@diagnostic disable*`.
+    /// file-level force-enable -> global config -> range `---@diagnostic disable*` (chunk-level `disable` is a range up to its `enable`).
     pub fn add_diagnostic<T: AsRef<str>>(
         &mut self,
         code: DiagnosticCode,
@@ -131,13 +131,8 @@ impl<'a> CheckContext<'a> {
         let code = self.code_override.unwrap_or(code);
         if let Some(facts) = self.semantic_model.file_facts() {
             let force_enable = facts.file_diagnostic_enabled.contains(&code);
-            if !force_enable {
-                if !self.config.is_code_enabled(&code) {
-                    return;
-                }
-                if facts.file_diagnostic_disabled.contains(&code) {
-                    return;
-                }
+            if !force_enable && !self.config.is_code_enabled(&code) {
+                return;
             }
             if facts.is_range_diagnostic_disabled(&code, &range) {
                 return;

@@ -105,10 +105,9 @@ pub struct FileFacts {
     pub namespace: Option<SmolStr>,
     /// `---@using bar`: qualified namespace list used during type resolution.
     pub usings: Vec<SmolStr>,
-    /// `---@diagnostic disable-next-line/disable-line/disable` annotations (range-matched).
+    /// `---@diagnostic disable-next-line/disable-line/disable` annotations (range-matched; a chunk-level
+    /// `disable` runs from the comment to its `enable`, or to the end of the file).
     pub diagnostic_disables: Vec<DiagnosticDisable>,
-    /// File-level `---@diagnostic disable: code` (all codes when the code list is empty).
-    pub file_diagnostic_disabled: HashSet<DiagnosticCode>,
     /// File-level `---@diagnostic enable: code` (force-enable, overriding global config disables).
     pub file_diagnostic_enabled: HashSet<DiagnosticCode>,
     /// Doc annotation usage errors (`@field` must be under a `@class`, etc.).
@@ -583,7 +582,9 @@ pub struct FactsBuilder {
     delayed_definition_owners: HashSet<LuaSyntaxId>,
     /// `---@diagnostic` annotation facts.
     diagnostic_disables: Vec<DiagnosticDisable>,
-    file_diagnostic_disabled: HashSet<DiagnosticCode>,
+    /// Chunk-level `---@diagnostic disable` not yet closed by an `enable`: (start, code; `None` = all).
+    /// Closed into `diagnostic_disables` at the `enable`, or at the end of the chunk.
+    open_file_disables: Vec<(TextSize, Option<DiagnosticCode>)>,
     file_diagnostic_enabled: HashSet<DiagnosticCode>,
     /// File contains `---@meta` (Meta flag for type definitions).
     is_meta: bool,
@@ -846,7 +847,7 @@ impl FactsBuilder {
             pending_constructor: None,
             delayed_definition_owners: HashSet::new(),
             diagnostic_disables: Vec::new(),
-            file_diagnostic_disabled: HashSet::new(),
+            open_file_disables: Vec::new(),
             file_diagnostic_enabled: HashSet::new(),
             is_meta: false,
             meta_name: None,
@@ -867,6 +868,8 @@ impl FactsBuilder {
                 WalkEvent::Leave(node) => self.leave(&node),
             }
         }
+        // A chunk-level `---@diagnostic disable` without an `enable` runs to the end of the chunk.
+        self.close_file_disables(chunk.get_range().end(), |_| true);
 
         // Post-processing 0: inline `---@type` ownership for table fields (comments enter doc_type_map after the field node is visited).
         self.assign_member_doc_types(chunk);
@@ -1117,7 +1120,6 @@ impl FactsBuilder {
             namespace: self.namespace,
             usings: self.usings,
             diagnostic_disables: self.diagnostic_disables,
-            file_diagnostic_disabled: self.file_diagnostic_disabled,
             file_diagnostic_enabled: self.file_diagnostic_enabled,
             annotation_errors: self.annotation_errors,
             setmetatable_calls: self.setmetatable_calls,
@@ -1499,18 +1501,20 @@ impl FactsBuilder {
             .unwrap_or_default();
         match action {
             "disable" => {
-                // File-level (top-level block of chunk) → file-level disable; otherwise disable for the affecting block range.
+                // Chunk level → positional: from this comment to the matching `enable` (or the end of the chunk).
+                // Nested → the whole enclosing block (mirrors old `analyze_diagnostic_disable`).
                 let owner_block = comment.ancestors::<LuaBlock>().next();
                 let is_file_disable = owner_block
                     .as_ref()
                     .is_some_and(|block| block.get_parent::<LuaChunk>().is_some());
                 if is_file_disable {
-                    let codes = if codes.is_empty() {
-                        DiagnosticCode::all()
+                    let start = comment.get_range().start();
+                    if codes.is_empty() {
+                        self.open_file_disables.push((start, None));
                     } else {
-                        codes
-                    };
-                    self.file_diagnostic_disabled.extend(codes);
+                        self.open_file_disables
+                            .extend(codes.into_iter().map(|code| (start, Some(code))));
+                    }
                 } else if let Some(block) = owner_block {
                     push_diagnostic_disables(
                         &mut self.diagnostic_disables,
@@ -1538,17 +1542,51 @@ impl FactsBuilder {
                 push_diagnostic_disables(&mut self.diagnostic_disables, line_range, codes);
             }
             "enable" => {
+                let at = comment.get_range().start();
                 if codes.is_empty() {
-                    self.file_diagnostic_disabled.clear();
+                    self.close_file_disables(at, |_| true);
                 } else {
-                    for code in codes {
-                        self.file_diagnostic_disabled.remove(&code);
-                        self.file_diagnostic_enabled.insert(code);
+                    // An open disable-all stays open for every code except the enabled ones.
+                    let reopen_all_but_these = self.close_file_disables(at, |code| match code {
+                        Some(code) => codes.contains(code),
+                        None => true,
+                    });
+                    if reopen_all_but_these {
+                        self.open_file_disables.extend(
+                            DiagnosticCode::all()
+                                .into_iter()
+                                .filter(|code| !codes.contains(code))
+                                .map(|code| (at, Some(code))),
+                        );
                     }
+                    self.file_diagnostic_enabled.extend(codes);
                 }
             }
             _ => {}
         }
+    }
+
+    /// Closes the open chunk-level disables `matching` selects into ranges ending at `end`.
+    /// Returns whether a disable-all was among them.
+    fn close_file_disables(
+        &mut self,
+        end: TextSize,
+        matching: impl Fn(&Option<DiagnosticCode>) -> bool,
+    ) -> bool {
+        let mut closed_all = false;
+        let disables = &mut self.diagnostic_disables;
+        self.open_file_disables.retain(|(start, code)| {
+            if !matching(code) {
+                return true;
+            }
+            closed_all |= code.is_none();
+            disables.push(DiagnosticDisable {
+                range: TextRange::new(*start, end),
+                code: *code,
+            });
+            false
+        });
+        closed_all
     }
 
     /// Collects a type definition (full_name starts as the bare name; namespace is added in post-processing); also records `current_class`.

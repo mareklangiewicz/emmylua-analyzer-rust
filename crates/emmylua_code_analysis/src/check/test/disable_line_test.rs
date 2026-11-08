@@ -93,6 +93,80 @@ local a = missing_global"#,
         );
     }
 
+    /// A chunk-level bare `disable … enable` pair silences only the lines between them
+    /// (neovim `runtime/lua/vim/glob.lua`: the pair used to cancel out and silence nothing).
+    #[test]
+    fn test_file_level_disable_all_enable_all_is_positional() {
+        let diags = check_source(
+            r#"local a = before_missing
+---@diagnostic disable
+local b = inside_missing
+---@diagnostic enable
+local c = after_missing"#,
+        );
+        assert_eq!(
+            count_by_code(&diags, DiagnosticCode::UndefinedGlobal),
+            2,
+            "diagnostics: {diags:#?}"
+        );
+    }
+
+    /// The same pair with a code list is positional too.
+    #[test]
+    fn test_file_level_disable_code_enable_code_is_positional() {
+        let diags = check_source(
+            r#"local a = before_missing
+---@diagnostic disable: undefined-global
+local b = inside_missing
+---@diagnostic enable: undefined-global
+local c = after_missing"#,
+        );
+        assert_eq!(
+            count_by_code(&diags, DiagnosticCode::UndefinedGlobal),
+            2,
+            "diagnostics: {diags:#?}"
+        );
+    }
+
+    /// A chunk-level `disable` without a matching `enable` runs from the comment to the end of file.
+    #[test]
+    fn test_file_level_disable_runs_to_eof() {
+        let diags = check_source(
+            r#"local a = before_missing
+---@diagnostic disable
+local b = inside_missing
+local c = also_inside_missing"#,
+        );
+        assert_eq!(
+            count_by_code(&diags, DiagnosticCode::UndefinedGlobal),
+            1,
+            "diagnostics: {diags:#?}"
+        );
+    }
+
+    /// `enable: code` after a bare `disable` re-enables only that code; the rest stay silenced.
+    #[test]
+    fn test_file_level_disable_all_then_enable_one_code() {
+        let diags = check_source(
+            r#"---@param s string
+local function f(s) end
+---@diagnostic disable
+---@diagnostic enable: undefined-global
+local a = missing_global
+f(1)"#,
+        );
+        assert_eq!(
+            count_by_code(&diags, DiagnosticCode::UndefinedGlobal),
+            1,
+            "diagnostics: {diags:#?}"
+        );
+        assert_eq!(
+            count_by_code(&diags, DiagnosticCode::ParamTypeMismatch),
+            0,
+            "diagnostics: {diags:#?}"
+        );
+    }
+
     /// File-level `---@diagnostic enable: undefined-global` overrides a global config disable.
     #[test]
     fn test_file_level_enable_overrides_config() {
