@@ -3150,6 +3150,7 @@ fn trace_member_uncached(
                     if let FlowEffect::AssignMember {
                         member: assigned_member,
                         value_syntax,
+                        target_index,
                         ..
                     } = effect
                     {
@@ -3177,7 +3178,13 @@ fn trace_member_uncached(
                             casts: path.casts.clone(),
                             ignore_guards: path.ignore_guards,
                         };
-                        let mut value_ty = type_of_expr_with_cast(model, *value_syntax, AsOnly);
+                        let mut value_ty = member_assigned_value_type(
+                            model,
+                            tree,
+                            current,
+                            *target_index,
+                            *value_syntax,
+                        );
                         if let Some(annotation) = member_annotation_type(model, member) {
                             if model.type_check(&value_ty, &annotation) {
                                 value_ty = widen_const_type(value_ty);
@@ -3583,6 +3590,39 @@ fn assigned_value_type(
                 )
             }
         })
+}
+
+/// The value a member write gives its target, as `assigned_value_type` does for a local: in
+/// `f.a, f.b = g()`, `f.b` takes `g`'s second result and `f.a` its first, and a target past every
+/// value that is not a call takes nil.
+fn member_assigned_value_type(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    flow_id: FlowId,
+    target_index: usize,
+    value_syntax: emmylua_parser::LuaSyntaxId,
+) -> LuaType {
+    let value_ty = type_of_expr_with_cast(model, value_syntax, AsOnly);
+    let Some(assign) = flow_assign_stat(model, tree, flow_id) else {
+        return value_ty;
+    };
+    let (vars, values) = assign.get_var_and_expr_list();
+    if vars.len() < 2 {
+        return value_ty;
+    }
+    let last = values.len().saturating_sub(1);
+    let slot = if target_index < last {
+        0
+    } else if matches!(values.last(), Some(LuaExpr::CallExpr(_))) {
+        target_index - last
+    } else if target_index > last {
+        return LuaType::Nil;
+    } else {
+        0
+    };
+    value_ty
+        .get_result_slot_type(slot)
+        .unwrap_or(if slot > 0 { LuaType::Nil } else { value_ty })
 }
 
 /// Self-referential arithmetic assignments (`x = x + 1` / `x = x - 1`) should keep the base type even when constant-folded:

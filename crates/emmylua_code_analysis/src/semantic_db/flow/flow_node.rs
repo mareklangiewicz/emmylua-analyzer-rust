@@ -22,6 +22,9 @@ pub enum FlowEffect {
         key: LuaMemberKey,
         member: SemanticId,
         value_syntax: emmylua_parser::LuaSyntaxId,
+        /// The target's place in the statement's targets: past the last value it takes that
+        /// value's later results (`a.x, a.y = f()`).
+        target_index: usize,
     },
     /// Condition guard: the true/false branch for cond.
     Guard {

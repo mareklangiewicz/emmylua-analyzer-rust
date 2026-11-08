@@ -4160,6 +4160,34 @@ return t
         }
     }
 
+    /// In `f.a, f.b, f.c = find(...)` each member takes its own result, as a local does, so a
+    /// later write to `f.c` is held to `string?`, not to the first result.
+    #[test]
+    fn test_member_multi_assign_takes_its_own_result() {
+        for (write, expected) in [("f.c or ''", 0), ("f.c or 0", 1), ("f.a or 0", 0)] {
+            let target = &write[..3];
+            let source = format!(
+                r#"
+                ---@return integer?, integer?, string?
+                local function find() end
+
+                local function g()
+                    local f = {{}}
+                    f.a, f.b, f.c = find()
+                    {target} = {write}
+                    return f
+                end
+                return g
+                "#
+            );
+            assert_eq!(
+                count_by_code(&check_source(&source), DiagnosticCode::AssignTypeMismatch),
+                expected,
+                "{write}"
+            );
+        }
+    }
+
     /// An undeclared member keeps following its writes, under a guard too.
     #[test]
     fn test_undeclared_member_write_target_ignores_guards() {
