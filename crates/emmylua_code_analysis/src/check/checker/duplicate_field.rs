@@ -16,6 +16,7 @@ use crate::DiagnosticCode;
 use crate::FileId;
 use crate::semantic_db::def::{Member, SemanticId};
 use crate::semantic_model::SemanticModel;
+use crate::semantic_model::flow::token_right_of;
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::semantic_model::type_eval::expand_alias_head;
@@ -140,7 +141,7 @@ struct SetSite {
 /// The set site of a member, or `None` for a table-constructor field.
 fn set_site(root: &LuaSyntaxNode, member: &Member) -> Option<SetSite> {
     let key_range = member.id.member_key_range()?;
-    let token = root.token_at_offset(key_range.start()).right_biased()?;
+    let token = token_right_of(root, key_range.start())?;
     let index_expr = token.parent_ancestors().find_map(LuaIndexExpr::cast)?;
     if index_expr.get_index_key()?.get_range()? != key_range {
         return None;
@@ -264,7 +265,7 @@ fn restores_saved_member(
     let Some(key_range) = member.id.member_key_range() else {
         return false;
     };
-    let Some(token) = root.token_at_offset(key_range.start()).right_biased() else {
+    let Some(token) = token_right_of(root, key_range.start()) else {
         return false;
     };
     let Some(target) = token.parent_ancestors().find_map(LuaIndexExpr::cast) else {
