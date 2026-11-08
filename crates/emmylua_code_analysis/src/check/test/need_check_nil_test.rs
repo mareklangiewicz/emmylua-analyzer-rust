@@ -3,6 +3,7 @@ mod test {
     use lsp_types::NumberOrString;
     use tokio_util::sync::CancellationToken;
 
+    use crate::check::test::{check_source, count_by_code};
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     fn check_class_array_guard(element_type: &str, body: &str, expected_codes: &[DiagnosticCode]) {
@@ -835,6 +836,43 @@ mod test {
         ));
     }
 
+    /// Arithmetic on nil raises, as `#nil` does. Each operand that may be nil is reported once.
+    #[test]
+    fn test_arithmetic_on_nullable_operand() {
+        for (body, expected) in [
+            ("return x - 1", 1),
+            ("return 1 + x", 1),
+            ("return x * x", 2),
+            ("return x / 2, x // 2, x % 2, x ^ 2", 4),
+            ("return -x", 1),
+            // Guarded, defaulted, or not nil at all.
+            ("return x and x - 1", 0),
+            ("if x then return x - 1 end", 0),
+            ("return (x or 0) - 1", 0),
+            ("return a + 1, -a", 0),
+            ("local s = 0 for i = 1, #t do s = s + t[i] end return s", 0),
+            // Neither concatenation nor bitwise operators are arithmetic here (0.25.1 did not check them).
+            ("return x .. '', x & 1", 0),
+        ] {
+            let source = format!(
+                r#"
+                ---@param x integer?
+                ---@param a any
+                ---@param t integer[]
+                local function f(x, a, t)
+                    {body}
+                end
+                return f
+                "#
+            );
+            assert_eq!(
+                count_by_code(&check_source(&source), DiagnosticCode::NeedCheckNil),
+                expected,
+                "{body}"
+            );
+        }
+    }
+
     #[test]
     fn test_guard_after_cast_narrows_the_cast_type() {
         let mut ws = VirtualWorkspace::new();
@@ -942,10 +980,7 @@ mod test {
                     end
                     "#
                 );
-                let found = crate::check::test::count_by_code(
-                    &crate::check::test::check_source(&source),
-                    DiagnosticCode::NeedCheckNil,
-                );
+                let found = count_by_code(&check_source(&source), DiagnosticCode::NeedCheckNil);
                 (found != *expected).then_some((body, found))
             })
             .collect();

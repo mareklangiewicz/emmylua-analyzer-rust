@@ -1,13 +1,13 @@
 //! # need_check_nil - direct call / member access on a possibly nil prefix
 //!
-//! M0: if the call callee type is nullable, the index prefix is nullable, or the operand of `#` is
-//! nullable, report NeedCheckNil; safe navigation (`?.`/`?:`) skips.
+//! M0: if the call callee type is nullable, the index prefix is nullable, the operand of `#` is
+//! nullable, or an arithmetic operand is nullable, report NeedCheckNil; safe navigation (`?.`/`?:`) skips.
 
 use std::rc::Rc;
 
 use emmylua_parser::{
-    LuaAssignStat, LuaAstNode, LuaCallExpr, LuaExpr, LuaIndexExpr, LuaUnaryExpr, PathTrait,
-    UnaryOperator,
+    BinaryOperator, LuaAssignStat, LuaAstNode, LuaBinaryExpr, LuaCallExpr, LuaExpr, LuaIndexExpr,
+    LuaUnaryExpr, PathTrait, UnaryOperator,
 };
 
 use crate::LuaUnionType;
@@ -32,6 +32,9 @@ impl Checker for NeedCheckNilChecker {
                 LuaExpr::CallExpr(call_expr) => check_call(context, semantic_model, &call_expr),
                 LuaExpr::IndexExpr(index_expr) => check_index(context, semantic_model, &index_expr),
                 LuaExpr::UnaryExpr(unary_expr) => check_len(context, semantic_model, &unary_expr),
+                LuaExpr::BinaryExpr(binary_expr) => {
+                    check_arithmetic(context, semantic_model, &binary_expr);
+                }
                 _ => {}
             }
         }
@@ -82,23 +85,65 @@ fn check_index(
     }
 }
 
-/// `#x` raises on a nil `x` just as `x.y` does.
+/// `#x` and `-x` raise on a nil `x` just as `x.y` does.
 fn check_len(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     unary_expr: &LuaUnaryExpr,
 ) {
-    if unary_expr
-        .get_op_token()
-        .is_none_or(|op| op.get_op() != UnaryOperator::OpLen)
-    {
+    let Some(op) = unary_expr.get_op_token().map(|op| op.get_op()) else {
         return;
-    }
+    };
     let Some(operand) = unary_expr.get_expr() else {
         return;
     };
-    if may_be_nil(semantic_model, &operand) {
-        report_may_be_nil(context, &operand);
+    match op {
+        UnaryOperator::OpLen if may_be_nil(semantic_model, &operand) => {
+            report_may_be_nil(context, &operand);
+        }
+        UnaryOperator::OpUnm => check_arithmetic_operand(context, semantic_model, &operand),
+        _ => {}
+    }
+}
+
+/// Arithmetic on nil raises, as `#nil` does. The operand's own flow type decides, not the
+/// array-index fallback of `prefix_type`: the result type reads that same type
+/// (`integer? - 1` is `integer`), so this is where its nil is reported.
+fn check_arithmetic(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    binary_expr: &LuaBinaryExpr,
+) {
+    if !binary_expr.get_op_token().is_some_and(|op| {
+        matches!(
+            op.get_op(),
+            BinaryOperator::OpAdd
+                | BinaryOperator::OpSub
+                | BinaryOperator::OpMul
+                | BinaryOperator::OpDiv
+                | BinaryOperator::OpIDiv
+                | BinaryOperator::OpMod
+                | BinaryOperator::OpPow
+        )
+    }) {
+        return;
+    }
+    let Some((left, right)) = binary_expr.get_exprs() else {
+        return;
+    };
+    for operand in [left, right] {
+        check_arithmetic_operand(context, semantic_model, &operand);
+    }
+}
+
+fn check_arithmetic_operand(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    operand: &LuaExpr,
+) {
+    let ty = semantic_model.type_of_expr_at(operand.get_syntax_id(), operand.get_range().start());
+    if ty.is_nullable() && !is_missing_member(semantic_model, operand, &ty) {
+        report_may_be_nil(context, operand);
     }
 }
 

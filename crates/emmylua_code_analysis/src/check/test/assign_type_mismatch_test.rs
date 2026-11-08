@@ -4222,6 +4222,42 @@ return t
         }
     }
 
+    /// `integer? - 1` is `integer`: a nil operand raises, so a result is always an integer.
+    /// The nil is `need-check-nil`'s to report. Read as `number`, it failed
+    /// `string.sub(s, i, f.e - 1)` (neotest `xml/parser.lua`).
+    #[test]
+    fn test_arithmetic_on_optional_integer_is_integer() {
+        for (value, mismatches, nil_checks) in [
+            ("x - 1", 0, 1),
+            ("-x", 0, 1),
+            ("x // 2", 0, 1),
+            // The controls: a float or a non-number component still makes `number`.
+            ("(x or 1.5) - 1", 1, 0),
+            ("(x or '') - 1", 1, 0),
+        ] {
+            let source = format!(
+                r#"
+                ---@return integer?
+                local function g() end
+
+                local x = g()
+                ---@type integer
+                local y = {value}
+                return y
+                "#
+            );
+            let diagnostics = check_source(&source);
+            assert_eq!(
+                (
+                    count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch),
+                    count_by_code(&diagnostics, DiagnosticCode::NeedCheckNil),
+                ),
+                (mismatches, nil_checks),
+                "{value}"
+            );
+        }
+    }
+
     /// An undeclared member keeps following its writes, under a guard too.
     #[test]
     fn test_undeclared_member_write_target_ignores_guards() {
