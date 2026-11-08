@@ -4068,6 +4068,11 @@ pub(crate) fn unify_call_bindings(
             }
         }
         DocFunction(param_fun) => {
+            let expanded_arg = match arg {
+                Ref(_) | Def(_) | Generic(_) => expand_alias_head(model, arg),
+                _ => None,
+            };
+            let arg = expanded_arg.as_ref().unwrap_or(arg);
             if let DocFunction(arg_fun) = arg {
                 let param_params = param_fun.get_params();
                 let arg_params = arg_fun.get_params();
@@ -4121,14 +4126,29 @@ pub(crate) fn unify_call_bindings(
                             .get(arg_index..arg_index + consume)
                             .unwrap_or_default()
                             .iter()
-                            .filter_map(|p| p.1.clone())
+                            .enumerate()
+                            .map(|(offset, (_, ty))| {
+                                let ty = ty.clone().unwrap_or(Unknown);
+                                if arg_fun.is_variadic()
+                                    && arg_index + offset + 1 == arg_params.len()
+                                    && !matches!(ty, Variadic(_))
+                                {
+                                    Variadic(Rc::new(VariadicType::Repeat(ty)))
+                                } else {
+                                    ty
+                                }
+                            })
                             .collect();
                         if let Variadic(variadic) = &param_ty
                             && let VariadicType::Base(base) = variadic.as_ref()
                             && let TplRef(tpl) = base
                             && !bindings.contains_key(&tpl.get_tpl_id())
                             && !remaining.is_empty()
-                            && remaining.iter().any(|t| !matches!(t, Unknown | Any))
+                            && arg_params[arg_index..arg_index + consume]
+                                .iter()
+                                .any(|(_, ty)| {
+                                    ty.as_ref().is_some_and(|t| !matches!(t, Unknown | Any))
+                                })
                             && !remaining.iter().any(|t| {
                                 matches!(
                                     t,
@@ -4141,28 +4161,18 @@ pub(crate) fn unify_call_bindings(
                                 )
                             })
                         {
-                            if remaining.len() == 1 {
-                                if !unify_call_bindings(
-                                    model,
-                                    &TplRef(tpl.clone()),
-                                    &remaining[0],
-                                    bindings,
-                                ) {
-                                    return false;
-                                }
+                            // 固定参数保留参数包长度, 可变尾部保留重复或展开语义.
+                            let pack_ty = if remaining.iter().any(|ty| matches!(ty, Variadic(_))) {
+                                Variadic(Rc::new(VariadicType::Multi(remaining)))
                             } else {
-                                let tuple_ty = Tuple(Rc::new(LuaTupleType::new(
+                                Tuple(Rc::new(LuaTupleType::new(
                                     remaining,
                                     LuaTupleStatus::InferResolve,
-                                )));
-                                if !unify_call_bindings(
-                                    model,
-                                    &TplRef(tpl.clone()),
-                                    &tuple_ty,
-                                    bindings,
-                                ) {
-                                    return false;
-                                }
+                                )))
+                            };
+                            if !unify_call_bindings(model, &TplRef(tpl.clone()), &pack_ty, bindings)
+                            {
+                                return false;
                             }
                         }
                         // The variadic slot only consumes actual function params; the param index

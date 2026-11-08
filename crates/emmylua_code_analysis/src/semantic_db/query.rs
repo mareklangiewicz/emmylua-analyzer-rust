@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use super::SemanticDatabase;
 use super::def::Decl;
+use super::def::TypeScope;
 use super::def::{
     ChangedKeys, ConstructorAttribute, DeclKind, DependencyKey, DocGenericParam, ExportKey,
     LuaMemberKey, MemberRef, ModuleExport, ModuleInfo, ModuleNode, ModuleNodeId, ModuleVisibility,
@@ -36,35 +37,33 @@ use emmylua_parser::{
 };
 use rowan::{TextRange, TextSize};
 
+pub(crate) use super::index::members::{
+    WorkspaceMemberIndex, aggregate_member_bucket, build_member_aggregates,
+    build_workspace_member_index,
+};
+pub(crate) use super::index::references::{
+    FileReferences, WorkspaceReferenceIndex, build_file_references, build_workspace_reference_index,
+};
+pub(crate) use super::index::types::{
+    DeprecatedFileData, DeprecatedIndex, WorkspaceTypeIndex, build_deprecated_file,
+    build_global_type_aggregate, build_workspace_deprecated_index, build_workspace_type_index,
+};
+use crate::WorkspaceId;
+use smol_str::SmolStr;
+
 /// Per-file minimum fact arena (declarations + scopes + type definitions).
 ///
 /// Results are cached in the plain `SemanticDatabase` file cache and invalidated
 /// by file/config/workspace writes. It reads the same input fields so callers
 /// are correctly invalidated when the underlying text/config/roots change.
-pub(crate) fn build_file_facts(
-    db: &SemanticDatabase,
-    _file: FileId,
-    file_id: FileId,
-    text: &str,
-) -> FileFacts {
-    let workspace_id = file_workspace_id(db, file_id).unwrap_or(WorkspaceId::MAIN);
+pub(crate) fn build_file_facts(db: &SemanticDatabase, file_id: FileId, text: &str) -> FileFacts {
+    let workspace_id = file_workspace_id(db, file_id).unwrap_or(WorkspaceId::Main);
     let tree = db
         .vfs()
         .get_syntax_tree(&file_id)
         .expect("syntax tree must be built before read");
     let chunk = tree.get_chunk_node();
     FactsBuilder::new(file_id, workspace_id).build(&chunk, text)
-}
-
-pub(crate) fn syntax_tree(db: &SemanticDatabase, file: FileId) -> &LuaSyntaxTree {
-    db.vfs()
-        .get_syntax_tree(&file)
-        .expect("syntax tree must be built before read")
-}
-
-pub(crate) fn file_facts(db: &SemanticDatabase, file: FileId) -> &FileFacts {
-    db.file_facts_of(file)
-        .expect("file facts must be built before read")
 }
 
 /// Rebuild all write-time caches from the current inputs.
@@ -211,26 +210,6 @@ fn insert_type_changed_keys(changed: &mut ChangedKeys, scope: TypeScope, full_na
     }
 }
 
-/// Rebuild the reverse dependency map from all per-file references (full rebuild).
-// ──────────────────────────────────────────────
-// Plain workspace type index (scope + full_name → definitions)
-// ──────────────────────────────────────────────
-use super::def::TypeScope;
-
-pub(crate) use super::index::members::{
-    WorkspaceMemberIndex, aggregate_member_bucket, build_member_aggregates,
-    build_workspace_member_index,
-};
-pub(crate) use super::index::references::{
-    FileReferences, WorkspaceReferenceIndex, build_file_references, build_workspace_reference_index,
-};
-pub(crate) use super::index::types::{
-    DeprecatedFileData, DeprecatedIndex, WorkspaceTypeIndex, build_deprecated_file,
-    build_global_type_aggregate, build_workspace_deprecated_index, build_workspace_type_index,
-};
-use crate::WorkspaceId;
-use smol_str::SmolStr;
-
 pub(crate) fn workspace_type_index_for(
     db: &SemanticDatabase,
     ws_id: WorkspaceId,
@@ -251,33 +230,13 @@ pub(crate) fn workspace_deprecated_index_for(
         .expect("workspace deprecated index must be built before read")
 }
 
-/// Cached workspace ids (roots + `REMOTE`; `MAIN` when no roots are registered).
-///
-/// The list is refreshed only when workspace roots change, so hot query paths do
-/// not allocate a fresh `Vec` on every call.
-pub(crate) fn all_workspace_ids(db: &SemanticDatabase) -> &[WorkspaceId] {
-    db.all_workspace_ids()
-}
-
-/// Deterministic workspace priority used by cross-workspace lookups.
-///
-/// Main workspace wins over libraries, libraries over std; remote stays last.
-/// Library order keeps registration order (stable sort). Cached in the database.
-pub(crate) fn workspace_lookup_order(db: &SemanticDatabase) -> &[WorkspaceId] {
-    db.workspace_lookup_order()
-}
-
 pub(crate) fn file_matches_workspace_id(
     db: &SemanticDatabase,
     file_id: FileId,
     ws_id: WorkspaceId,
 ) -> bool {
     let file_ws = file_workspace_id(db, file_id);
-    if ws_id == WorkspaceId::REMOTE {
-        file_ws.is_none()
-    } else {
-        file_ws == Some(ws_id)
-    }
+    file_ws == Some(ws_id)
 }
 
 fn find_global_types(db: &SemanticDatabase, full_name: &str) -> Arc<[TypeDef]> {
@@ -295,7 +254,7 @@ fn find_internal_types(db: &SemanticDatabase, ws: WorkspaceId, full_name: &str) 
 }
 
 fn find_file_types(db: &SemanticDatabase, file_id: FileId, full_name: &str) -> Arc<[TypeDef]> {
-    let ws = file_workspace_id(db, file_id).unwrap_or(WorkspaceId::MAIN);
+    let ws = file_workspace_id(db, file_id).unwrap_or(WorkspaceId::Main);
     workspace_type_index_for(db, ws).find_all(TypeScope::File(file_id), full_name)
 }
 
@@ -303,12 +262,13 @@ fn find_file_types(db: &SemanticDatabase, file_id: FileId, full_name: &str) -> A
 /// (mirrors `resolve_type_def` resolution order, but returns every same-name definition in the bucket; for duplicate-type checks).
 pub(crate) fn resolve_type_def_locations(
     db: &SemanticDatabase,
-    file: FileId,
+    file_id: FileId,
     bare_name: SmolStr,
 ) -> Arc<[TypeDef]> {
-    let file_id = file;
-    let facts = file_facts(db, file);
-    let ws = file_workspace_id(db, file_id).unwrap_or(WorkspaceId::MAIN);
+    let facts = db
+        .file_facts_of(file_id)
+        .expect("file facts must be available");
+    let ws = file_workspace_id(db, file_id).unwrap_or(WorkspaceId::Main);
 
     if let Some(ns) = &facts.namespace {
         let full = SmolStr::new(format!("{}.{}", ns, bare_name));
@@ -385,24 +345,22 @@ fn constructor_attribute_of_decl(
         SemanticId::Decl(key) => key,
         _ => return None,
     };
-    let file = db.file_data_id(key.file_id)?;
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(key.file_id)?;
     let decl = facts.decl_by_id(&decl)?;
     let value_syntax = decl.value_expr_syntax?;
-    let tree = syntax_tree(db, file);
+    let tree = db.syntax_tree_of(key.file_id)?;
     let node = value_syntax.to_node_from_root(&tree.get_red_root())?;
     let call = LuaCallExpr::cast(node)?;
     let prefix = call.get_prefix_expr()?;
     let LuaExpr::NameExpr(name_expr) = &prefix else {
         return None;
     };
-    let callee_decl = resolve_name(db, file, name_expr.get_position())?;
-    let callee_file = match &callee_decl {
+    let callee_decl = resolve_name(db, key.file_id, name_expr.get_position())?;
+    let callee_file_id = match &callee_decl {
         SemanticId::Decl(key) => key.file_id,
         _ => return None,
     };
-    let callee_input = db.file_data_id(callee_file)?;
-    let callee_facts = file_facts(db, callee_input);
+    let callee_facts = db.file_facts_of(callee_file_id)?;
     let callee = callee_facts.decl_by_id(&callee_decl)?;
     let callee_closure = callee.value_expr_syntax?;
     let signature = callee_facts.signature_by_closure(callee_closure)?;
@@ -411,8 +369,6 @@ fn constructor_attribute_of_decl(
         .first()
         .map(|(_, attribute)| attribute.clone())
 }
-
-// ──────────────────────────────────────────────
 
 /// Recompute the aggregate buckets for owners / names changed by a file update.
 pub(crate) fn workspace_member_index_for(
@@ -493,7 +449,7 @@ fn merge_canonical_members(
         return raw;
     };
     let mut extra: Vec<MemberRef> = Vec::new();
-    for &ws_id in all_workspace_ids(db) {
+    for &ws_id in db.all_workspace_ids.iter() {
         let index = workspace_member_index_for(db, ws_id);
         let members = match named {
             Some(name) => index.members_of_owner_id_named(&owner_id, name),
@@ -528,7 +484,7 @@ fn merge_canonical_members(
 /// falls back to the owner's `FileFacts` when the index has no contribution
 /// (e.g. an unconfigured database or a facts-only test setup).
 fn raw_owner_members(db: &SemanticDatabase, owner: &SemanticId) -> Arc<[MemberRef]> {
-    let from_index = if db.config_input().is_some() {
+    let from_index = if db.config().is_some() {
         members_from_workspaces(db, owner, None)
     } else {
         Arc::from(Vec::new())
@@ -541,10 +497,10 @@ fn raw_owner_members(db: &SemanticDatabase, owner: &SemanticId) -> Arc<[MemberRe
         SemanticId::Member(key) => Some(key.file_id),
         _ => None,
     };
-    if let Some(owner_file_id) = owner_file
-        && let Some(file_id) = db.file_data_id(owner_file_id)
-    {
-        let facts = file_facts(db, file_id);
+    if let Some(owner_file_id) = owner_file {
+        let facts = db
+            .file_facts_of(owner_file_id)
+            .expect("Failed to get file facts for owner file");
         return Arc::from(
             facts
                 .members_of_owner(owner)
@@ -564,7 +520,7 @@ fn raw_owner_members_named(
     owner: &SemanticId,
     name: &str,
 ) -> Arc<[MemberRef]> {
-    let from_index = if db.config_input().is_some() {
+    let from_index = if db.config().is_some() {
         members_from_workspaces(db, owner, Some(name))
     } else {
         Arc::from(Vec::new())
@@ -577,10 +533,10 @@ fn raw_owner_members_named(
         SemanticId::Member(key) => Some(key.file_id),
         _ => None,
     };
-    if let Some(owner_file_id) = owner_file
-        && let Some(file_id) = db.file_data_id(owner_file_id)
-    {
-        let facts = file_facts(db, file_id);
+    if let Some(owner_file_id) = owner_file {
+        let facts = db
+            .file_facts_of(owner_file_id)
+            .expect("Failed to get file facts for owner file");
         return Arc::from(
             facts
                 .members_of_owner_named(owner, name)
@@ -620,7 +576,7 @@ fn members_from_workspaces(
     // setups / owner without contributions): merge in workspace order.
     let mut single: Option<Arc<[MemberRef]>> = None;
     let mut extra: Vec<MemberRef> = Vec::new();
-    for &ws_id in all_workspace_ids(db) {
+    for &ws_id in db.all_workspace_ids() {
         let index = workspace_member_index_for(db, ws_id);
         let members = match named {
             Some(name) => index.members_of_owner_named(owner, name),
@@ -877,7 +833,7 @@ pub(crate) fn workspace_decl_index_for(
 pub(crate) fn global_decl_by_name(db: &SemanticDatabase, name: SmolStr) -> Option<SemanticId> {
     let roots = db.workspace_roots();
     if roots.is_empty() {
-        return workspace_decl_index_for(db, WorkspaceId::MAIN).global_decl_named(&name);
+        return workspace_decl_index_for(db, WorkspaceId::Main).global_decl_named(&name);
     }
     for root in roots.iter() {
         if let Some(decl) = workspace_decl_index_for(db, root.id).global_decl_named(&name) {
@@ -919,7 +875,7 @@ pub(crate) fn global_decls_named_for_file(
 
 /// First non-empty workspace in explicit priority order (main > library > std).
 pub(crate) fn global_decls_named_primary(db: &SemanticDatabase, name: &str) -> Vec<SemanticId> {
-    for &ws_id in workspace_lookup_order(db) {
+    for &ws_id in db.workspace_lookup_order() {
         let decls = global_decls_named_in_workspace(db, ws_id, name);
         if !decls.is_empty() {
             return decls;
@@ -927,10 +883,6 @@ pub(crate) fn global_decls_named_primary(db: &SemanticDatabase, name: &str) -> V
     }
     Vec::new()
 }
-
-// ──────────────────────────────────────────────
-// require / module resolution (M0: path-derived module name + suffix matching)
-// ──────────────────────────────────────────────
 
 /// Per-file module information (equivalent to a semantic ModuleIndex entry).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -951,15 +903,14 @@ pub(crate) struct ModuleEntry {
 pub(crate) fn build_module_entry(db: &SemanticDatabase, file_id: FileId) -> Option<ModuleEntry> {
     let roots = db.workspace_roots();
     let fallback_root = db.module_fallback_root();
-    let file = db.file_data_id(file_id)?;
-    let path = db.file_path(file)?;
+    let path = db.file_path(file_id)?;
     let file_ws = file_workspace_id(db, file_id);
     let root_path = match &file_ws {
         Some(_) if !roots.is_empty() => find_workspace_root(&roots, &path).map(|(_, root)| root),
         _ if roots.is_empty() => fallback_root,
         _ => None,
     }?;
-    let config = db.config_input()?;
+    let config = db.config()?;
     let full_module_name = SmolStr::new(map_module_name(
         config,
         &module_name_from_path(&path, Some(&root_path))?,
@@ -982,7 +933,7 @@ pub(crate) fn build_module_entry(db: &SemanticDatabase, file_id: FileId) -> Opti
         }
     }
     aliases.sort();
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file_id)?;
     let name = SmolStr::new(
         full_module_name
             .rsplit('.')
@@ -996,7 +947,7 @@ pub(crate) fn build_module_entry(db: &SemanticDatabase, file_id: FileId) -> Opti
         aliases,
         full_module_name,
         name,
-        workspace_id: file_ws.unwrap_or(WorkspaceId::REMOTE),
+        workspace_id: file_ws.unwrap_or(WorkspaceId::Main),
         visible: facts.module_visibility,
         is_meta: facts.is_meta,
         version_conds: facts.version_conds.clone(),
@@ -1047,7 +998,7 @@ pub(crate) fn build_workspace_module_index(
         a.full_module_name
             .as_str()
             .cmp(b.full_module_name.as_str())
-            .then_with(|| a.workspace_id.id.cmp(&b.workspace_id.id))
+            .then_with(|| a.workspace_id.cmp(&b.workspace_id))
             .then_with(|| a.file_id.id.cmp(&b.file_id.id))
     });
     for file_ids in module_name_to_file_ids.values_mut() {
@@ -1199,7 +1150,7 @@ pub(crate) fn file_workspace_id_for_path(
 ) -> Option<WorkspaceId> {
     let path = path?;
     if roots.is_empty() {
-        return Some(WorkspaceId::MAIN);
+        return Some(WorkspaceId::Main);
     }
     find_workspace_id(roots, path)
 }
@@ -1262,7 +1213,7 @@ fn module_file_in_root(
         rewritten
     };
     let lookup = |find: &dyn Fn(&ModuleIndex) -> Option<FileId>| {
-        workspace_lookup_order(db)
+        db.workspace_lookup_order()
             .iter()
             .enumerate()
             .filter_map(|(order, &ws_id)| {
@@ -1372,7 +1323,7 @@ impl ModuleIndex {
             a.full_module_name
                 .as_str()
                 .cmp(b.full_module_name.as_str())
-                .then_with(|| a.workspace_id.id.cmp(&b.workspace_id.id))
+                .then_with(|| a.workspace_id.cmp(&b.workspace_id))
                 .then_with(|| a.file_id.id.cmp(&b.file_id.id))
         });
         self.entry_by_file_id = self
@@ -1741,7 +1692,7 @@ pub(crate) fn members_of_owner_id_named_all(
     name: &str,
 ) -> Vec<MemberRef> {
     let mut out: Vec<MemberRef> = Vec::new();
-    for &ws_id in workspace_lookup_order(db) {
+    for &ws_id in db.workspace_lookup_order() {
         let index = workspace_member_index_for(db, ws_id);
         let Some(members) = index.members_of_owner_id_named(owner_id, name) else {
             continue;
@@ -1774,7 +1725,7 @@ fn push_type_associated_owner_ids(
     type_id: &SemanticId,
     out: &mut Vec<OwnerId>,
 ) {
-    for &ws_id in workspace_lookup_order(db) {
+    for &ws_id in db.workspace_lookup_order() {
         let index = workspace_decl_index_for(db, ws_id);
         let locations = index.type_def_locations(type_id);
         if locations.is_empty() {
@@ -1880,7 +1831,7 @@ pub(crate) fn resolve_owner_ids(db: &SemanticDatabase, owner: &SemanticId) -> Ve
             }
             // Runtime declarations named like the type, plus their `owner_syntax`
             // associated classes (differently-named runtime tables).
-            for &ws_id in workspace_lookup_order(db) {
+            for &ws_id in db.workspace_lookup_order() {
                 for decl_id in workspace_decl_index_for(db, ws_id).runtime_decls_named(&name_str) {
                     if let Some(owner_id) = canonical_owner_id(db, decl_id) {
                         push_unique_owner_id(&mut out, owner_id);
@@ -1969,17 +1920,17 @@ fn push_unique(out: &mut Vec<SemanticId>, id: SemanticId) {
 /// Keyed by file so an initializer can still resolve cross-file members.
 pub(crate) fn decl_type(
     db: &SemanticDatabase,
-    file: FileId,
+    file_id: FileId,
     config: &Emmyrc,
     decl: SemanticId,
 ) -> TypeShell {
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file_id).expect("Failed to get file facts");
     let Some(decl) = facts.decl_by_id(&decl) else {
         return TypeShell::unknown();
     };
 
     if let Some(type_syntax) = decl.doc_type_syntax {
-        let shell = lower_doc_type(db, file, type_syntax, &[]);
+        let shell = lower_doc_type(db, file_id, type_syntax, &[]);
         if !shell.is_unknown() {
             return shell;
         }
@@ -1987,7 +1938,7 @@ pub(crate) fn decl_type(
 
     // `---@module "name"`: project directly to a module reference.
     if let Some(module_path) = &decl.module_path
-        && let Some(module_file) = module_file_from(db, config, module_path.clone(), file)
+        && let Some(module_file) = module_file_from(db, config, module_path.clone(), file_id)
     {
         return TypeShell::from_module_ref(module_file);
     }
@@ -1999,7 +1950,7 @@ pub(crate) fn decl_type(
         && let Some((_, type_syntax)) = docs.param_types.iter().find(|(name, _)| name == &decl.name)
     {
         let generics = docs.generic_params.as_slice();
-        let mut shell = lower_doc_type(db, file, *type_syntax, generics);
+        let mut shell = lower_doc_type(db, file_id, *type_syntax, generics);
         if !shell.is_unknown() {
             // `---@param name? T`: the parameter type must include nil.
             if docs.nullable_params.iter().any(|n| n == &decl.name) {
@@ -2011,14 +1962,14 @@ pub(crate) fn decl_type(
 
     // `for k, v in pairs(x)`: take types from the iterator function's return slots (owner is ForRangeStat).
     if matches!(decl.kind, DeclKind::Local { is_iter: true, .. })
-        && let Some(shell) = iter_slot_type(db, &facts, file, config, &decl)
+        && let Some(shell) = iter_slot_type(db, &facts, file_id, config, &decl)
         && !shell.is_unknown()
     {
         return shell;
     }
 
     if let Some(value_expr_syntax) = decl.value_expr_syntax {
-        let mut shell = expr_type_of(db, file, config, value_expr_syntax);
+        let mut shell = expr_type_of(db, file_id, config, value_expr_syntax);
         // `local a, b = f()`: each target takes its own result slot, not the whole list. A
         // target past a single value's only slot is an undeclared missing value: `any`, as the
         // VM types it.
@@ -2063,17 +2014,18 @@ pub(crate) fn decl_type(
 fn iter_slot_type(
     db: &SemanticDatabase,
     facts: &FileFacts,
-    file: FileId,
+    file_id: FileId,
     config: &Emmyrc,
     decl: &Decl,
 ) -> Option<TypeShell> {
-    let key = (file, decl.id.clone());
+    let key = (file_id, decl.id.clone());
+    // TODO remove future
     if ITER_SLOT_IN_PROGRESS.with(|stack| stack.borrow().contains(&key)) {
         return None;
     }
     let _guard = IterSlotGuard::enter(key);
     let owner = decl.owner_syntax?;
-    let tree = syntax_tree(db, file);
+    let tree = db.syntax_tree_of(file_id)?;
     let node = owner.to_node_from_root(&tree.get_red_root())?;
     let stat = emmylua_parser::LuaForRangeStat::cast(node)?;
     let vars = stat.get_var_name_list().collect::<Vec<_>>();
@@ -2093,16 +2045,16 @@ fn iter_slot_type(
         _ => return None,
     };
     let arg = call.get_args_list()?.get_args().next()?;
-    let arg_shell = expr_type(db, facts, file, config, arg);
+    let arg_shell = expr_type(db, facts, file_id, config, arg);
 
     for candidate in &arg_shell.candidates {
         let (def, generic_args) = match candidate {
             TypeCandidate::Named(name) => {
-                let def = resolve_type_def(db, file, SmolStr::new(name.as_str()))?;
+                let def = resolve_type_def(db, file_id, SmolStr::new(name.as_str()))?;
                 (def, Vec::new())
             }
             TypeCandidate::GenericInstance(ins) => {
-                let def = resolve_type_def(db, file, SmolStr::new(ins.name.as_str()))?;
+                let def = resolve_type_def(db, file_id, SmolStr::new(ins.name.as_str()))?;
                 (def, ins.args.clone())
             }
             _ => continue,
@@ -2115,10 +2067,9 @@ fn iter_slot_type(
             .iter()
             .filter(|member| member.name == member_name)
         {
-            let Some(member_file) = db.file_data_id(member_ref.file_id) else {
+            let Some(member_facts) = db.file_facts_of(member_ref.file_id) else {
                 continue;
             };
-            let member_facts = file_facts(db, member_file);
             let Some(member) = member_facts.member_by_id(&member_ref.id) else {
                 continue;
             };
@@ -2135,7 +2086,9 @@ fn iter_slot_type(
             let Some(return_syntax) = docs.returns.first() else {
                 continue;
             };
-            let member_tree = syntax_tree(db, member_file);
+            let Some(member_tree) = db.syntax_tree_of(member_ref.file_id) else {
+                continue;
+            };
             let Some(return_node) = return_syntax.to_node_from_root(&member_tree.get_red_root())
             else {
                 continue;
@@ -2151,7 +2104,7 @@ fn iter_slot_type(
                 if let (_, Some(ret_type)) = ret.get_name_and_type() {
                     slots.push(lower_doc_type_node(
                         db,
-                        member_file,
+                        member_ref.file_id,
                         &def.generic_params,
                         &ret_type,
                     ));
@@ -2172,11 +2125,13 @@ fn iter_slot_type(
 /// `generics` = generic params in the current scope (`T` -> `Generic(T)`); named types resolve to TypeDef (cross-file).
 pub(crate) fn lower_doc_type(
     db: &SemanticDatabase,
-    file: FileId,
+    file_id: FileId,
     type_syntax: LuaSyntaxId,
     generics: &[DocGenericParam],
 ) -> TypeShell {
-    let tree = syntax_tree(db, file);
+    let Some(tree) = db.syntax_tree_of(file_id) else {
+        return TypeShell::unknown();
+    };
     let root = tree.get_red_root();
     let Some(node) = type_syntax.to_node_from_root(&root) else {
         return TypeShell::unknown();
@@ -2184,7 +2139,7 @@ pub(crate) fn lower_doc_type(
     let Some(doc_type) = LuaDocType::cast(node) else {
         return TypeShell::unknown();
     };
-    lower_doc_type_node(db, file, generics, &doc_type)
+    lower_doc_type_node(db, file_id, generics, &doc_type)
 }
 
 fn lower_doc_type_node(
@@ -2490,25 +2445,23 @@ pub(crate) fn primitive_from_name(name: &str) -> Option<TypeShell> {
     Some(TypeShell::from_primitive(primitive))
 }
 
-// ──────────────────────────────────────────────
-// L3 semantics: member types (with cycle convergence)
-// ──────────────────────────────────────────────
-
 /// Declared type of a member. Members can be mutually recursive (`T.foo = T.bar`), also converged by semantic's native fixed point.
 pub(crate) fn member_type(
     db: &SemanticDatabase,
-    file: FileId,
-    config: &Emmyrc,
+    file_id: FileId,
+    config: &Emmyrc, // TODO: remove this params
     member: SemanticId,
 ) -> TypeShell {
-    let facts = file_facts(db, file);
+    let facts = db
+        .file_facts_of(file_id)
+        .expect("Failed to get file facts for the given file id");
     let Some(member) = facts.member_by_id(&member) else {
         return TypeShell::unknown();
     };
 
     // `---@module "name"`: project directly to a module reference.
     if let Some(module_path) = &member.module_path
-        && let Some(module_file) = module_file_from(db, config, module_path.clone(), file)
+        && let Some(module_file) = module_file_from(db, config, module_path.clone(), file_id)
     {
         return TypeShell::from_module_ref(module_file);
     }
@@ -2518,7 +2471,7 @@ pub(crate) fn member_type(
     if !matches!(member.owner, SemanticId::TypeDef(_))
         && let Some(type_syntax) = member.doc_type_syntax
     {
-        let shell = lower_doc_type(db, file, type_syntax, &[]);
+        let shell = lower_doc_type(db, file_id, type_syntax, &[]);
         if !shell.is_unknown() {
             return shell;
         }
@@ -2532,7 +2485,7 @@ pub(crate) fn member_type(
                     .type_def_by_id(&member.owner)
                     .map(|def| def.generic_params.as_slice())
                     .unwrap_or(&[]);
-                let shell = lower_doc_type(db, file, value_syntax, generics);
+                let shell = lower_doc_type(db, file_id, value_syntax, generics);
                 if !shell.is_unknown() {
                     return shell;
                 }
@@ -2541,11 +2494,11 @@ pub(crate) fn member_type(
                 // `t.f = nil` deletes the field: it says nothing of the value `t.f` holds
                 // elsewhere (a `table` param's field read before the write), so it gives the
                 // member no type. A literal's `{ f = nil }` field keeps its nil.
-                if is_nil_assignment(db, file, value_syntax) {
+                if is_nil_assignment(db, file_id, value_syntax) {
                     return TypeShell::unknown();
                 }
                 // A member holds one value: a call's first (`M.ok = detect()`).
-                let shell = expr_type_of(db, file, config, value_syntax).first_result();
+                let shell = expr_type_of(db, file_id, config, value_syntax).first_result();
                 if !shell.is_unknown() {
                     return shell;
                 }
@@ -2562,8 +2515,10 @@ pub(crate) fn member_type(
 
 /// Whether `value_syntax` is the `nil` of an assignment `t.f = nil` (not of a table field).
 fn is_nil_assignment(db: &SemanticDatabase, file: FileId, value_syntax: LuaSyntaxId) -> bool {
-    let tree = syntax_tree(db, file);
-    let Some(LuaExpr::LiteralExpr(literal)) = find_expr_by_syntax_id(&tree, &value_syntax) else {
+    let Some(tree) = db.vfs().get_syntax_tree(&file) else {
+        return false;
+    };
+    let Some(LuaExpr::LiteralExpr(literal)) = find_expr_by_syntax_id(tree, &value_syntax) else {
         return false;
     };
     matches!(literal.get_literal(), Some(LuaLiteralToken::Nil(_)))
@@ -2576,10 +2531,12 @@ fn is_nil_assignment(db: &SemanticDatabase, file: FileId, value_syntax: LuaSynta
 /// Direct member names of a local declaration (completion candidates).
 pub(crate) fn member_keys_of_decl(
     db: &SemanticDatabase,
-    file: FileId,
+    file_id: FileId,
     decl: SemanticId,
 ) -> Vec<SmolStr> {
-    let facts = file_facts(db, file);
+    let facts = db
+        .file_facts_of(file_id)
+        .expect("Failed to get file facts for the given file id");
     let mut keys = facts
         .members_of_owner(&decl)
         .filter(|member| member.index_key_syntax.is_none())
@@ -2596,7 +2553,9 @@ pub(crate) fn member_keys_of_type(
     file: FileId,
     type_def: SemanticId,
 ) -> Vec<SmolStr> {
-    let facts = file_facts(db, file);
+    let facts = db
+        .file_facts_of(file)
+        .expect("Failed to get file facts for the given file id");
     let Some(def) = facts.type_def_by_id(&type_def) else {
         return Vec::new();
     };
@@ -2674,7 +2633,10 @@ fn local_base_type_defs<'a>(
     facts: &'a FileFacts,
     def: &TypeDef,
 ) -> Vec<&'a TypeDef> {
-    let root = syntax_tree(db, def.file_id).get_red_root();
+    let root = db
+        .syntax_tree_of(def.file_id)
+        .expect("Failed to get syntax tree")
+        .get_red_root();
     let mut pending = def.base_types.iter().rev().copied().collect::<Vec<_>>();
     let mut defs = Vec::new();
     while let Some(syntax) = pending.pop() {
@@ -2709,17 +2671,13 @@ fn local_base_type_defs<'a>(
     defs
 }
 
-// ──────────────────────────────────────────────
-// L3 semantics: name resolution and references
-// ──────────────────────────────────────────────
-
 /// Name use site -> global id of declaration (scope-aware; falls back to a workspace global declaration when local lookup misses).
 pub(crate) fn resolve_name(
     db: &SemanticDatabase,
-    file: FileId,
+    file_id: FileId,
     offset: TextSize,
 ) -> Option<SemanticId> {
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file_id)?;
     let name_use = facts.name_use_at_offset(offset)?;
     facts
         .find_visible_decl_before_offset(&name_use.name, offset)
@@ -2730,10 +2688,10 @@ pub(crate) fn resolve_name(
 /// All references to a declaration (name use sites or vararg literals).
 pub(crate) fn decl_references(
     db: &SemanticDatabase,
-    file: FileId,
+    file_id: FileId,
     decl: SemanticId,
 ) -> Vec<LuaSyntaxId> {
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file_id).expect("Failed to get file facts");
     let Some(decl) = facts.decl_by_id(&decl) else {
         return Vec::new();
     };
@@ -2763,7 +2721,7 @@ pub(crate) fn signature_returns(
     config: &Emmyrc,
     closure_syntax: LuaSyntaxId,
 ) -> Vec<TypeShell> {
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file).expect("Failed to get file facts");
     let Some(sig) = facts.signature_by_closure(closure_syntax) else {
         return Vec::new();
     };
@@ -2816,7 +2774,7 @@ pub(crate) fn signature_returns(
         }
     }
 
-    let tree = syntax_tree(db, file);
+    let tree = db.syntax_tree_of(file).expect("Failed to get syntax tree");
     let root = tree.get_red_root();
     let Some(node) = closure_syntax.to_node_from_root(&root) else {
         return Vec::new();
@@ -2964,7 +2922,7 @@ pub(crate) fn param_type(
     closure_syntax: LuaSyntaxId,
     param_index: usize,
 ) -> TypeShell {
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file).expect("Failed to get file facts");
     let Some(sig) = facts.signature_by_closure(closure_syntax) else {
         return TypeShell::unknown();
     };
@@ -3009,14 +2967,14 @@ fn callee_closure_syntax(facts: &FileFacts, callee: LuaExpr) -> Option<LuaSyntax
 /// Value type exported by a module (type of `return M` / table literal, etc.).
 pub(crate) fn module_export_type(
     db: &SemanticDatabase,
-    file: FileId,
+    file_id: FileId,
     config: &Emmyrc,
 ) -> TypeShell {
-    let facts = file_facts(db, file);
+    let facts = db.file_facts_of(file_id).expect("Failed to get file facts");
     match &facts.module_export {
         // `return M`: declaration identity table (TableConst members reachable) + name identity (Named -> decl owner reachable).
         ModuleExport::Decl { decl, name } => {
-            let mut shell = decl_type(db, file, config, decl.clone());
+            let mut shell = decl_type(db, file_id, config, decl.clone());
             // A declaration annotated with `---@class Foo` (including nested
             // names such as `Foo.Bar`) already has the canonical named type.
             // Merging the runtime variable name (`Bar`) would produce an
@@ -3042,21 +3000,22 @@ pub(crate) fn module_export_type(
                 let SemanticId::Decl(decl_key) = &decl else {
                     return TypeShell::from_name(name.as_str());
                 };
-                if let Some(decl_file) = db.file_data_id(decl_key.file_id) {
-                    let shell = decl_type(db, decl_file, config, decl);
-                    if !shell.is_unknown() {
-                        return shell;
-                    }
+
+                let shell = decl_type(db, decl_key.file_id, config, decl);
+                if !shell.is_unknown() {
+                    return shell;
                 }
             }
             TypeShell::from_name(name.as_str())
         }
         ModuleExport::Expr { value_syntax } => {
-            let tree = syntax_tree(db, file);
+            let tree = db
+                .syntax_tree_of(file_id)
+                .expect("Failed to get syntax tree");
             let Some(expr) = find_expr_by_syntax_id(&tree, value_syntax) else {
                 return TypeShell::unknown();
             };
-            expr_type(db, &facts, file, config, expr)
+            expr_type(db, &facts, file_id, config, expr)
         }
         ModuleExport::None => TypeShell::unknown(),
     }
@@ -3076,6 +3035,7 @@ pub(crate) fn find_expr_by_syntax_id(
     LuaExpr::cast(node)
 }
 
+// TODO: remove future
 thread_local! {
     static EXPR_TYPE_IN_PROGRESS: RefCell<Vec<(FileId, LuaSyntaxId)>> =
         const { RefCell::new(Vec::new()) };
@@ -3091,7 +3051,7 @@ impl ExprTypeGuard {
         Self { key }
     }
 }
-
+// TODO: remove future
 thread_local! {
     static ITER_SLOT_IN_PROGRESS: RefCell<Vec<(FileId, SemanticId)>> =
         const { RefCell::new(Vec::new()) };
@@ -3137,21 +3097,23 @@ impl Drop for ExprTypeGuard {
 /// which matches the previous Semantic `cycle_initial` behavior.
 pub(crate) fn expr_type_of(
     db: &SemanticDatabase,
-    file: FileId,
+    file_id: FileId,
     config: &Emmyrc,
     expr_syntax: LuaSyntaxId,
 ) -> TypeShell {
-    let key = (file, expr_syntax);
+    let key = (file_id, expr_syntax);
     if EXPR_TYPE_IN_PROGRESS.with(|stack| stack.borrow().contains(&key)) {
         return TypeShell::unknown();
     }
     let _guard = ExprTypeGuard::enter(key);
-    let facts = file_facts(db, file);
-    let tree = syntax_tree(db, file);
+    let facts = db.file_facts_of(file_id).expect("Failed to get file facts");
+    let tree = db
+        .syntax_tree_of(file_id)
+        .expect("Failed to get syntax tree");
     let Some(expr) = find_expr_by_syntax_id(&tree, &expr_syntax) else {
         return TypeShell::unknown();
     };
-    expr_type(db, &facts, file, config, expr)
+    expr_type(db, &facts, file_id, config, expr)
 }
 
 fn expr_type(
@@ -3260,10 +3222,8 @@ fn expr_type_node(
             // Cross-file global fallback: global variable -> global type name.
             let global_name = SmolStr::new(name.as_str());
             if let Some(decl) = global_decl_by_name(db, global_name.clone()) {
-                if let SemanticId::Decl(key) = &decl
-                    && let Some(decl_file) = db.file_data_id(key.file_id)
-                {
-                    let shell = decl_type(db, decl_file, config, decl);
+                if let SemanticId::Decl(key) = &decl {
+                    let shell = decl_type(db, key.file_id, config, decl);
                     if !shell.is_unknown() {
                         return shell;
                     }
@@ -3677,10 +3637,9 @@ fn expr_type_call(
     // require special case: module name -> module file -> module export type.
     if call_expr.is_require()
         && let Some(module_name) = require_module_name(&call_expr)
-        && let Some(module_file) = module_file_from(db, config, SmolStr::new(&module_name), file)
-        && let Some(module_input) = db.file_data_id(module_file)
+        && let Some(module_file_id) = module_file_from(db, config, SmolStr::new(&module_name), file)
     {
-        let shell = module_export_type(db, module_input, config);
+        let shell = module_export_type(db, module_file_id, config);
         if !shell.is_unknown() {
             return shell;
         }
@@ -3699,8 +3658,9 @@ fn expr_type_call(
             let mut slots = signature_returns(db, callee_file, config, closure_syntax);
             // The shell does not bind arguments, so the callee's own generics stay uninstantiated:
             // unknown, not a `T` that projects as a global name (`local M = defer('m', {...})`).
-            if let Some(docs) = file_facts(db, callee_file)
-                .signature_by_closure(closure_syntax)
+            if let Some(docs) = db
+                .file_facts_of(callee_file)
+                .and_then(|facts| facts.signature_by_closure(closure_syntax))
                 .and_then(|sig| sig.docs.as_ref())
                 && !docs.generic_params.is_empty()
             {
@@ -3775,10 +3735,9 @@ fn member_closure_across_files(
                 if member.name != name {
                     continue;
                 }
-                let Some(member_file) = db.file_data_id(member.file_id) else {
+                let Some(member_facts) = db.file_facts_of(member.file_id) else {
                     continue;
                 };
-                let member_facts = file_facts(db, member_file);
                 let Some(value_syntax) = member_facts
                     .member_by_id(&member.id)
                     .and_then(|member| member.value_syntax)
@@ -3786,7 +3745,7 @@ fn member_closure_across_files(
                     continue;
                 };
                 if member_facts.signature_by_closure(value_syntax).is_some() {
-                    return Some((member_file, value_syntax));
+                    return Some((member.file_id, value_syntax));
                 }
             }
         }
@@ -3808,10 +3767,7 @@ fn member_type_via_owner(
             if member.name != name {
                 continue;
             }
-            let Some(member_file_data_id) = db.file_data_id(member.file_id) else {
-                continue;
-            };
-            let shell = member_type(db, member_file_data_id, config, member.id);
+            let shell = member_type(db, member.file_id, config, member.id);
             if !shell.is_unknown() {
                 return Some(shell);
             }
@@ -3833,17 +3789,14 @@ fn member_type_via_owner_method(
             if member.name != name {
                 continue;
             }
-            let Some(member_file_data_id) = db.file_data_id(member.file_id) else {
-                continue;
-            };
-            let member_facts = file_facts(db, member_file_data_id);
+            let member_facts = db.file_facts_of(member.file_id)?;
             let Some(member_def) = member_facts.member_by_id(&member.id) else {
                 continue;
             };
             if !member_def.is_method {
                 continue;
             }
-            let shell = member_type(db, member_file_data_id, config, member.id);
+            let shell = member_type(db, member.file_id, config, member.id);
             if !shell.is_unknown() {
                 return Some(shell);
             }
@@ -4003,11 +3956,6 @@ fn require_module_name(call_expr: &LuaCallExpr) -> Option<String> {
         },
         _ => None,
     }
-}
-
-/// file_id → (file input, config input).
-pub(crate) fn file_and_config(db: &SemanticDatabase, file_id: FileId) -> Option<(FileId, &Emmyrc)> {
-    Some((db.file_data_id(file_id)?, db.config_input()?))
 }
 
 /// Index expression -> `(owner, name)` (member reference resolution).

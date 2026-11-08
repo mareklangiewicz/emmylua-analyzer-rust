@@ -24,10 +24,6 @@ use crate::semantic_db::def::SignatureReturnCast;
 
 use super::index::{Bucket, build_buckets, find_bucket};
 
-// ──────────────────────────────────────────────
-// Type definitions (from def/, with global SemanticId identity)
-// ──────────────────────────────────────────────
-
 use super::def::{
     ConstructorAttribute, ConstructorReturnMode, Decl, DeclKind, DocGenericParam, LuaMemberKey,
     Member, ModuleExport, ModuleVisibility, NameUse, OperatorDef, Scope, ScopeChild, ScopeKind,
@@ -111,7 +107,7 @@ pub struct FileFacts {
     pub usings: Vec<SmolStr>,
     /// `---@diagnostic disable-next-line/disable-line/disable` annotations (range-matched).
     pub diagnostic_disables: Vec<DiagnosticDisable>,
-    /// File-level `---@diagnostic disable: code`.
+    /// File-level `---@diagnostic disable: code` (all codes when the code list is empty).
     pub file_diagnostic_disabled: HashSet<DiagnosticCode>,
     /// File-level `---@diagnostic enable: code` (force-enable, overriding global config disables).
     pub file_diagnostic_enabled: HashSet<DiagnosticCode>,
@@ -1508,19 +1504,13 @@ impl FactsBuilder {
                 let is_file_disable = owner_block
                     .as_ref()
                     .is_some_and(|block| block.get_parent::<LuaChunk>().is_some());
-                if is_file_disable && codes.is_empty() {
-                    // A bare `---@diagnostic disable` silences every code for the whole chunk.
-                    if let Some(block) = owner_block {
-                        push_diagnostic_disables(
-                            &mut self.diagnostic_disables,
-                            block.get_range(),
-                            codes,
-                        );
-                    }
-                } else if is_file_disable {
-                    for code in codes {
-                        self.file_diagnostic_disabled.insert(code);
-                    }
+                if is_file_disable {
+                    let codes = if codes.is_empty() {
+                        DiagnosticCode::all()
+                    } else {
+                        codes
+                    };
+                    self.file_diagnostic_disabled.extend(codes);
                 } else if let Some(block) = owner_block {
                     push_diagnostic_disables(
                         &mut self.diagnostic_disables,
@@ -1548,8 +1538,13 @@ impl FactsBuilder {
                 push_diagnostic_disables(&mut self.diagnostic_disables, line_range, codes);
             }
             "enable" => {
-                for code in codes {
-                    self.file_diagnostic_enabled.insert(code);
+                if codes.is_empty() {
+                    self.file_diagnostic_disabled.clear();
+                } else {
+                    for code in codes {
+                        self.file_diagnostic_disabled.remove(&code);
+                        self.file_diagnostic_enabled.insert(code);
+                    }
                 }
             }
             _ => {}
