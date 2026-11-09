@@ -4678,6 +4678,23 @@ mod test {
         );
     }
 
+    #[test]
+    fn test_callback_at_and_past_variadic_prefix() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param f fun(x: integer, ...: string)
+            local function g(f) end
+            g(function(x) end)
+            g(function(x, a, b) end)
+            ---@param a string
+            ---@param b string
+            g(function(x, a, b) end)
+        "#
+        ));
+    }
+
     /// A broad `function` value fits a `fun(...)` param, and equally one named by an alias:
     /// `uv_fs_event_t:start(path, flags, vim.schedule_wrap(cb))` (`---@return function`).
     #[test]
