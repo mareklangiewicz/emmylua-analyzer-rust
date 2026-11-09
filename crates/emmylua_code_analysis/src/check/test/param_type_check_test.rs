@@ -4678,6 +4678,10 @@ mod test {
         );
     }
 
+    /// Upstream's boundary test (#1373). Its third case documents the closure, which upstream
+    /// ignores above a call statement; this fork reads those docs (1d0c6496), so the case is
+    /// a documented callback and gets the mismatch upstream gives `g(cb)`: `...` can be empty,
+    /// so `a: string` may receive nil. Documented `string?`, it fits.
     #[test]
     fn test_callback_at_and_past_variadic_prefix() {
         let mut ws = VirtualWorkspace::new();
@@ -4688,11 +4692,29 @@ mod test {
             local function g(f) end
             g(function(x) end)
             g(function(x, a, b) end)
-            ---@param a string
-            ---@param b string
+            ---@param a string?
+            ---@param b string?
             g(function(x, a, b) end)
         "#
         ));
+        let diagnostics = check_source(
+            r#"
+            ---@param f fun(x: integer, ...: string)
+            local function g(f) end
+            ---@param a string
+            ---@param b string
+            g(function(x, a, b) end)
+            ---@param a string
+            ---@param b string
+            local function cb(x, a, b) end
+            g(cb)
+        "#,
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+            2,
+            "{diagnostics:#?}"
+        );
     }
 
     /// A broad `function` value fits a `fun(...)` param, and equally one named by an alias:
