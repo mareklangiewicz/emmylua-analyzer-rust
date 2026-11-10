@@ -4678,10 +4678,6 @@ mod test {
         );
     }
 
-    /// Upstream's boundary test (#1373). Its third case documents the closure, which upstream
-    /// ignores above a call statement; this fork reads those docs (1d0c6496), so the case is
-    /// a documented callback and gets the mismatch upstream gives `g(cb)`: `...` can be empty,
-    /// so `a: string` may receive nil. Documented `string?`, it fits.
     #[test]
     fn test_callback_at_and_past_variadic_prefix() {
         let mut ws = VirtualWorkspace::new();
@@ -4692,29 +4688,12 @@ mod test {
             local function g(f) end
             g(function(x) end)
             g(function(x, a, b) end)
+            -- fork: `string?`, see test_call_statement_docs_on_a_variadic_callback
             ---@param a string?
             ---@param b string?
             g(function(x, a, b) end)
         "#
         ));
-        let diagnostics = check_source(
-            r#"
-            ---@param f fun(x: integer, ...: string)
-            local function g(f) end
-            ---@param a string
-            ---@param b string
-            g(function(x, a, b) end)
-            ---@param a string
-            ---@param b string
-            local function cb(x, a, b) end
-            g(cb)
-        "#,
-        );
-        assert_eq!(
-            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
-            2,
-            "{diagnostics:#?}"
-        );
     }
 
     /// A broad `function` value fits a `fun(...)` param, and equally one named by an alias:
@@ -4969,6 +4948,27 @@ mod test {
             DiagnosticCode::UnnecessaryIf,
             &format!("{classes}\non(function(h)\n  if h.ok then print(1) end\nend)\n"),
         ));
+    }
+
+    /// Upstream's `test_callback_at_and_past_variadic_prefix` (#1373) documents `a: string` above
+    /// `g(function(x, a, b) end)` and expects no mismatch: upstream drops those docs. Read, the
+    /// closure is the documented callback upstream itself rejects when passed by name: `...` may
+    /// be empty, so `a` can receive nil. Each site alone gets that one mismatch.
+    #[test]
+    fn test_call_statement_docs_on_a_variadic_callback() {
+        let callee = "---@param f fun(x: integer, ...: string)\nlocal function g(f) end\n";
+        let docs = "---@param a string\n---@param b string\n";
+        for site in [
+            format!("{docs}g(function(x, a, b) end)\n"),
+            format!("{docs}local function cb(x, a, b) end\ng(cb)\n"),
+        ] {
+            let diagnostics = check_source(&format!("{callee}{site}"));
+            assert_eq!(
+                crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+                1,
+                "{site}{diagnostics:#?}"
+            );
+        }
     }
 
     /// A closure argument whose own parameter is typed by the callee's `T`: binding `T` to a
