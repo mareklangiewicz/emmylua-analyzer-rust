@@ -77,6 +77,36 @@ mod test {
         "#
         ));
     }
+    /// `{}` against a union param holding `V[]` (`table.remove`'s `table<integer, V> | V[]`) binds
+    /// nothing: the callee's `V` is unknown, so a `V?` local may be truthy. The flow-free shell
+    /// dropped the unbound `V` from the union and read the local as `nil` ("always falsy").
+    #[test]
+    fn test_unbound_generic_in_union_return_is_not_nil() {
+        let mut ws = VirtualWorkspace::new();
+        for (param, ret) in [
+            ("V[] | string", "V?"),
+            ("table<integer, V> | V[]", "V?"),
+            ("V[] | string", "V|false"),
+        ] {
+            let source = format!(
+                r#"
+                ---@generic V
+                ---@param list {param}
+                ---@return {ret}
+                local function rm(list) end
+
+                local st = {{}}
+                local top = rm(st)
+                if top then print(top) end
+                "#
+            );
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, &source),
+                "{param} -> {ret}"
+            );
+        }
+    }
+
     /// #1319: a declared `---@type` on a member wins over the metatable's `__index` return
     /// (Neovim declares `vim.env` this way).
     #[test]

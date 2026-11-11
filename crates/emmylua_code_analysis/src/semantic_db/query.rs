@@ -3664,8 +3664,18 @@ fn expr_type_call(
                 && !docs.generic_params.is_empty()
             {
                 let unbound = vec![TypeShell::unknown(); docs.generic_params.len()];
+                let is_own_generic = |candidate: &TypeCandidate| {
+                    matches!(candidate, TypeCandidate::Generic(name)
+                        if docs.generic_params.iter().any(|p| &p.name == name))
+                };
                 for slot in &mut slots {
-                    *slot = substitute_generics(slot, &docs.generic_params, &unbound);
+                    // Unknown is an empty shell, which a union merge drops: `V?` would read as
+                    // `nil` and `V|false` as `false`. An unbound member makes the slot unknown.
+                    *slot = if slot.candidates.iter().any(is_own_generic) {
+                        TypeShell::unknown()
+                    } else {
+                        substitute_generics(slot, &docs.generic_params, &unbound)
+                    };
                 }
             }
             if slots.is_empty() {
