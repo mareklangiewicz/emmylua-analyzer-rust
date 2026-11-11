@@ -3753,9 +3753,19 @@ fn member_closure_across_files(
                 else {
                     continue;
                 };
-                if member_facts.signature_by_closure(value_syntax).is_some() {
-                    return Some((member.file_id, value_syntax));
+                let Some(signature) = member_facts.signature_by_closure(value_syntax) else {
+                    continue;
+                };
+                // `---@version` hides the closure from other runtimes (`table.maxn` in 5.3), as
+                // member selection does: its returns must not type the call either.
+                let versions = signature.docs.as_ref().map(|docs| docs.versions.as_slice());
+                if let (Some(version), Some(versions)) = (db.lua_version(), versions)
+                    && !versions.is_empty()
+                    && !versions.iter().any(|condition| condition.check(&version))
+                {
+                    continue;
                 }
+                return Some((member.file_id, value_syntax));
             }
         }
     }
