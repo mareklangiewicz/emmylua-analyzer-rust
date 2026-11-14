@@ -970,7 +970,10 @@ fn check_table_value(
     required: bool,
 ) {
     if matches!(value_expr, LuaExpr::TableExpr(_)) {
-        check_value_against(context, semantic_model, expected, value_expr);
+        // Resolve the next shape when checking its literal. Nested mapped
+        // values can remain lazy after the outer type is expanded.
+        let expected = type_eval::expand_alias_generic(semantic_model, expected);
+        check_value_against(context, semantic_model, &expected, value_expr);
         return;
     }
     // An undocumented closure takes its params from the field, and return-type-mismatch checks

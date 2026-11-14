@@ -67,16 +67,18 @@ fn check_pcall_forward(
     let Some(callback_expr) = args.first() else {
         return false;
     };
-    let callback_candidates = callable_candidates(semantic_model, callback_expr);
+    let callback_candidates = semantic_model.callable_candidates_for_expr(callback_expr);
     if callback_candidates.is_empty() {
         return false;
     }
-    let candidates: Vec<&LuaFunctionType> = callback_candidates.iter().collect();
+    let forwarded = &args[1..];
+    let candidates =
+        candidates_for_arg_count(semantic_model, &callback_candidates, forwarded, false);
     report_least_rejecting(
         context,
         semantic_model,
         candidates,
-        &args[1..],
+        forwarded,
         CallShape {
             colon_call: false,
             receiver_ty: &LuaType::Unknown,
@@ -100,13 +102,16 @@ pub(crate) fn callable_candidates_uncached(
     semantic_model: &SemanticModel<'_>,
     callee: &LuaExpr,
 ) -> Vec<LuaFunctionType> {
+    // Do not run parameter checks for callees hidden by the configured Lua
+    // version: the API does not exist in this runtime, so parameter diagnostics
+    // would only be cascading noise (for example `err:unpack()` under LuaJIT).
+    if !semantic_model.is_callee_version_visible(callee) {
+        return Vec::new();
+    }
     // Unified path for name callees: global cross-file overloads must be visible
     // here exactly as they are in the VM call-selection path.
-    if let LuaExpr::NameExpr(_) = callee {
-        let candidates = semantic_model.callable_candidates_for_name_expr(callee);
-        if !candidates.is_empty() {
-            return candidates;
-        }
+    if let Some(candidates) = semantic_model.callable_candidates_for_name_expr(callee) {
+        return candidates;
     }
     // For static member calls, the member table is the authoritative source of
     // callable signatures.  Avoid paying for full VM expression inference on the
@@ -269,22 +274,16 @@ fn check_call(
     let Some(callee) = call_expr.get_prefix_expr() else {
         return;
     };
-    let analysis = semantic_model.call_site_analysis(call_expr);
-    let mut candidates = analysis.candidates;
-    // Local `---@type F1` (fun alias) declaration structure takes precedence over closure body inference.
-    if let LuaExpr::NameExpr(name_expr) = &callee
-        && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
-    {
-        if let Some(facts) = semantic_model.file_facts()
-            && let Some(decl_facts) = facts.decl_by_id(&decl)
-            && let Some(doc_syntax) = decl_facts.doc_type_syntax
-        {
-            let doc_ty = semantic_model.doc_type_lua(doc_syntax);
-            if let Some(func) = doc_function_of(semantic_model, &doc_ty) {
-                candidates = vec![func];
-            }
-        }
+    // Do not report parameter diagnostics for a callee hidden by `---@version`.
+    // `callable_candidates_uncached` already applies this gate, but
+    // `callable_candidates_for_expr` has name/member fast paths; keep the
+    // checker itself conservative.
+    if !semantic_model.is_callee_version_visible(&callee) {
+        return;
     }
+    let analysis = semantic_model.call_site_analysis(call_expr);
+    let candidates = analysis.candidates;
+
     let args = call_expr
         .get_args_list()
         .map(|list| list.get_args().collect::<Vec<_>>())
@@ -292,6 +291,9 @@ fn check_call(
     // `pcall(callback, ...)`: forward the remaining arguments to the callback check.
     if let LuaExpr::NameExpr(callee_name) = &callee
         && callee_name.get_name_text().as_deref() == Some("pcall")
+        && semantic_model
+            .resolves_to_builtin(callee.clone(), "pcall")
+            .is_some()
         && !args.is_empty()
         && check_pcall_forward(context, semantic_model, &args)
     {

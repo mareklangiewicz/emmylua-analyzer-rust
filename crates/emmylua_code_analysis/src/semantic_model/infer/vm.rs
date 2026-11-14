@@ -1139,9 +1139,15 @@ impl<'a> InferVm<'a> {
             if type_has_member {
                 continue;
             }
-            // Cross-file member association. A member with a declared `---@type` wins over plain
-            // assignments of the same key (`sp.state = {…}` in a spec file), as in `resolve_member`;
-            // otherwise the first one in discovery order.
+            // Cross-file member association. Several declarations may share one key
+            // (version-gated stdlib overloads); only the ones visible in the configured runtime
+            // version compete. Among those, a member with a declared `---@type` wins over plain
+            // assignments of the same key (`sp.state = {…}` in a spec file), as in
+            // `resolve_member`; otherwise the first one in discovery order.
+            //
+            // An unversioned declaration is always visible. Only when every candidate is
+            // version-gated and hidden in this runtime do all of them compete, so the call still
+            // reports Unknown instead of dropping the member entirely.
             let members = self.model.members_of_owner(&owner_id);
             let matching: Vec<_> = members
                 .into_iter()
@@ -1155,16 +1161,22 @@ impl<'a> InferVm<'a> {
                     _ => false,
                 })
                 .collect();
-            let declared = matching.iter().position(|m| {
+            let visible: Vec<_> = matching
+                .iter()
+                .filter(|m| self.model.member_ref_versions_visible(m))
+                .collect();
+            let pool = if visible.is_empty() {
+                matching.iter().collect()
+            } else {
+                visible
+            };
+            let declared = pool.iter().find(|m| {
                 self.model
                     .file_facts_of(m.file_id)
                     .and_then(|facts| facts.member_by_id(&m.id))
                     .is_some_and(|member| member.doc_type_syntax.is_some())
             });
-            if let Some(member) = declared
-                .or((!matching.is_empty()).then_some(0))
-                .map(|index| matching[index].clone())
-            {
+            if let Some(member) = declared.or(pool.first()).map(|m| (*m).clone()) {
                 if self.computing.contains(&member.id) {
                     return Value::plain(LuaType::Unknown);
                 }
@@ -1548,11 +1560,12 @@ impl<'a> InferVm<'a> {
                         return Value::plain(self.model.require_module_type(&module_name));
                     }
                 }
-                // assert(x, ...): returns x when truthy (removing nil) and passes through
+                // assert(x, ...): returns x when truthy (removing nil and false) and passes through
                 // any following multi-returns.
                 "assert" => {
                     if let Some(arg) = args.first() {
                         let ty = remove_nil_from_type(arg.ty.clone());
+                        let ty = remove_false_from_type(ty);
                         return Value::plain(ty);
                     }
                     return Value::plain(LuaType::Unknown);
@@ -3154,7 +3167,7 @@ impl<'a> InferVm<'a> {
             params.push((name, Some(ty)));
         }
 
-        let ret = match func.get_return_type_list() {
+        let mut ret = match func.get_return_type_list() {
             Some(list) => {
                 let mut types = Vec::new();
                 for ret in list.get_return_type_list() {
@@ -3177,6 +3190,15 @@ impl<'a> InferVm<'a> {
             None => LuaType::Unknown,
         };
 
+        // Overloads need the same nested generic bindings as the main signature.
+        let generic_tpls = self.generic_tpls_with_metadata(file_id, &generic_params);
+        for (_, ty) in &mut params {
+            if let Some(ty) = ty {
+                *ty = bind_signature_generics(ty, &generic_tpls);
+            }
+        }
+        ret = bind_signature_generics(&ret, &generic_tpls);
+
         let mut fun = LuaFunctionType::new(
             if func.is_async() {
                 AsyncState::Async
@@ -3187,7 +3209,7 @@ impl<'a> InferVm<'a> {
             is_variadic,
             params,
             ret,
-            Some(self.generic_tpls_with_metadata(file_id, &generic_params)),
+            Some(generic_tpls),
         );
         if has_own_generics {
             fun = reassign_function_generics_to_func_ids(fun);
@@ -5269,6 +5291,49 @@ fn remove_nil_from_type(ty: LuaType) -> LuaType {
             ))),
             VariadicType::Repeat(base) => LuaType::Variadic(Rc::new(VariadicType::Repeat(
                 remove_nil_from_type(base.clone()),
+            ))),
+        },
+        _ => ty,
+    }
+}
+
+/// Remove `false` from a type (for `assert`): a successful assert guarantees
+/// that the value is neither nil nor false.
+fn remove_false_from_type(ty: LuaType) -> LuaType {
+    match ty {
+        LuaType::Boolean => LuaType::BooleanConst(true),
+        LuaType::BooleanConst(false) | LuaType::DocBooleanConst(false) => LuaType::Never,
+        LuaType::Union(union) => {
+            let types = union
+                .into_vec()
+                .into_iter()
+                .filter_map(|ty| match ty {
+                    LuaType::Boolean => Some(LuaType::BooleanConst(true)),
+                    LuaType::BooleanConst(false) | LuaType::DocBooleanConst(false) => None,
+                    other => Some(other),
+                })
+                .collect::<Vec<_>>();
+            match types.len() {
+                0 => LuaType::Never,
+                1 => types.into_iter().next().unwrap_or(LuaType::Never),
+                _ => LuaType::Union(Rc::new(LuaUnionType::from_vec(types))),
+            }
+        }
+        // Mirror `remove_nil_from_type`: for `assert(f())` the first value of a
+        // multi-return is the one whose falsy result aborts the call.
+        LuaType::Variadic(variadic) => match variadic.as_ref() {
+            VariadicType::Multi(types) => {
+                let mut new_types = types.clone();
+                if let Some(first) = new_types.first_mut() {
+                    *first = remove_false_from_type(first.clone());
+                }
+                LuaType::Variadic(Rc::new(VariadicType::Multi(new_types)))
+            }
+            VariadicType::Base(base) => LuaType::Variadic(Rc::new(VariadicType::Base(
+                remove_false_from_type(base.clone()),
+            ))),
+            VariadicType::Repeat(base) => LuaType::Variadic(Rc::new(VariadicType::Repeat(
+                remove_false_from_type(base.clone()),
             ))),
         },
         _ => ty,

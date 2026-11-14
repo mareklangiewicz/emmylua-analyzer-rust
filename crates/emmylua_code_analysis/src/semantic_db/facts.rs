@@ -2304,6 +2304,15 @@ impl FactsBuilder {
         decl.scope_id = scope_id;
         decl.value_expr_syntax = value_expr_syntax;
         decl.owner_syntax = self.current_owner_syntax;
+        // `@version` docs are collected for every doc-comment owner (not only
+        // closures), so table globals such as `bit = {}` keep their version
+        // conditions too. Signature docs are consumed later for functions; copy
+        // the conditions now.
+        decl.version_conds = decl
+            .owner_syntax
+            .and_then(|owner| self.signature_doc_map.get(&owner))
+            .map(|docs| docs.versions.clone())
+            .unwrap_or_default();
         let decl_id = decl.id.clone();
         self.scopes[scope_id as usize]
             .children
