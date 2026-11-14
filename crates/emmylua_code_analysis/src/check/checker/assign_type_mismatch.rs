@@ -11,6 +11,7 @@ use emmylua_parser::{
 use super::check_field::is_optional;
 use crate::DiagnosticCode;
 use crate::semantic_db::facts::member_key_from_index_key;
+use crate::semantic_db::types::{LiteralShell, exact_integer};
 use crate::semantic_model::infer::unify::{TplBindings, substitute};
 use crate::semantic_model::infer::vm::bind_signature_generics;
 use crate::semantic_model::member::index_signature_type;
@@ -1002,7 +1003,7 @@ fn check_table_value(
     add_mismatch(context, value_expr.get_range(), expected, &value_ty);
 }
 
-/// Every field's key against `key_ty` and, when it fits, its value against `value_ty`.
+/// Every stored field's key against `key_ty` and, when it fits, its value against `value_ty`.
 fn check_keyed_fields(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
@@ -1010,7 +1011,7 @@ fn check_keyed_fields(
     key_ty: &LuaType,
     value_ty: &LuaType,
 ) {
-    for (field, key) in table.get_fields_with_keys() {
+    for (field, key) in stored_fields(semantic_model, table) {
         if !check_table_key(context, semantic_model, &field, &key, key_ty) {
             continue;
         }
@@ -1019,6 +1020,60 @@ fn check_keyed_fields(
         };
         check_table_value(context, semantic_model, &value_expr, value_ty, false);
     }
+}
+
+/// The literal's fields whose value is stored: a later field with the same known key overwrites
+/// an earlier one (`{entry = 42, [key] = 'ok'}` with `key = 'entry'` stores `'ok'`), so only the
+/// last one counts, and a `nil` value stores nothing (`{count = nil}` has no key to check).
+/// Positional fields are not deduplicated: how they collide with an explicit `[1]` is up to the
+/// implementation.
+fn stored_fields(
+    semantic_model: &SemanticModel<'_>,
+    table: &LuaTableExpr,
+) -> Vec<(LuaTableField, LuaIndexKey)> {
+    let mut seen = HashSet::new();
+    let mut fields: Vec<_> = table
+        .get_fields_with_keys()
+        .into_iter()
+        .rev()
+        .filter(|(field, key)| {
+            let last = is_last_write(semantic_model, &mut seen, key);
+            last && !field.get_value_expr().is_some_and(|value| {
+                semantic_model
+                    .type_of_expr_at(value.get_syntax_id(), value.get_range().start())
+                    .is_nil()
+            })
+        })
+        .collect();
+    fields.reverse();
+    fields
+}
+
+/// Walking a literal's fields backwards: whether `key` was not written by a later field.
+fn is_last_write(
+    semantic_model: &SemanticModel<'_>,
+    seen: &mut HashSet<LiteralShell>,
+    key: &LuaIndexKey,
+) -> bool {
+    if matches!(key, LuaIndexKey::Idx(_)) {
+        return true;
+    }
+    let literal = match index_key_type(semantic_model, key) {
+        LuaType::StringConst(value) | LuaType::DocStringConst(value) => {
+            LiteralShell::String(value.as_str().into())
+        }
+        LuaType::IntegerConst(value) | LuaType::DocIntegerConst(value) => {
+            LiteralShell::Integer(value)
+        }
+        LuaType::BooleanConst(value) | LuaType::DocBooleanConst(value) => {
+            LiteralShell::Boolean(value)
+        }
+        LuaType::FloatConst(value) => exact_integer(value)
+            .map(LiteralShell::Integer)
+            .unwrap_or_else(|| LiteralShell::Float(value.to_bits())),
+        _ => return true,
+    };
+    seen.insert(literal)
 }
 
 /// Whether some function fits `ty` (a function type, possibly optional or through an alias).
