@@ -133,26 +133,21 @@ fn has_member_path(expr: &LuaExpr) -> bool {
     }
 }
 
-/// Whether the index expression is a declaration/assignment target rather than a read.
+/// Whether the index expression is a declaration/assignment target rather than a read. Only the
+/// target itself: a prefix of one (`x.missing` in `x.missing.y = 1`) is read to reach it.
 fn is_definition_index_expr(index_expr: &LuaIndexExpr) -> bool {
-    let mut current = index_expr.syntax().clone();
-    while let Some(parent) = current.parent() {
-        if LuaIndexExpr::cast(parent.clone()).is_some() {
-            current = parent;
-            continue;
-        }
-        if parent.kind() == LuaSyntaxKind::FuncStat.into() {
-            return true;
-        }
-        if let Some(assign) = LuaAssignStat::cast(parent) {
-            let (vars, _) = assign.get_var_and_expr_list();
-            return vars
-                .iter()
-                .any(|var| var.syntax().text_range() == current.text_range());
-        }
-        break;
+    let node = index_expr.syntax();
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    if parent.kind() == LuaSyntaxKind::FuncStat.into() {
+        return true;
     }
-    false
+    LuaAssignStat::cast(parent).is_some_and(|assign| {
+        let (vars, _) = assign.get_var_and_expr_list();
+        vars.iter()
+            .any(|var| var.syntax().text_range() == node.text_range())
+    })
 }
 
 fn is_invalid_prefix_type(ty: &LuaType) -> bool {

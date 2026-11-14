@@ -1316,6 +1316,33 @@ function KPlayer.GetPlayerObjById() end",
             );
         }
     }
+
+    /// A definition target is only the assigned member itself: in `x.missing.y = 1` the prefix
+    /// `x.missing` is a read (it errors at runtime when absent), so it is reported.
+    #[test]
+    fn test_prefix_of_an_assignment_target_is_a_read() {
+        let mut ws = VirtualWorkspace::new();
+        let prefix = r#"
+            ---@class Cfg
+            ---@field known { y: integer }
+            ---@type Cfg
+            local x
+        "#;
+        crate::check::test::assert_clean_cases(
+            DiagnosticCode::UndefinedField,
+            prefix,
+            &[
+                ("x.missing.y = 1", false),
+                ("function x.missing.f() end", false),
+                ("x.known.y = 1", true),
+            ],
+        );
+        // The target itself is a definition, never an access.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            &format!("{prefix}\nfunction x.known.f() end"),
+        ));
+    }
 }
 
 #[googletest::gtest]
