@@ -1176,7 +1176,7 @@ impl<'a> InferVm<'a> {
                     .and_then(|facts| facts.member_by_id(&m.id))
                     .is_some_and(|member| member.doc_type_syntax.is_some())
             });
-            if let Some(member) = declared.or(pool.first()).map(|m| (*m).clone()) {
+            if let Some(member) = declared.or(pool.first()).copied() {
                 if self.computing.contains(&member.id) {
                     return Value::plain(LuaType::Unknown);
                 }

@@ -35,7 +35,7 @@ fn reading_a_missing_member_of_a_required_module_keeps_the_query_complete() {
         .chunk()
         .expect("chunk")
         .descendants::<LuaIndexExpr>()
-        .find(|e| e.syntax().text().to_string() == "mod.missing")
+        .find(|e| e.syntax().text() == "mod.missing")
         .expect("the read `mod.missing`");
     let before = model.incomplete_revision();
     let _ = model.type_of_expr_at(read.get_syntax_id(), read.get_position());

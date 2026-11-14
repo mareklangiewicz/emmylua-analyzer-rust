@@ -728,8 +728,8 @@ impl<'db> SemanticModel<'db> {
             }
             // `---@field [string] any` covers the key even without a named member.
             self.member_type(component, &key).is_none()
-                && !member_key_type(&key)
-                    .is_some_and(|key_ty| index_signature_type(self, component, &key_ty).is_some())
+                && member_key_type(&key)
+                    .is_none_or(|key_ty| index_signature_type(self, component, &key_ty).is_none())
         })
     }
     /// Resolves member references in index expressions (single member resolution entry point):
