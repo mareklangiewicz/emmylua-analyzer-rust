@@ -228,8 +228,7 @@ fn index_expr_callable_candidates(
             .iter()
         {
             if let Some(functions) =
-                InferVm::new(semantic_model, &[])
-                    .callable_candidates_for_owner_single(&member.id)
+                InferVm::new(semantic_model, &[]).callable_candidates_for_owner_single(&member.id)
             {
                 candidates.extend(functions);
             }

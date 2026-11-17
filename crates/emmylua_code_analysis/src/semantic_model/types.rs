@@ -1519,14 +1519,32 @@ impl<'db> SemanticModel<'db> {
     pub(crate) fn type_of_decl_unwidened_at(&self, decl: &SemanticId, offset: TextSize) -> LuaType {
         flow::type_of_decl_assign_target_at(self, decl, offset)
     }
-    /// Stable field type for writes and whole-table checks. Inferred literals
-    /// widen; explicit field annotations keep their declared types. A runtime member's
-    /// own `---@type T` (`---@type boolean` + `M.loaded = false`) IS the contract, as for a
-    /// declaration: the flow type at a later write is only the literal last stored there.
+    /// A member's write contract: what a later write to it must fit. Inferred literals widen,
+    /// a table literal to `table` (one to fill in, as for a local); explicit field annotations
+    /// keep their declared types. A runtime member's own `---@type T` (`---@type boolean` +
+    /// `M.loaded = false`) IS the contract, as for a declaration: the flow type at a later
+    /// write is only the literal last stored there.
     pub(crate) fn member_contract_type(
         &self,
         member: Option<&SemanticId>,
         target: LuaType,
+    ) -> LuaType {
+        self.member_stable_type(member, target, inferred_assignment_contract)
+    }
+    /// A member's stable type as a field of the table read as a whole (`accept(M)`): as the
+    /// write contract, but a table literal keeps its shape, which the check descends into.
+    pub(crate) fn member_field_type(
+        &self,
+        member: Option<&SemanticId>,
+        target: LuaType,
+    ) -> LuaType {
+        self.member_stable_type(member, target, widen_literal_type)
+    }
+    fn member_stable_type(
+        &self,
+        member: Option<&SemanticId>,
+        target: LuaType,
+        widen: fn(LuaType) -> LuaType,
     ) -> LuaType {
         let member_file = match member {
             Some(SemanticId::Member(key)) => Some(key.file_id),
@@ -1547,11 +1565,7 @@ impl<'db> SemanticModel<'db> {
         let inferred = def.is_none_or(|member| {
             member.doc_type_syntax.is_none() && !matches!(member.owner, SemanticId::TypeDef(_))
         });
-        if inferred {
-            inferred_assignment_contract(target)
-        } else {
-            target
-        }
+        if inferred { widen(target) } else { target }
     }
     /// Member type before the flow node at offset (for assignment checks: this member assignment does not participate in the target type).
     pub fn type_of_member_before_at(&self, member: &SemanticId, offset: TextSize) -> LuaType {
@@ -1814,9 +1828,19 @@ fn widen_assignment_type(ty: LuaType) -> LuaType {
         LuaType::Union(union) => {
             LuaType::from_vec(union.iter().cloned().map(widen_assignment_type).collect())
         }
-        LuaType::FloatConst(_) => LuaType::Number,
         // A table literal is a table to fill in: `local rows = {}` then `rows = parse(out)`.
         LuaType::TableConst(_) => LuaType::Table,
+        _ => widen_literal_type(ty),
+    }
+}
+
+/// Scalar literals widen to their base type (`1.5` → `number`); a table literal keeps its shape.
+fn widen_literal_type(ty: LuaType) -> LuaType {
+    match ty {
+        LuaType::Union(union) => {
+            LuaType::from_vec(union.iter().cloned().map(widen_literal_type).collect())
+        }
+        LuaType::FloatConst(_) => LuaType::Number,
         _ => infer::vm::widen_variadic_const(&ty),
     }
 }

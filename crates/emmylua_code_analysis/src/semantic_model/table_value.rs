@@ -103,7 +103,7 @@ impl<'db> TableValue<'db> {
         };
         let typ = self
             .model
-            .member_contract_type(member.as_ref().and_then(|info| info.id.as_ref()), typ);
+            .member_field_type(member.as_ref().and_then(|info| info.id.as_ref()), typ);
         // Resolve nullable aliases before deciding whether __index supplies a value.
         let typ = self
             .model
