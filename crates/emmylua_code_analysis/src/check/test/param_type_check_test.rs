@@ -5632,4 +5632,25 @@ mod test {
             "#,
         );
     }
+
+    /// A closure returning an array literal built from its own parameter binds the callback's
+    /// `U[]` (luagnd's `Seq:flatmap(function(t) return { '-x', t } end)`).
+    #[test]
+    fn test_closure_returning_param_built_array_literal_binds_element_generic() {
+        let diagnostics = check_source(
+            r#"
+            ---@generic U
+            ---@param f fun(v: integer): U[]
+            ---@return U
+            local function flatmap(f) end
+            local r = flatmap(function(v) return { v } end)
+            return r
+            "#,
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+            0,
+            "{diagnostics:#?}"
+        );
+    }
 }

@@ -1933,7 +1933,13 @@ impl<'a> InferVm<'a> {
             } else if let Some(closure_syntax) = arg.closure_syntax
                 && !matches!(original_callback_ret, LuaType::Variadic(_))
             {
-                let ret = self.closure_return_type_with_env(closure_syntax);
+                // A returned literal reads as the back-inference pass above read it: raw, it is
+                // checked against the `U[]` that pass bound, and typing its elements outside
+                // the param environment re-enters this call, leaving them unresolved.
+                let ret = self.array_literals_for(
+                    callback_fun.get_ret(),
+                    self.closure_return_type_with_env(closure_syntax),
+                );
                 if !matches!(ret, LuaType::Unknown | LuaType::Any) {
                     ret
                 } else {
