@@ -1696,9 +1696,8 @@ mod tests {
     fn test_intersection_assign_tableconst_requires_right_only_members() {
         let mut ws = VirtualWorkspace::new();
 
-        // The fields present fit; the missing one is missing-fields'.
         assert!(!ws.has_no_diagnostic_in_namespace(
-            DiagnosticCode::MissingFields,
+            DiagnosticCode::AssignTypeMismatch,
             r#"
             ---@class A
             ---@field y integer

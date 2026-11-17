@@ -141,7 +141,31 @@ fn check_inline_table_fields(
     semantic_model: &SemanticModel<'_>,
     table: &LuaTableExpr,
 ) {
+    for (target, value_expr) in doc_typed_fields(semantic_model, table) {
+        // A table literal takes its type from the annotation, so only its keys can disagree.
+        if matches!(value_expr, LuaExpr::TableExpr(_)) {
+            check_value_against_target(context, semantic_model, &target, &value_expr);
+            continue;
+        }
+        let value_ty = semantic_model.type_of_expr(value_expr.get_syntax_id());
+        if matches!(
+            value_ty,
+            LuaType::Unknown | LuaType::Any | LuaType::Never | LuaType::Nil
+        ) || is_compatible(semantic_model, &value_ty, &target)
+        {
+            continue;
+        }
+        add_mismatch(context, value_expr.get_range(), &target, &value_ty);
+    }
+}
+
+/// The fields of `table` with a `---@type` of their own, each with that type and its value.
+pub(super) fn doc_typed_fields(
+    semantic_model: &SemanticModel<'_>,
+    table: &LuaTableExpr,
+) -> Vec<(LuaType, LuaExpr)> {
     let owner = SemanticId::member(semantic_model.file_id(), table.get_range());
+    let mut fields = Vec::new();
     for member_ref in semantic_model.members_of_owner(&owner).iter() {
         let Some(facts) = semantic_model.file_facts_of(member_ref.file_id) else {
             continue;
@@ -163,17 +187,9 @@ fn check_inline_table_fields(
         else {
             continue;
         };
-        let target = semantic_model.doc_type_lua(doc_syntax);
-        let value_ty = semantic_model.type_of_expr(value_expr.get_syntax_id());
-        if matches!(
-            value_ty,
-            LuaType::Unknown | LuaType::Any | LuaType::Never | LuaType::Nil
-        ) || is_compatible(semantic_model, &value_ty, &target)
-        {
-            continue;
-        }
-        add_mismatch(context, value_expr.get_range(), &target, &value_ty);
+        fields.push((semantic_model.doc_type_lua(doc_syntax), value_expr));
     }
+    fields
 }
 
 fn check_local(
@@ -441,7 +457,7 @@ fn check_member_assign(
                 return check_value_against_target(context, semantic_model, &target, value_expr);
             };
             let prefix_ty = semantic_model
-                .type_of_decl_assign_target_at(&SemanticId::Decl(owner.clone()), target_offset);
+                .type_of_decl_unwidened_at(&SemanticId::Decl(owner.clone()), target_offset);
             let key = member.key.clone();
             let infos = semantic_model.member_infos_with_key(&prefix_ty, &key);
             let declared_ty = infos
@@ -519,6 +535,11 @@ fn check_value_against(
 fn assignment_value_type(semantic_model: &SemanticModel<'_>, value_expr: &LuaExpr) -> LuaType {
     let ty =
         semantic_model.type_of_expr_at(value_expr.get_syntax_id(), value_expr.get_range().start());
+    // A target takes the call's FIRST value: `local x = f()`.
+    let ty = match value_expr {
+        LuaExpr::CallExpr(_) => ty.into_first_value(),
+        _ => ty,
+    };
     if matches!(ty, LuaType::Function)
         && let LuaExpr::NameExpr(name_expr) = value_expr
         && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())

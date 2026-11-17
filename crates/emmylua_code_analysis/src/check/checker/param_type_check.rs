@@ -5,6 +5,7 @@
 //! strip one slot for the self parameter; plain functions treat the receiver as the first argument.
 
 use crate::semantic_model::type_check::{TypeCheckContext, integer_index_applies};
+use rowan::TextSize;
 use std::rc::Rc;
 
 use emmylua_parser::{
@@ -14,14 +15,14 @@ use emmylua_parser::{
 use crate::semantic_model::infer::callable::CallableCandidateSet;
 use crate::semantic_model::infer::function_solver::functions_compatible;
 use crate::semantic_model::infer::unify;
-use crate::semantic_model::infer::vm::unify_call_bindings;
+use crate::semantic_model::infer::vm::{InferVm, unify_call_bindings};
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::table_constructor::table_expr;
 use crate::semantic_model::type_check::{check_type_at, is_compatible};
 use crate::semantic_model::{SemanticModel, type_eval};
 use crate::{
     DiagnosticCode, LuaFunctionType, LuaMemberKey, LuaTupleStatus, LuaTupleType, LuaType,
-    LuaTypeNode, TypeDefKind, VariadicType,
+    LuaTypeNode, SemanticId, TypeDefKind, VariadicType,
 };
 
 use super::param_count::first_param_is_self;
@@ -155,6 +156,36 @@ pub(crate) fn callable_candidates_uncached(
     candidates
 }
 
+/// The `---@overload`s of `decl`'s function value that a read at `offset` sees.
+fn live_decl_overloads(
+    semantic_model: &SemanticModel<'_>,
+    decl: &SemanticId,
+    offset: TextSize,
+) -> Vec<LuaFunctionType> {
+    InferVm::new(semantic_model, &[]).overload_candidates_for_decl(decl, offset)
+}
+
+/// The signatures of the definition an argument names, when it declares `---@overload`s:
+/// alternatives where any one may serve. A value that may be one of several functions
+/// (`choose and f or g`) is not one: each of them must fit.
+fn overload_set(semantic_model: &SemanticModel<'_>, arg: &LuaExpr) -> Vec<LuaFunctionType> {
+    match arg {
+        LuaExpr::NameExpr(name_expr) => {
+            let Some(decl) = semantic_model.resolve_name(name_expr.get_position()) else {
+                return Vec::new();
+            };
+            if live_decl_overloads(semantic_model, &decl, name_expr.get_position()).is_empty() {
+                return Vec::new();
+            }
+            callable_candidates(semantic_model, arg)
+        }
+        LuaExpr::IndexExpr(index_expr) => {
+            index_expr_callable_candidates(semantic_model, index_expr)
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Resolve callable signatures directly from an index expression's member declaration.
 ///
 /// P6b: all same-key/inherited members (repeated `---@field`, runtime closures,
@@ -165,7 +196,17 @@ fn index_expr_callable_candidates(
     index_expr: &LuaIndexExpr,
 ) -> Vec<LuaFunctionType> {
     let Some(resolved) = semantic_model.resolve_member(index_expr) else {
-        return Vec::new();
+        // The member index can't resolve a member of a computed prefix (`mk():take(n)`, every call
+        // in a fluent chain): look the name up on the prefix's inferred type instead.
+        let (Some(prefix), Some(emmylua_parser::LuaIndexKey::Name(name))) =
+            (index_expr.get_prefix_expr(), index_expr.get_index_key())
+        else {
+            return Vec::new();
+        };
+        let prefix_ty = semantic_model.type_of_expr(prefix.get_syntax_id());
+        let key = LuaMemberKey::Name(name.get_name_text().into());
+        return CallableCandidateSet::from_prefix_type(semantic_model, &prefix_ty, &key)
+            .into_candidates();
     };
 
     if let Some(prefix) = index_expr.get_prefix_expr() {
@@ -187,7 +228,7 @@ fn index_expr_callable_candidates(
             .iter()
         {
             if let Some(functions) =
-                crate::semantic_model::infer::vm::InferVm::new(semantic_model, &[])
+                InferVm::new(semantic_model, &[])
                     .callable_candidates_for_owner_single(&member.id)
             {
                 candidates.extend(functions);
@@ -751,9 +792,20 @@ fn check_arg_pairs(
             continue;
         };
         let arg_ty = cached_arg_type(semantic_model, args, arg_types, index);
+        // A fixed parameter takes the call argument's FIRST value: `g(f(), 1)`.
+        let arg_ty = match (arg, arg_ty.is_multi_return()) {
+            (LuaExpr::CallExpr(_), true) => arg_ty.get_result_slot_type(0).unwrap_or(LuaType::Nil),
+            _ => arg_ty,
+        };
         let arg_ty = normalize_arg_for_check(semantic_model, &arg_ty);
         let call_arg_ty = call_argument_type(semantic_model, arg, &arg_ty);
         let call_arg_ty = normalize_arg_for_check(semantic_model, &call_arg_ty);
+        // A `T` an earlier arg bound may still widen to this one (`eq({ 1, 2 }, ints)`).
+        if let LuaType::TplRef(tpl) = param_ty
+            && bindings.contains_key(&tpl.get_tpl_id())
+        {
+            let _ = unify_call_bindings(semantic_model, param_ty, &call_arg_ty, bindings);
+        }
         let param_ty = unify::substitute(param_ty, bindings);
         let param_ty = type_eval::expand_alias_generic(semantic_model, &param_ty);
         let param_ty = type_eval::eval_conditionals(semantic_model, &param_ty);
@@ -761,6 +813,7 @@ fn check_arg_pairs(
         // should report ParamTypeMismatch even if the type face happens to be string (missing members count as nil).
         if let LuaExpr::IndexExpr(index_expr) = arg
             && semantic_model.member_missing_in_union(index_expr)
+            && !is_compatible(semantic_model, &LuaType::Nil, &param_ty)
         {
             out.push(Mismatch {
                 code: DiagnosticCode::ParamTypeMismatch,
@@ -845,6 +898,17 @@ fn check_arg_pairs(
         }
         // Higher-order functions go through the iterative solver first; broad `Function` arguments must not be swallowed by is_compatible.
         if function_arg_compatible(semantic_model, &call_arg_ty, &param_ty, bindings) {
+            continue;
+        }
+        // A function argument's `---@overload`s are candidates as when it is called:
+        // `fold(0, fun.succ)` fits through `fun(n: integer): integer` (`overload_set`).
+        if matches!(
+            call_arg_ty,
+            LuaType::DocFunction(_) | LuaType::Signature(_) | LuaType::Union(_)
+        ) && overload_set(semantic_model, arg).iter().any(|fun| {
+            let fun = LuaType::DocFunction(Rc::new(fun.clone()));
+            function_arg_compatible(semantic_model, &fun, &param_ty, bindings)
+        }) {
             continue;
         }
         if call_arg_ty == param_ty {
@@ -1013,11 +1077,14 @@ fn function_arg_compatible(
     // A broad `function` value (e.g. `---@param cb function`) may be passed
     // wherever a function type is expected. Without this, stdlib generic
     // callbacks (`table.sort(list, comp)`) would report false positives.
-    if matches!(arg_ty, LuaType::Function) && is_function_like_type(param_ty) {
+    // A `---@alias X fun(...)` param is a function type too.
+    let expected = doc_function_of(semantic_model, param_ty);
+    if matches!(arg_ty, LuaType::Function)
+        && (is_function_like_type(param_ty) || expected.is_some())
+    {
         return true;
     }
     let actual = doc_function_of(semantic_model, arg_ty);
-    let expected = doc_function_of(semantic_model, param_ty);
     match (actual, expected) {
         (Some(actual), Some(expected)) => {
             functions_compatible(semantic_model, &actual, &expected, bindings)

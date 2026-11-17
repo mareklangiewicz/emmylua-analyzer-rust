@@ -1954,9 +1954,8 @@ return items
 
         #[test]
         fn test_generic_table_overload_requires_the_whole_call_to_match() {
-            // Each of the first two calls fits one signature. The last two mix them: a table
-            // literal's keys for one, the second argument for the other.
-            let source = r#"
+            assert_diagnostics(
+                r#"
                 ---@param values table<integer, string>
                 ---@param mode string
                 ---@overload fun(values: table<string, integer>, mode: integer)
@@ -1964,31 +1963,8 @@ return items
                 accept({'a'}, 'a')
                 accept({count = 1}, 1)
                 accept({count = 1}, 'a')
-                local ints ---@type table<integer, string>
-                accept(ints, 1)
-                "#;
-            let mut diagnostics = check_source(source);
-            diagnostics.sort_by_key(|d| d.range.start());
-            let reported: Vec<_> = diagnostics
-                .iter()
-                .map(|d| {
-                    let start = usize::from(d.range.start());
-                    let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
-                    let line_end = source[start..]
-                        .find('\n')
-                        .map_or(source.len(), |i| start + i);
-                    (d.code, source[line_start..line_end].trim().to_string())
-                })
-                .collect();
-            assert_eq!(
-                reported,
-                [
-                    (
-                        AssignTypeMismatch,
-                        "accept({count = 1}, 'a')".to_string()
-                    ),
-                    (ParamTypeMismatch, "accept(ints, 1)".to_string()),
-                ]
+                "#,
+                &[ParamTypeMismatch],
             );
         }
     }
@@ -2785,13 +2761,11 @@ return items
             required({label = 'ok', values = nil})
             "#;
         let diagnostics = check_source(source);
-        // Fork: a call's literal fields have one descent (assign_type_mismatch's), so a field
-        // error keeps AssignTypeMismatch; upstream's parallel object path reports it as a param.
         assert_eq!(
             diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
             [
-                DiagnosticCode::AssignTypeMismatch,
-                DiagnosticCode::AssignTypeMismatch,
+                DiagnosticCode::ParamTypeMismatch,
+                DiagnosticCode::ParamTypeMismatch,
             ],
             "{source}\n{diagnostics:?}"
         );

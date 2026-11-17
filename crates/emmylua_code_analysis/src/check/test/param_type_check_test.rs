@@ -991,12 +991,9 @@ mod test {
                 "{call}: {diagnostics:?}"
             );
             assert!(
-                diagnostics.iter().all(|d| matches!(
-                    d.code,
-                    // Fork: a literal's fields are reported where they fail, as
-                    // assign-type-mismatch (07a0c75a, 6734937f); upstream reports the argument.
-                    DiagnosticCode::ParamTypeMismatch | DiagnosticCode::AssignTypeMismatch
-                )),
+                diagnostics
+                    .iter()
+                    .all(|d| d.code == DiagnosticCode::ParamTypeMismatch),
                 "{call}: {diagnostics:?}"
             );
         }
@@ -1045,12 +1042,9 @@ mod test {
                 "{constructor}: {diagnostics:?}"
             );
             assert!(
-                diagnostics.iter().all(|d| matches!(
-                    d.code,
-                    // Fork: a literal's fields are reported where they fail, as
-                    // assign-type-mismatch (07a0c75a, 6734937f); upstream reports the argument.
-                    DiagnosticCode::ParamTypeMismatch | DiagnosticCode::AssignTypeMismatch
-                )),
+                diagnostics
+                    .iter()
+                    .all(|d| d.code == DiagnosticCode::ParamTypeMismatch),
                 "{diagnostics:?}"
             );
         }
@@ -1074,12 +1068,9 @@ mod test {
             let diagnostics = check_source(&source);
             assert_eq!(diagnostics.len(), expected, "{source}\n{diagnostics:#?}");
             assert!(
-                diagnostics.iter().all(|d| matches!(
-                    d.code,
-                    // Fork: a literal's fields are reported where they fail, as
-                    // assign-type-mismatch (07a0c75a, 6734937f); upstream reports the argument.
-                    DiagnosticCode::ParamTypeMismatch | DiagnosticCode::AssignTypeMismatch
-                )),
+                diagnostics
+                    .iter()
+                    .all(|d| d.code == DiagnosticCode::ParamTypeMismatch),
                 "{diagnostics:#?}"
             );
         }
@@ -3660,16 +3651,15 @@ mod test {
                 function foo(x) end
             "#,
         );
-        // A literal argument's fields are reported by the assign descent.
         assert!(!ws.has_no_diagnostic(
-            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::ParamTypeMismatch,
             r#"
                foo({y = "", z = ""})
             "#
         ));
 
         assert!(ws.has_no_diagnostic(
-            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::ParamTypeMismatch,
             r#"
                foo({y = 1, z = ""})
             "#
