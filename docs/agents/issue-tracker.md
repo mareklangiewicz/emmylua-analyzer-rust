@@ -9,7 +9,8 @@ Issues and specs for this fork live as GitHub issues on **mareklangiewicz/emmylu
   remotes (`marek` = fork, `origin` = upstream EmmyLuaLs) and no `gh` default, so a bare
   `gh issue …` can land on upstream. Every command below assumes `R=mareklangiewicz/emmylua-analyzer-rust`.
 - Scope: fork engine work, flagged engine quirks, and the `gndx emmylua` lab, whose code lives in
-  luagnd (`~/code/lua/luagnd`). A lab issue says so in its first line.
+  neospector (`~/code/vimstuff/myvi/myspectors/neospector/lua/myemmylab*.lua`, part of myvi).
+  A lab issue says so in its first line.
 - Start at issue #1 ("Start here"), then pick `ready-for-agent`.
 - Refer to upstream as plain text ("upstream #1370", "upstream commit 7bf34a75"), never as a link
   or `EmmyLuaLs/emmylua-analyzer-rust#N`: a link shows on their thread, which is interaction.
