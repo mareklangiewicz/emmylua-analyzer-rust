@@ -378,6 +378,21 @@ impl FlowTree {
             .filter(move |(range, _)| range.end() <= end)
     }
 
+    /// `(assignment position, flow id)` of each write to `member` in `[start, end]`, in order.
+    pub fn member_assignments_between(
+        &self,
+        member: &SemanticId,
+        start: TextSize,
+        end: TextSize,
+    ) -> &[(TextSize, FlowId)] {
+        let Some(entries) = self.member_assignments.get(member) else {
+            return &[];
+        };
+        let first = entries.partition_point(|(pos, _)| *pos < start);
+        let last = entries.partition_point(|(pos, _)| *pos <= end);
+        &entries[first.min(last)..last]
+    }
+
     /// Latest `(assignment position, flow id)` for `member` at or before `offset`.
     pub fn latest_member_assignment(
         &self,
