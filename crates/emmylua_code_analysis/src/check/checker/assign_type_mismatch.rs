@@ -2,13 +2,13 @@ use std::rc::Rc;
 
 use emmylua_parser::{
     LuaAssignStat, LuaAst, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaExpr, LuaIndexExpr,
-    LuaLiteralToken, LuaLocalStat, LuaSyntaxId, LuaTableExpr, LuaVarExpr,
+    LuaLiteralToken, LuaLocalStat, LuaReturnStat, LuaSyntaxId, LuaTableExpr, LuaVarExpr,
 };
 
 use crate::DiagnosticCode;
 use crate::semantic_model::SemanticModel;
-use crate::semantic_model::member::class_fields;
-use crate::semantic_model::table_constructor::table_expr;
+use crate::semantic_model::member::{MemberInfo, class_fields, index_signature_type};
+use crate::semantic_model::table_constructor::{key_type, static_member_key, table_expr};
 use crate::semantic_model::type_check::{TypeCheckFailReason, check_type_at, is_compatible};
 use crate::{LuaMemberKey, LuaObjectType, LuaType, LuaTypeNode, SemanticId, TypeDefKind};
 
@@ -34,6 +34,7 @@ impl Checker for AssignTypeMismatchChecker {
             match node {
                 LuaAst::LuaLocalStat(stat) => check_local(context, semantic_model, &stat),
                 LuaAst::LuaAssignStat(stat) => check_assign(context, semantic_model, &stat),
+                LuaAst::LuaReturnStat(stat) => check_return(context, semantic_model, &stat),
                 LuaAst::LuaTableExpr(table) => {
                     check_inline_table_fields(context, semantic_model, &table)
                 }
@@ -229,6 +230,23 @@ fn check_local(
     }
 }
 
+/// `---@type T` above a `return`: the returned value is held to `T`, as a `local`'s is.
+fn check_return(
+    context: &mut CheckContext<'_>,
+    semantic_model: &SemanticModel<'_>,
+    stat: &LuaReturnStat,
+) {
+    let Some(facts) = semantic_model.file_facts() else {
+        return;
+    };
+    for (slot, expr) in stat.get_expr_list().enumerate() {
+        if let Some(doc_type) = facts.return_doc_type(stat.get_syntax_id(), slot) {
+            let target = semantic_model.doc_type_lua_rich(doc_type);
+            check_value_against(context, semantic_model, &target, &expr);
+        }
+    }
+}
+
 fn check_class_initializer(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
@@ -329,6 +347,12 @@ fn check_assign(
                 );
             }
             LuaVarExpr::IndexExpr(index_expr) => {
+                if let Some(value) = declared_index_value(semantic_model, index_expr) {
+                    // Writing nil removes a key, so a key takes `V?`.
+                    let target = LuaType::from_vec(vec![value, LuaType::Nil]);
+                    check_value_against_target(context, semantic_model, &target, &expr);
+                    continue;
+                }
                 let Some(resolved) = semantic_model.resolve_member(index_expr) else {
                     check_self_member_assign(context, semantic_model, index_expr, &expr);
                     continue;
@@ -361,6 +385,58 @@ fn check_assign(
             }
         }
     }
+}
+
+/// `t.x = value` into a declared `table<K, V>`, `{ [K]: V }` or `V[]`: `V` is the contract of a key
+/// with no named member. The class table itself is out: a write there declares the member.
+fn declared_index_value(
+    semantic_model: &SemanticModel<'_>,
+    index_expr: &LuaIndexExpr,
+) -> Option<LuaType> {
+    let prefix = index_expr.get_prefix_expr()?;
+    let prefix_decl = match &prefix {
+        LuaExpr::NameExpr(name) => semantic_model.resolve_name(name.get_position()),
+        _ => None,
+    };
+    if let Some(decl) = &prefix_decl
+        && let Some(decl) = semantic_model.file_facts()?.decl_by_id(decl)
+        && decl
+            .owner_syntax
+            .is_some_and(|owner| class_contract_for_owner(semantic_model, owner).is_some())
+    {
+        return None;
+    }
+    let prefix_ty = semantic_model.type_of_expr(prefix.get_syntax_id());
+    let key = index_expr.get_index_key()?;
+    let key_ty = key_type(semantic_model, key.clone()).ok()?;
+    match &prefix_ty {
+        LuaType::Def(_) => None,
+        LuaType::Array(array) => matches!(key_ty, LuaType::Integer | LuaType::IntegerConst(_))
+            .then(|| array.get_base().clone()),
+        _ if static_member_key(semantic_model, &key).is_some_and(|key| {
+            semantic_model
+                .member_infos_with_key(&prefix_ty, &key)
+                .iter()
+                .any(|info| !is_plain_write_through(semantic_model, info, prefix_decl.as_ref()))
+        }) =>
+        {
+            None
+        }
+        _ => index_signature_type(semantic_model, &prefix_ty, &key_ty),
+    }
+}
+
+/// A member made by a plain write through this variable, which says nothing about its type.
+fn is_plain_write_through(
+    semantic_model: &SemanticModel<'_>,
+    info: &MemberInfo,
+    variable: Option<&SemanticId>,
+) -> bool {
+    info.id
+        .as_ref()
+        .zip(info.file_id)
+        .and_then(|(id, file_id)| semantic_model.file_facts_of(file_id)?.member_by_id(id))
+        .is_some_and(|member| variable == Some(&member.owner) && member.doc_type_syntax.is_none())
 }
 
 fn check_against(
@@ -448,29 +524,43 @@ fn check_member_assign(
         Some(member_id),
         semantic_model.type_of_member_assign_target_at(member_id, target_offset),
     );
-    // `t.x = value`: resolve_member first returns the synthesized member for this assignment; prefer the same-named member on the prefix's declared type.
+    // `t.x = value`: resolve_member returns a member some assignment synthesized (this one, or an
+    // earlier `t.x = ...`, whose value would otherwise become the contract); prefer the same-named
+    // member on the prefix's declared type.
     if let Some(facts) = semantic_model.file_facts()
         && let Some(member) = facts.member_by_id(member_id)
     {
-        if member.value_syntax == Some(value_expr.get_syntax_id()) {
-            let SemanticId::Decl(owner) = &member.owner else {
-                return check_value_against_target(context, semantic_model, &target, value_expr);
-            };
-            let prefix_ty = semantic_model
-                .type_of_decl_unwidened_at(&SemanticId::Decl(owner.clone()), target_offset);
-            let key = member.key.clone();
-            let infos = semantic_model.member_infos_with_key(&prefix_ty, &key);
-            let declared_ty = infos
-                .into_iter()
-                .find(|info| info.id.as_ref() != Some(member_id))
-                .map(|info| match info.id {
-                    Some(id) => semantic_model.member_contract_type(Some(&id), info.typ),
-                    None => info.typ,
-                })
-                .or_else(|| semantic_model.member_type(&prefix_ty, &key));
-            if let Some(declared_ty) = declared_ty {
-                target = declared_ty;
+        let own = member.value_syntax == Some(value_expr.get_syntax_id());
+        match &member.owner {
+            SemanticId::Decl(owner) if own || member.doc_type_syntax.is_none() => {
+                let prefix_ty = semantic_model
+                    .type_of_decl_unwidened_at(&SemanticId::Decl(owner.clone()), target_offset);
+                let key = member.key.clone();
+                let infos = semantic_model.member_infos_with_key(&prefix_ty, &key);
+                // For an earlier write's member, only a field the prefix declares can stand in:
+                // an untyped `local M = {}` has none, and its first write stays the contract.
+                let declared = |info: &MemberInfo| match &info.id {
+                    None => true,
+                    Some(id) => facts
+                        .member_by_id(id)
+                        .is_some_and(|member| member.doc_type_syntax.is_some()),
+                };
+                let declared_ty = infos
+                    .into_iter()
+                    .find(|info| info.id.as_ref() != Some(member_id) && (own || declared(info)))
+                    .map(|info| match info.id {
+                        Some(id) => semantic_model.member_contract_type(Some(&id), info.typ),
+                        None => info.typ,
+                    })
+                    .or_else(|| own.then(|| semantic_model.member_type(&prefix_ty, &key))?);
+                if let Some(declared_ty) = declared_ty {
+                    target = declared_ty;
+                }
             }
+            _ if own => {
+                return check_value_against_target(context, semantic_model, &target, value_expr);
+            }
+            _ => {}
         }
     }
     let value_ty =

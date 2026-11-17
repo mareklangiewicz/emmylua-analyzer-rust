@@ -22,10 +22,10 @@ use crate::{
     LuaType, LuaUnionType,
 };
 
-use crate::semantic_model::table_constructor::static_member_key;
 use super::param_count::{call_arg_param_index, first_param_is_self};
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
+use crate::semantic_model::table_constructor::static_member_key;
 
 pub struct GenericConstraintMismatchChecker;
 

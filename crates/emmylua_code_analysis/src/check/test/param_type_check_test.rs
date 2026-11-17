@@ -51,7 +51,8 @@ mod test {
     fn test_generic_bound_by_a_table_literal_widens_to_a_later_arg() {
         // luagnd's `chk.eq.deep(act: T, exp: T)` with a literal first: the literal binds T, and
         // a later `integer[]` arg the literal fits widens T to it instead of failing. A literal
-        // that does not fit is still caught, field by field, against the widened T.
+        // that does not fit is still caught: T stays the literal, and the later arg is reported
+        // against it (upstream reports an argument as a whole since 1361c218).
         let diagnostics = check_source(
             r#"
             ---@generic T
@@ -80,7 +81,7 @@ mod test {
             .collect();
         assert_eq!(
             mismatches,
-            ["expected `integer` but found `\"x\"`."],
+            ["expected `{ [1]: \"x\" }` but found `integer[]`. "],
             "{diagnostics:?}"
         );
     }

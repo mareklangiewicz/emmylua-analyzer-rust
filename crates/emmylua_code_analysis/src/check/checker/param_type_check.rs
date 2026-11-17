@@ -146,12 +146,24 @@ pub(crate) fn callable_candidates_uncached(
     {
         candidates = index_expr_callable_candidates(semantic_model, index_expr);
     }
-    if candidates.is_empty()
-        && let LuaExpr::NameExpr(name_expr) = callee
+    if let LuaExpr::NameExpr(name_expr) = callee
         && let Some(decl) = semantic_model.resolve_name(name_expr.get_position())
-        && let Some(func) = semantic_model.type_of_decl_signature(&decl)
     {
-        candidates.push(func);
+        if candidates.is_empty()
+            && let Some(func) = semantic_model.type_of_decl_signature(&decl)
+        {
+            candidates.push(func);
+        }
+        if candidates.is_empty() {
+            return candidates;
+        }
+        // A name callee's value type is its main signature only; its `---@overload`s are
+        // candidates too, as in the VM's call selection.
+        for overload in live_decl_overloads(semantic_model, &decl, name_expr.get_position()) {
+            if !candidates.contains(&overload) {
+                candidates.push(overload);
+            }
+        }
     }
     candidates
 }

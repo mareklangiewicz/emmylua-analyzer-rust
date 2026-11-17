@@ -3898,10 +3898,11 @@ return t
                 false,
             ),
             ("---@type table<integer, string>\nlocal v = {}", true),
-            // an index signature object
+            // an index signature object: upstream's records are open, so a key no signature
+            // takes is not checked (`check_table_record`, 1361c218); a value one takes is
             (
                 "---@param m {[string]: integer}\nlocal function d(m) end\nd({[1] = 5})",
-                false,
+                true,
             ),
             (
                 "---@param m {[string]: integer}\nlocal function d(m) end\nd({a = 1})",
@@ -3913,6 +3914,10 @@ return t
             ),
             (
                 "---@param m {a: integer, [integer]: string}\nlocal function d(m) end\nd({a = 1, b = 'x'})",
+                true,
+            ),
+            (
+                "---@param m {[string]: integer}\nlocal function d(m) end\nd({a = 'x'})",
                 false,
             ),
             // a plain object still takes extra fields
@@ -4037,9 +4042,14 @@ return t
             codes("---@type {a: integer}\nlocal x = { a = function() end }"),
             [DiagnosticCode::AssignTypeMismatch]
         );
+        // the closure's bad return is reported, and the closure against its slot too
+        // (upstream's field check, 1361c218, holds the closure's whole signature)
         assert_eq!(
             codes("---@type Drv\nlocal x = { read = function(p) return 1 end }"),
-            [DiagnosticCode::ReturnTypeMismatch]
+            [
+                DiagnosticCode::ReturnTypeMismatch,
+                DiagnosticCode::AssignTypeMismatch
+            ]
         );
         assert_eq!(
             codes(
