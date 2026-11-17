@@ -541,4 +541,25 @@ mod test {
         assert_eq!(ws.expr_ty("ParamDir"), ws.ty("string"));
         assert_eq!(ws.expr_ty("ParamN"), ws.ty("integer"));
     }
+
+    #[test]
+    fn test_local_doc_type_closure_param() {
+        for annotation in ["Adder", "fun(x: number, y: string)"] {
+            let mut ws = VirtualWorkspace::new();
+            ws.def(&format!(
+                r#"
+                ---@alias Adder fun(x: number, y: string)
+
+                ---@type {annotation}
+                local add = function(x, y)
+                    ParamX = x
+                    ParamY = y
+                end
+                "#
+            ));
+
+            assert_eq!(ws.expr_ty("ParamX"), ws.ty("number"), "{annotation}");
+            assert_eq!(ws.expr_ty("ParamY"), ws.ty("string"), "{annotation}");
+        }
+    }
 }

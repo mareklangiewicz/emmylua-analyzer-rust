@@ -2684,14 +2684,14 @@ fn trace_decl(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    // On a loop-free graph every route to a flow node crosses the same guards, so
-    // a state's value depends on the node and the purpose alone — never on the
+    // Outside a cycle every route to a flow node crosses the same guards, so a
+    // state's value depends on the node and the purpose alone — never on the
     // route. That makes the state cacheable, which matters because a nested
     // conditional chain otherwise re-derives the same states along exponentially
-    // many routes. Only nodes that can reach a loop backwards keep the uncached
-    // path (see the type note on `cache::TraceStateKey`), so a loop in one function
-    // does not disable memoization for the rest of the file.
-    if tree.is_loop_reachable(flow_id) {
+    // many routes. Only nodes on a cycle keep the uncached path (see the type note
+    // on `cache::TraceStateKey`), so a loop does not disable memoization for the
+    // code after it.
+    if tree.is_in_cycle(flow_id) {
         return trace_decl_uncached(model, decl, tree, flow_id, purpose, mode, visited, path);
     }
     // The memo holds the state for an empty incoming path. Guards and casts collected between
@@ -2772,7 +2772,7 @@ fn trace_decl_uncached(
                 ))
             && mode == root_mode
             && current != flow_id
-            && !tree.is_loop_reachable(current)
+            && !tree.is_in_cycle(current)
             && !path
                 .narrowings
                 .iter()
@@ -2802,7 +2802,7 @@ fn trace_decl_uncached(
         // nodes here; casts use separate frames even when caching is disabled.
         if matches!(purpose, DeclTracePurpose::OriginalSignatures(_))
             && current != flow_id
-            && !tree.is_loop_reachable(current)
+            && !tree.is_in_cycle(current)
         {
             let key = decl_trace_key(model, decl, current, purpose, mode);
             {
@@ -3083,7 +3083,7 @@ fn trace_decl_uncached(
                         continue;
                     }
                     if matches!(purpose, DeclTracePurpose::OriginalSignatures(_))
-                        && !tree.is_loop_reachable(current)
+                        && !tree.is_in_cycle(current)
                     {
                         // Cache the shared history first. Branch expansion on
                         // unwind then stops there instead of nesting each join.
@@ -3153,7 +3153,7 @@ fn trace_member(
     visited: &mut HashSet<FlowId>,
     path: &mut PathState,
 ) -> Option<LuaType> {
-    if tree.is_loop_reachable(flow_id)
+    if tree.is_in_cycle(flow_id)
         || path
             .narrowings
             .iter()

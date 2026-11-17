@@ -4,14 +4,13 @@
 //! Supports multiple return values (union components checked individually), generic parameters (uninstantiated `Ref("T")` skipped),
 //! class inheritance alias function types, and `return expr ---@as type` inline assertions.
 
-use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaExpr, LuaReturnStat};
+use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaReturnStat};
 
 use crate::LuaType;
 use crate::semantic_model::SemanticModel;
-use crate::semantic_model::type_check::is_compatible;
+use crate::semantic_model::type_check::check_type_at;
 use crate::{DiagnosticCode, SemanticId, SignatureDoc, TypeDef};
 
-use super::assign_type_mismatch::{check_table_fields, is_structured_table_target};
 use super::{CheckContext, Checker, own_return_stats};
 use crate::semantic_model::render::humanize_type;
 
@@ -69,21 +68,11 @@ fn check_return_stat(
     docs: &SignatureDoc,
 ) {
     for expr in ret.get_expr_list() {
-        // The primitive check takes any table literal for a structured type; its fields are
-        // checked one by one, as for an assignment.
-        if let LuaExpr::TableExpr(table) = &expr
-            && is_structured_table_target(semantic_model, expected)
-        {
-            context.reporting_as(DiagnosticCode::ReturnTypeMismatch, |context| {
-                check_table_fields(context, semantic_model, expected, table)
-            });
-            continue;
-        }
         let raw = semantic_model.type_of_expr_at(expr.get_syntax_id(), expr.get_range().start());
         // Uninstantiated function generic argument `Ref("T")`: check against the constraint when present, otherwise skip.
         if is_unresolved_generic_ref(semantic_model, &raw, docs) {
             if let Some(constraint) = generic_constraint_type(semantic_model, &raw)
-                && !return_compatible(semantic_model, &constraint, expected)
+                && !return_compatible(semantic_model, &constraint, expected, expr.get_range())
             {
                 context.add_diagnostic(
                     DiagnosticCode::ReturnTypeMismatch,
@@ -100,7 +89,7 @@ fn check_return_stat(
         }
         let actual = generic_constraint_type(semantic_model, &raw).unwrap_or(raw);
         if matches!(actual, LuaType::Unknown | LuaType::Any | LuaType::Never)
-            || return_compatible(semantic_model, &actual, expected)
+            || return_compatible(semantic_model, &actual, expected, expr.get_range())
         {
             continue;
         }
@@ -125,18 +114,19 @@ fn return_compatible(
     semantic_model: &SemanticModel<'_>,
     source: &LuaType,
     target: &LuaType,
+    range: rowan::TextRange,
 ) -> bool {
     if source == target {
         return true;
     }
-    if is_compatible(semantic_model, source, target) {
+    if check_type_at(semantic_model, source, target, range, false).is_ok() {
         return true;
     }
     if let LuaType::Union(target_union) = target {
         return target_union
             .into_vec()
             .iter()
-            .any(|component| return_compatible(semantic_model, source, component));
+            .any(|component| return_compatible(semantic_model, source, component, range));
     }
     generic_extends_named(semantic_model, source, target)
 }
