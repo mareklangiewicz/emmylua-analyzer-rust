@@ -36,6 +36,13 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   old run. `corpus diff` exit 2 means "not comparable", not "no difference".
 - Porting a fork fix upstream: re-measure on upstream main (corpus diff with main as base, and
   every "before" test run against main's source). Fork numbers do not carry over.
+  - A lowering fix ("spelling X now means Y"): copy a corpus tree, respell X as Y in its
+    annotations, run the base build on the copy and the candidate on the original. Equal hits mean
+    the new hits are base's own Y behaviour, not the fix (#37: `|?` → `|nil`, 1053 = 1053; 1184 on
+    the original is the control).
+  - Duplicates: search upstream issue titles by words; GitHub search drops punctuation (`|?` finds
+    nothing). Find code overlap by grepping open upstream PR diffs (`gh pr diff`) for the changed
+    symbol.
 - Timings: trust only interleaved `gndx emmylua ab` with resolved ranges; re-run anything marked
   `LOADED`. Other agents load this machine.
 - Crash, hang or blowup on a tree: `outcome` on all three builds → `stack` the failing one →
