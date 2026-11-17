@@ -5122,6 +5122,101 @@ _ = a[2]
     }
 
     #[test]
+    fn test_runtime_member_read_sees_every_write_to_the_field() {
+        // Each `s.desc = v` is its own runtime member. A read takes its type from all of them
+        // along the path (and from the declared field where none ran), not from the first one.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class RtS
+            ---@field desc? string
+
+            ---@param c boolean
+            ---@param s RtS
+            local function cond(c, s)
+                if c then s.desc = "x" end
+                local skipped = s.desc
+                print(skipped)
+            end
+            ---@param s RtS
+            local function nil_last(s)
+                s.desc = "x"
+                s.desc = nil
+                local last_nil = s.desc
+                print(last_nil)
+            end
+            ---@param s RtS
+            local function str_last(s)
+                s.desc = nil
+                s.desc = "x"
+                local last_str = s.desc
+                print(last_str)
+            end
+            ---@param c boolean
+            ---@param s RtS
+            local function both(c, s)
+                if c then s.desc = "x" else s.desc = nil end
+                local either = s.desc
+                print(either)
+            end
+            ---@param s RtS
+            local function untouched(s)
+                local declared = s.desc
+                print(declared)
+            end
+            cond(true, {})
+            nil_last({})
+            str_last({})
+            both(true, {})
+            untouched({})
+            "#,
+        );
+        let ty = |name| ws.humanize_type(last_name_expr_type(&ws, file, name));
+        assert_eq!(
+            [
+                ty("skipped"),
+                ty("last_nil"),
+                ty("last_str"),
+                ty("either"),
+                ty("declared")
+            ],
+            ["string?", "nil", "string", "string?", "string?"]
+        );
+    }
+
+    #[test]
+    fn test_runtime_member_read_takes_the_latest_write_in_straight_line_code() {
+        // No condition in the file: the read seeks the latest write directly, and that must be
+        // the latest write to the field, whichever runtime member it made.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class RtLine
+            ---@field desc? string
+
+            ---@param s RtLine
+            local function nil_last(s)
+                s.desc = "x"
+                s.desc = nil
+                local last_nil = s.desc
+                print(last_nil)
+            end
+            ---@param s RtLine
+            local function str_last(s)
+                s.desc = nil
+                s.desc = "x"
+                local last_str = s.desc
+                print(last_str)
+            end
+            nil_last({})
+            str_last({})
+            "#,
+        );
+        let ty = |name| ws.humanize_type(last_name_expr_type(&ws, file, name));
+        assert_eq!([ty("last_nil"), ty("last_str")], ["nil", "string"]);
+    }
+
+    #[test]
     fn test_member_read_after_owner_reassignment_reads_the_new_owner() {
         // `y = { ... }` replaces the owner of `y.h`: the read takes the field of what `y` holds on
         // each path, not the first literal's field.

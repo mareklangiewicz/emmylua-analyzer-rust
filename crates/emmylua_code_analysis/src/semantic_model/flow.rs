@@ -850,7 +850,7 @@ fn member_type_at(
     // (condition/cast/merge) sits between it and the query. This turns repeated
     // `M.x` reads in long straight-line files from O(offset) into O(1).
     if start == flow_id && !tree.has_complex_control() {
-        let latest = tree.latest_member_assignment(member, offset);
+        let latest = latest_field_write(model, &tree, member, access, offset);
         if let Some((assign_pos, assign_flow)) = latest
             && !tree.has_flow_event_between(assign_pos, offset, false)
         {
@@ -883,6 +883,33 @@ fn member_type_at(
     };
     trace_member(model, member, access, &tree, start, &mut visited, &mut path)
         .unwrap_or_else(fallback)
+}
+
+/// The latest write before `offset` to what `member` names. For a read, that is any runtime
+/// member of the same owner and key: each `s.x = v` site is its own member.
+fn latest_field_write(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
+    offset: TextSize,
+) -> Option<(TextSize, FlowId)> {
+    let own = tree.latest_member_assignment(member, offset);
+    let SemanticId::Member(key) = member else {
+        return own;
+    };
+    let Some(facts) = access.and_then(|_| model.file_facts_of(key.file_id)) else {
+        return own;
+    };
+    let Some(def) = facts.member_by_id(member) else {
+        return own;
+    };
+    facts
+        .members_of_owner(&def.owner)
+        .filter(|sibling| sibling.key == def.key && &sibling.id != member)
+        .filter_map(|sibling| tree.latest_member_assignment(&sibling.id, offset))
+        .chain(own)
+        .max_by_key(|(at, _)| *at)
 }
 
 /// Skip this assignment only when `offset` is inside the `t.x = value` assignment and that node assigns this member.
@@ -1140,7 +1167,14 @@ pub(crate) fn type_of_expr_at_node(
                             })
                         })
                     {
-                        let runtime_ty = type_of_member_at(model, &runtime_member.id, offset);
+                        // By the read's access, so writes through every runtime member of this
+                        // name count, and a path that skips them all keeps the declared field.
+                        let runtime_ty = type_of_member_access_at(
+                            model,
+                            &runtime_member.id,
+                            Some(index_expr),
+                            offset,
+                        );
                         if !matches!(runtime_ty, LuaType::Unknown) {
                             return apply_casts(guarded(runtime_ty), All);
                         }
@@ -3148,6 +3182,26 @@ fn member_annotation_type(model: &SemanticModel, member: &SemanticId) -> Option<
     Some(model.doc_type_lua_in(member_file, syntax, &[]))
 }
 
+/// The declared type a write to `member` is held to: its own annotation, else that of the field
+/// the read resolves to. A runtime member (one per `s.x = v` site) has no annotation of its own,
+/// but a write to a declared `---@field x` is still a write to that field.
+fn written_field_annotation(
+    model: &SemanticModel,
+    member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
+) -> Option<LuaType> {
+    member_annotation_type(model, member).or_else(|| {
+        let field = model.resolve_member(access?)?.member_id?;
+        if &field == member {
+            return None;
+        }
+        member_annotation_type(model, &field).or_else(|| {
+            let declared = model.type_of_member(&field)?;
+            Some(apply_field_nullable(model, &field, declared))
+        })
+    })
+}
+
 /// Backtrack along the CFG for the member's most recent assignment type.
 fn trace_member(
     model: &SemanticModel,
@@ -3271,7 +3325,7 @@ fn trace_member_uncached(
                             *target_index,
                             *value_syntax,
                         );
-                        if let Some(annotation) = member_annotation_type(model, member) {
+                        if let Some(annotation) = written_field_annotation(model, member, access) {
                             if model.type_check(&value_ty, &annotation) {
                                 value_ty = widen_const_type(value_ty);
                             } else {
