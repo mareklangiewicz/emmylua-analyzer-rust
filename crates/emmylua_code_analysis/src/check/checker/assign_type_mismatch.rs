@@ -348,8 +348,13 @@ fn check_assign(
             }
             LuaVarExpr::IndexExpr(index_expr) => {
                 if let Some(value) = declared_index_value(semantic_model, index_expr) {
-                    // Writing nil removes a key, so a key takes `V?`.
-                    let target = LuaType::from_vec(vec![value, LuaType::Nil]);
+                    // Writing nil removes a key, so a key takes `V?`. A table literal is not that
+                    // nil: held to `V` itself, its failing field is reported, not the whole literal.
+                    let target = if matches!(expr, LuaExpr::TableExpr(_)) {
+                        value
+                    } else {
+                        LuaType::from_vec(vec![value, LuaType::Nil])
+                    };
                     check_value_against_target(context, semantic_model, &target, &expr);
                     continue;
                 }

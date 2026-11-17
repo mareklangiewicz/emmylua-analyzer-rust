@@ -3,6 +3,42 @@ mod tests {
     use crate::check::test::{assert_clean_cases, check_source};
     use crate::{DiagnosticCode, VirtualWorkspace};
 
+    /// `t[k].f = v` writes a field of whatever `t[k]` holds: `f` is not a field of `t`, so
+    /// `t` still fits `table<integer, table?>` (logsync's `pages[id].journal_day = j`).
+    #[test]
+    fn test_field_write_under_a_dynamic_key_is_not_the_outer_tables() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ReturnTypeMismatch,
+            r#"
+            ---@param id integer
+            ---@param j number
+            ---@return table<integer, table?>
+            local function f(id, j)
+                local pages = {}
+                pages[id] = { db_id = id }
+                pages[id].journal_day = j
+                return pages
+            end
+            "#
+        ));
+        // A read of the outer table does not find it either: `nil`, not the `1` written below it.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            ---@param id integer
+            local function g(id)
+                local pages = {}
+                pages[id] = {}
+                pages[id].day = 1
+                ---@type nil
+                local day = pages.day
+                return day
+            end
+            "#
+        ));
+    }
+
     #[test]
     fn test_field_flow_does_not_change_the_returned_table_type() {
         let diagnostics = check_source(

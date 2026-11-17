@@ -2107,12 +2107,15 @@ impl FactsBuilder {
                 if matches!(owner, SemanticId::Name(_)) {
                     return Some((owner, implicit_self, true));
                 }
-                // Local root: `M.A.f` belongs to the table `M.A` holds, not to `M`. A path stops at
-                // the deepest table it reached (`resolve_expr_root` resolves reads the same way).
-                let table = parent
+                // A dynamic key (`t[k].f = v`) names no table of `t`'s: `f` is a field of whichever
+                // value `t[k]` holds, never of `t` itself, so it makes no member.
+                let key = parent
                     .get_index_key()
                     .as_ref()
-                    .and_then(member_key_from_index_key)
+                    .and_then(member_key_from_index_key)?;
+                // Local root: `M.A.f` belongs to the table `M.A` holds, not to `M`. A path stops at
+                // the deepest table it reached (`resolve_expr_root` resolves reads the same way).
+                let table = Some(key)
                     .filter(|_| reached)
                     .and_then(|key| {
                         nested_table_owner(self.members.iter(), &owner, &key, parent.get_position())
