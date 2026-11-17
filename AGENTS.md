@@ -10,7 +10,8 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   answer first: an annotation, a typed local, a cast. Change the engine only for a root-caused bug.
 - **Accept upstream's deliberate design**, even when it flags our code. Look for intent (code comments,
   tests that flipped against 0.25.1) before calling something a bug. Known deliberate: an unconstrained
-  generic is any-like in the checker; files are checked serially; LuaLS `T|?` is unsupported.
+  generic is any-like in the checker; files are checked serially. (LuaLS `T|?` is NOT on this
+  list: its loss was a refactor regression, fixed in 14c7537a, #12.)
 - **Coarse and sound beats precise.** Fix at the root with the coarsest rule that is still sound
   (widen by kind, give up to the declared type, `unknown`). Park a fix when it adds a fixpoint or
   re-evaluates bodies, costs > ~5% gate time, or removes ≤ ~3 hits at the price of a new concept.
