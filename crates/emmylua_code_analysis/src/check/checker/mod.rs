@@ -100,8 +100,6 @@ pub struct CheckContext<'a> {
     pub semantic_model: &'a SemanticModel<'a>,
     pub(crate) config: Arc<CheckConfig>,
     diagnostics: Vec<Diagnostic>,
-    /// Set by `reporting_as`: the code every diagnostic is reported under.
-    code_override: Option<DiagnosticCode>,
 }
 
 impl<'a> CheckContext<'a> {
@@ -110,7 +108,6 @@ impl<'a> CheckContext<'a> {
             semantic_model,
             config,
             diagnostics: Vec::new(),
-            code_override: None,
         }
     }
 
@@ -135,7 +132,6 @@ impl<'a> CheckContext<'a> {
         message: String,
         data: Option<serde_json::Value>,
     ) {
-        let code = self.code_override.unwrap_or(code);
         if !self.is_diagnostic_enabled(code, range) {
             return;
         }
@@ -173,24 +169,6 @@ impl<'a> CheckContext<'a> {
 
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
         self.diagnostics
-    }
-
-    /// Runs `check` and returns what it reported instead of keeping it.
-    pub(crate) fn collect(&mut self, check: impl FnOnce(&mut Self)) -> Vec<Diagnostic> {
-        let mark = self.diagnostics.len();
-        check(self);
-        self.diagnostics.split_off(mark)
-    }
-
-    /// Runs `check` with everything it reports under `code`: one checker reusing another's walk.
-    pub(crate) fn reporting_as(&mut self, code: DiagnosticCode, check: impl FnOnce(&mut Self)) {
-        let outer = self.code_override.replace(code);
-        check(self);
-        self.code_override = outer;
-    }
-
-    pub(crate) fn extend_diagnostics(&mut self, diagnostics: Vec<Diagnostic>) {
-        self.diagnostics.extend(diagnostics);
     }
 }
 
