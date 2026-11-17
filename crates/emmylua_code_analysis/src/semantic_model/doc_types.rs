@@ -336,7 +336,7 @@ impl<'db> SemanticModel<'db> {
                         }
                         LuaType::Union(Rc::new(LuaUnionType::from_vec(types)))
                     }
-                    Some(LuaTypeBinaryOperator::Sub) => sub_type_call(&right, left_ty, right_ty),
+                    Some(LuaTypeBinaryOperator::Sub) => sub_type_call(left_ty, right_ty),
                     _ => self.analysis().doc_type_lua(file_id, type_syntax, &[]),
                 }
             }
@@ -561,7 +561,7 @@ impl<'db> SemanticModel<'db> {
                     Some(LuaTypeBinaryOperator::Extends) => LuaType::Call(Rc::new(
                         LuaAliasCallType::new(LuaAliasCallKind::Extends, vec![left_ty, right_ty]),
                     )),
-                    Some(LuaTypeBinaryOperator::Sub) => sub_type_call(&right, left_ty, right_ty),
+                    Some(LuaTypeBinaryOperator::Sub) => sub_type_call(left_ty, right_ty),
                     _ => self.analysis().doc_type_lua(file_id, type_syntax, &[]),
                 }
             }
@@ -785,13 +785,8 @@ impl ConditionalInferState {
 }
 
 /// `L - R`, evaluated once `L` is known: `L` without the members of `R`. A bare `?` on the right
-/// is `nil`, so `T -?` (the builtin `std.NotNull<T>`) is `T` without `nil`.
-fn sub_type_call(right: &LuaDocType, left_ty: LuaType, right_ty: LuaType) -> LuaType {
-    let right_ty = if right.syntax().text() == "?" {
-        LuaType::Nil
-    } else {
-        right_ty
-    };
+/// lowers to `nil`, so `T -?` (the builtin `std.NotNull<T>`) is `T` without `nil`.
+fn sub_type_call(left_ty: LuaType, right_ty: LuaType) -> LuaType {
     LuaType::Call(Rc::new(LuaAliasCallType::new(
         LuaAliasCallKind::Sub,
         vec![left_ty, right_ty],
