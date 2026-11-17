@@ -1,12 +1,16 @@
+use std::collections::HashSet;
+
 use emmylua_parser::{LuaAssignStat, LuaAstNode, LuaDocType, LuaTableExpr, LuaVarExpr};
+use rowan::TextRange;
 
 use crate::DiagnosticCode;
-use crate::semantic_db::def::{TypeDef, TypeDefKind};
+use crate::semantic_db::def::{DeclKind, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::SemanticModel;
 use crate::semantic_model::member::class_fields;
 use crate::semantic_model::type_eval::{expand_alias_branches, expand_alias_head};
-use crate::{LuaType, LuaTypeDeclId};
+use crate::{FileId, LuaMemberKey, LuaType, LuaTypeDeclId, LuaUnionType};
 
+use super::undefined_field::table_binding;
 use super::{CheckContext, Checker, Mismatch};
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::table_constructor::{TableConstructor, static_member_key, table_expr};
@@ -88,7 +92,9 @@ fn check_index_assign(
         if !def.base_types.is_empty() || is_mapped_alias(semantic_model, &def) {
             continue;
         }
-        if semantic_model.member_info(&prefix_ty, &key).is_some() {
+        if semantic_model.member_info(&prefix_ty, &key).is_some()
+            || is_global_table_surface_member(semantic_model, &def.id, &key)
+        {
             continue;
         }
         match semantic_model
@@ -109,6 +115,36 @@ fn check_index_assign(
             ),
         );
     }
+}
+
+/// A class bound to a GLOBAL table (`---@class packagelib` + `package = {}`) has that table's
+/// assignments (`package.path = ""`) as members, owned by `Name("package")` rather than by the class.
+/// Only the binding file's assignments are the surface; one another file adds stays an injection.
+fn is_global_table_surface_member(
+    semantic_model: &SemanticModel<'_>,
+    target_id: &SemanticId,
+    key: &LuaMemberKey,
+) -> bool {
+    let LuaMemberKey::Name(name) = key else {
+        return false;
+    };
+    semantic_model
+        .resolve_owner_set(target_id.clone())
+        .iter()
+        .filter_map(|owner| match owner {
+            SemanticId::Decl(decl_key) => semantic_model
+                .file_facts_of(decl_key.file_id)
+                .and_then(|facts| facts.decl_by_id(owner))
+                .filter(|decl| matches!(decl.kind, DeclKind::Global))
+                .map(|decl| (decl_key.file_id, decl.name.clone())),
+            _ => None,
+        })
+        .any(|(file_id, global)| {
+            semantic_model
+                .members_of_owner_named(&SemanticId::name(global), name)
+                .iter()
+                .any(|member_ref| member_ref.file_id == file_id)
+        })
 }
 
 /// Resolve alias heads through the shared evaluator.
@@ -161,6 +197,18 @@ fn check_table_head(
     target: &LuaType,
     table: &LuaTableExpr,
 ) {
+    check_table_part(mismatches, semantic_model, target, table, &[]);
+}
+
+/// `target` as one part of an intersection whose parts are `parts` (none outside one): a field
+/// one part declares is not injected into another (`---@type IA & IB` takes `a` and `b`).
+fn check_table_part(
+    mismatches: &mut Vec<Mismatch>,
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    table: &LuaTableExpr,
+    parts: &[LuaType],
+) {
     match target {
         LuaType::Array(array) => {
             for (field, key) in table.get_fields_with_keys() {
@@ -173,8 +221,9 @@ fn check_table_head(
             return;
         }
         LuaType::Intersection(intersection) => {
-            for component in intersection.get_types() {
-                check_table_head(mismatches, semantic_model, component, table);
+            let parts = intersection.get_types();
+            for component in parts {
+                check_table_part(mismatches, semantic_model, component, table, parts);
             }
             return;
         }
@@ -213,6 +262,10 @@ fn check_table_head(
             }
             if let Some(errors) = best {
                 mismatches.extend(errors);
+            } else if let Some(array) = union_array_for_sequence(union, table) {
+                // A sequence literal no member takes is the array's: its elements are what
+                // fail, not the record's missing fields (`Plain|integer[]` with `{ 1, 'two' }`).
+                check_table_part(mismatches, semantic_model, &array, table, &[]);
             } else if let Some(component) = union.iter().find(|component| {
                 matches!(component, LuaType::Object(_))
                     || target_def(semantic_model, component)
@@ -226,6 +279,7 @@ fn check_table_head(
         _ => {}
     }
     let class;
+    let mut bound_keys = HashSet::new();
     let (shape, closed) = if let LuaType::Object(object) = target {
         (object.as_ref(), false)
     } else {
@@ -243,6 +297,7 @@ fn check_table_head(
             return;
         }
         class = class_fields(semantic_model, target);
+        bound_keys = class_literal_keys(semantic_model, target, table);
         (&class, true)
     };
     let members = shape.get_fields();
@@ -262,8 +317,11 @@ fn check_table_head(
 
     if closed {
         for (field, key) in table.get_fields_with_keys() {
-            if static_member_key(semantic_model, &key).is_some_and(|key| members.contains_key(&key))
-            {
+            if static_member_key(semantic_model, &key).is_some_and(|key| {
+                members.contains_key(&key)
+                    || bound_keys.contains(&key)
+                    || part_declares(semantic_model, parts, &key)
+            }) {
                 continue;
             }
             let expected = shape
@@ -311,6 +369,95 @@ fn report_missing_fields(
             ),
         });
     }
+}
+
+/// The fields of the literal the class `target` is bound to (`---@class C` + `local c = { x = 1 }`,
+/// or `M.f = { ... }`): another literal of the class may set them too. They are default values,
+/// not fields each instance must restate; `table` itself cannot vouch for its own fields.
+fn class_literal_keys(
+    semantic_model: &SemanticModel<'_>,
+    target: &LuaType,
+    table: &LuaTableExpr,
+) -> HashSet<LuaMemberKey> {
+    let here = (semantic_model.file_id(), table.get_range());
+    semantic_model
+        .member_infos(target)
+        .into_iter()
+        .filter(|info| {
+            let Some(member) = info.id.as_ref().and_then(|id| {
+                semantic_model
+                    .file_facts_of(info.file_id?)
+                    .and_then(|facts| facts.member_by_id(id))
+            }) else {
+                return false;
+            };
+            // The literal's fields are owned by the literal (`Member` keyed by its range).
+            let SemanticId::Member(literal) = &member.owner else {
+                return false;
+            };
+            let at = (literal.file_id, literal.key_range);
+            at != here && is_class_literal(semantic_model, at.0, at.1)
+        })
+        .map(|info| info.key)
+        .collect()
+}
+
+/// The literal at `range` is the value a `---@class` statement binds: `local c = { ... }`
+/// (table_binding) or `M.f = { ... }`.
+fn is_class_literal(semantic_model: &SemanticModel<'_>, file_id: FileId, range: TextRange) -> bool {
+    if table_binding(semantic_model, file_id, range).is_some() {
+        return true;
+    }
+    let Some(facts) = semantic_model.file_facts_of(file_id) else {
+        return false;
+    };
+    facts
+        .type_defs
+        .iter()
+        .filter_map(|def| def.owner_syntax)
+        .any(|stat| {
+            facts.members_by_owner_syntax(stat).any(|member| {
+                member
+                    .value_syntax
+                    .is_some_and(|value| value.get_range() == range)
+            })
+        })
+}
+
+/// The array-like member of a union that a sequence literal (`{ 1, 2 }`) is checked
+/// against: `Plain|integer[]` takes `{ 1, 2 }` as the array, not as a `Plain` with fields
+/// `[1]`, `[2]` and none of its own.
+fn union_array_for_sequence(union: &LuaUnionType, table: &LuaTableExpr) -> Option<LuaType> {
+    if !table.is_array() {
+        return None;
+    }
+    union
+        .iter()
+        .find(|component| match component {
+            LuaType::Array(_) | LuaType::Tuple(_) | LuaType::Table => true,
+            LuaType::Generic(generic) => {
+                matches!(generic.get_base_type_id().get_name(), "array" | "table")
+            }
+            _ => false,
+        })
+        .cloned()
+}
+
+/// Whether some part of an intersection declares the field `key`.
+fn part_declares(
+    semantic_model: &SemanticModel<'_>,
+    parts: &[LuaType],
+    key: &LuaMemberKey,
+) -> bool {
+    parts.iter().any(|part| match part {
+        LuaType::Object(object) => object.get_fields().contains_key(key),
+        _ => {
+            target_def(semantic_model, part).is_some_and(|def| def.kind == TypeDefKind::Class)
+                && class_fields(semantic_model, part)
+                    .get_fields()
+                    .contains_key(key)
+        }
+    })
 }
 
 /// The definition of a named target, before alias expansion.

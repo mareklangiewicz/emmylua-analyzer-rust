@@ -3590,7 +3590,7 @@ return t
     fn test_table_arg_checks_against_receiver_bound_class_generic() {
         let mut ws = VirtualWorkspace::new();
         assert!(!ws.has_no_diagnostic_in_namespace(
-            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::ParamTypeMismatch,
             r#"
                 ---@class Item
                 ---@field name string
@@ -3606,7 +3606,7 @@ return t
             "#
         ));
         assert!(ws.has_no_diagnostic_in_namespace(
-            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::ParamTypeMismatch,
             r#"
                 ---@class Item2
                 ---@field name string
@@ -3629,7 +3629,7 @@ return t
         // against the constraint, not reported as "expected `T`".
         let mut ws = VirtualWorkspace::new();
         assert!(ws.has_no_diagnostic_in_namespace(
-            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::ParamTypeMismatch,
             r#"
                 ---@generic T : { at?: { x: number } }
                 ---@param wins T[]?
@@ -3648,7 +3648,7 @@ return t
         ));
         // An element that breaks the constraint is still reported.
         assert!(!ws.has_no_diagnostic_in_namespace(
-            DiagnosticCode::AssignTypeMismatch,
+            DiagnosticCode::ParamTypeMismatch,
             r#"
                 ---@generic R: { root: string }
                 ---@param roots R[]
@@ -3850,7 +3850,6 @@ return t
     /// value type. A key no index signature covers is an error, unlike an extra object field.
     #[test]
     fn test_table_literal_keys_and_values_against_map_types() {
-        let code = DiagnosticCode::AssignTypeMismatch;
         let cases = [
             // `table<K, V>` param
             (
@@ -3957,14 +3956,20 @@ return t
                 true,
             ),
         ];
-        assert_clean_cases(code, "", &cases);
+        // A call's literal is reported as the argument, a local's as the value.
+        let (calls, locals): (Vec<_>, Vec<_>) = cases
+            .iter()
+            .copied()
+            .partition(|(src, _)| src.trim_end().ends_with(')'));
+        assert_clean_cases(DiagnosticCode::ParamTypeMismatch, "", &calls);
+        assert_clean_cases(DiagnosticCode::AssignTypeMismatch, "", &locals);
     }
 
     /// Overloads are alternatives: a table literal's fields are reported only when no candidate
     /// takes the call, and then for one candidate.
     #[test]
     fn test_table_literal_fields_follow_the_overload_that_takes_the_call() {
-        let assign_mismatches = |call: &str| {
+        let param_mismatches = |call: &str| {
             let diagnostics = check_source(&format!(
                 r#"
                 ---@param o {{a: integer}}
@@ -3973,10 +3978,10 @@ return t
                 {call}
                 "#
             ));
-            count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch)
+            count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch)
         };
-        assert_eq!(assign_mismatches("f({a = 'x'})"), 0);
-        assert_eq!(assign_mismatches("f({a = true})"), 1);
+        assert_eq!(param_mismatches("f({a = 'x'})"), 0);
+        assert_eq!(param_mismatches("f({a = true})"), 1);
     }
 
     /// A call in a table constructor fills its own slot with its first value; the last one
@@ -4063,22 +4068,19 @@ return t
             .len(),
             1
         );
-        // an object literal's field is reported once, by the descent
+        // an argument literal is reported once, as the argument (upstream's choice since 1361c218)
         assert_eq!(
             reported(
                 "---@param o {a: integer, b: string}\nlocal function f(o) return o end\nf({ a = 'x', b = 1 })"
             ),
-            [
-                (AssignTypeMismatch, "'x'".to_string()),
-                (AssignTypeMismatch, "1".to_string())
-            ]
+            [(ParamTypeMismatch, "{ a = 'x', b = 1 }".to_string())]
         );
         // every part of an intersection is checked
         assert_eq!(
             reported(
                 "---@param o {a: integer} & {b: string}\nlocal function f(o) return o end\nf({ a = 1, b = 2 })"
             ),
-            [(AssignTypeMismatch, "2".to_string())]
+            [(ParamTypeMismatch, "{ a = 1, b = 2 }".to_string())]
         );
         let ab = "---@class IA\n---@field a integer\n---@class IB\n---@field b string\n";
         for target in ["{a: integer} & {b: string}", "IA & IB"] {

@@ -549,6 +549,7 @@ fn check_candidate(
 
     // Per-candidate generic binding table: bindings inferred from earlier arguments (T[]) are used for later callback parameters.
     let mut bindings = unify::TplBindings::new();
+    let constraints = generic_constraints(func);
     // Explicit call generics `test--[[@<number | string>]]()` fill bindings first instead of inferring from arguments.
     for (index, syntax) in explicit_generics.iter().enumerate() {
         if let Some(tpl) = func.get_generic_params().get(index) {
@@ -585,6 +586,7 @@ fn check_candidate(
             args,
             func.is_variadic(),
             &mut bindings,
+            &constraints,
             arg_types,
         ));
         return mismatches;
@@ -603,6 +605,7 @@ fn check_candidate(
         &args[arg_offset..],
         func.is_variadic(),
         &mut bindings,
+        &constraints,
         dot_arg_types,
     )
 }
@@ -651,6 +654,7 @@ fn check_arg_pairs(
     args: &[LuaExpr],
     is_variadic: bool,
     bindings: &mut unify::TplBindings,
+    constraints: &unify::TplBindings,
     arg_types: Option<&[LuaType]>,
 ) -> Vec<Mismatch> {
     let mut out = Vec::new();
@@ -725,9 +729,13 @@ fn check_arg_pairs(
                         }
                         slot_ty = unify::substitute(&slot_ty, bindings);
                         slot_ty = type_eval::expand_alias_generic(semantic_model, &slot_ty);
-                        if let Some(mismatches) =
-                            table_argument_mismatches(semantic_model, arg, &arg_ty, &slot_ty)
-                        {
+                        if let Some(mismatches) = table_argument_mismatches(
+                            semantic_model,
+                            arg,
+                            &arg_ty,
+                            &slot_ty,
+                            constraints,
+                        ) {
                             out.extend(mismatches);
                             continue;
                         }
@@ -762,9 +770,13 @@ fn check_arg_pairs(
                             continue;
                         }
                         let param_ty = unify::substitute(&param_ty_orig, bindings);
-                        if let Some(mismatches) =
-                            table_argument_mismatches(semantic_model, arg, &arg_ty, &param_ty)
-                        {
+                        if let Some(mismatches) = table_argument_mismatches(
+                            semantic_model,
+                            arg,
+                            &arg_ty,
+                            &param_ty,
+                            constraints,
+                        ) {
                             out.extend(mismatches);
                             continue;
                         }
@@ -876,7 +888,7 @@ fn check_arg_pairs(
         // Check constructors after binding this argument, including field constraints
         // that do not depend on unresolved generics.
         if let Some(mismatches) =
-            table_argument_mismatches(semantic_model, arg, &call_arg_ty, &param_ty)
+            table_argument_mismatches(semantic_model, arg, &call_arg_ty, &param_ty, constraints)
         {
             out.extend(mismatches);
             continue;
@@ -933,10 +945,14 @@ fn table_argument_mismatches(
     arg: &LuaExpr,
     actual: &LuaType,
     expected: &LuaType,
+    constraints: &unify::TplBindings,
 ) -> Option<Vec<Mismatch>> {
     if !matches!(actual, LuaType::TableConst(_)) {
         return None;
     }
+    // A generic the arguments left unbound is still instantiated by this call: a literal fits
+    // a constrained `T` when it fits the constraint (an unconstrained one is any-like).
+    let expected = &unify::substitute(expected, constraints);
     let mut mismatches = table_expr(arg).map_or_else(Vec::new, |table| {
         super::check_field::table_literal_mismatches(model, expected, &table)
     });
@@ -948,6 +964,17 @@ fn table_argument_mismatches(
         });
     }
     Some(mismatches)
+}
+
+/// Each constrained `---@generic` of `func`, mapped to its constraint.
+fn generic_constraints(func: &LuaFunctionType) -> unify::TplBindings {
+    let mut constraints = unify::TplBindings::new();
+    for generic in func.get_generic_params() {
+        if let Some(constraint) = generic.get_constraint() {
+            constraints.insert(generic.get_tpl_id(), constraint.clone());
+        }
+    }
+    constraints
 }
 
 /// Object index signature vs `V[]`: an integer-key signature satisfies an array and binds the values to V.

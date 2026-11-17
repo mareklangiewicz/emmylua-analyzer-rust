@@ -2167,8 +2167,9 @@ return items
     #[test]
     fn test_table_literal_fits_any_component_of_a_union() {
         // snacks' `Highlight = Text|Extmark|{meta?}`: `{ ' ', 'Character' }` is a Text, so the
-        // literal fits even though Extmark (the first NAMED component) has no `[1]`. A literal
-        // no component takes is still reported.
+        // literal fits even though Extmark (the first NAMED component) has no `[1]`. `{ nope = 1 }`
+        // fits the open object `{meta?: table}`, which takes extra fields (upstream's rule since
+        // 1361c218; the fork had held an object member to its own keys inside a union).
         let diagnostics = check_source(
             r#"
             ---@alias Text {[1]: string, [2]: (string|string[])?, virtual?: boolean}
@@ -2190,11 +2191,7 @@ return items
             .filter(|d| d.code == DiagnosticCode::InjectField)
             .map(|d| d.message.as_str())
             .collect();
-        assert_eq!(
-            injected,
-            ["Field `nope` cannot be injected into the target type."],
-            "{diagnostics:?}"
-        );
+        assert!(injected.is_empty(), "{diagnostics:?}");
         // Positional values set Text's `[1]` (missing-fields compared spelled keys only).
         assert!(
             !diagnostics
