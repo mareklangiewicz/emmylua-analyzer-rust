@@ -8,10 +8,11 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 
 - **Reliability first.** A new emmylua hit in our Lua repos (luagnd, myhypr, myvi) gets a Lua-side
   answer first: an annotation, a typed local, a cast. Change the engine only for a root-caused bug.
-- **Accept upstream's deliberate design**, even when it flags our code. Look for intent (code comments,
-  tests that flipped against 0.25.1) before calling something a bug. Known deliberate: an unconstrained
-  generic is any-like in the checker; files are checked serially. (LuaLS `T|?` is NOT on this
-  list: its loss was a refactor regression, fixed in 14c7537a, #12.)
+- **Accept upstream's deliberate design**, even when it flags our code. Intent is evidence in
+  upstream's own code (a comment, a test that flipped against 0.25.1); a guess or a commit title is
+  not. Each known-deliberate entry names its evidence; an entry without it belongs in an issue:
+  - an unconstrained generic is any-like in the checker (`undefined_field.rs` header, 3474c99d);
+  - files are checked serially (`emmylua_check/src/lib.rs` "concurrent diagnose calls … not safe", #34).
 - **Coarse and sound beats precise.** Fix at the root with the coarsest rule that is still sound
   (widen by kind, give up to the declared type, `unknown`). Park a fix when it adds a fixpoint or
   re-evaluates bodies, costs > ~5% gate time, or removes ≤ ~3 hits at the price of a new concept.
@@ -25,6 +26,9 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 
 - Before any verdict ("not an engine bug", "regression", "deliberate"), run the fixture on all
   three builds: 0.25.1, upstream main (`~/.local/opt/emmylua-upstream/current`) and the installed fork.
+  On the corpus, the third leg is a same-day run tagged per line:
+  `gndx emmylua corpus run v0251-<date> ~/.local/opt/emmylua-0.25.1/emmylua_check`, then
+  `corpus diff A B --against v0251-<date>` (`agrees` = 0.25.1 reports B's count of that hit).
 - After any change to `emmylua_code_analysis`, diff the corpus (`gndx emmylua corpus run` +
   `corpus diff`). Green tests and gates say nothing about what plugin trees report: a
   `resolve_member` change once passed everything and added 71 false hits on neotest.
