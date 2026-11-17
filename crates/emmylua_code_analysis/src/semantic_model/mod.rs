@@ -161,6 +161,22 @@ impl<'db> SemanticModel<'db> {
             .contains(&(self.file_id(), closure_syntax))
     }
 
+    /// Whether the flow type of `expr_syntax` at `offset` is being computed right now: reading
+    /// it would only see that unfinished entry.
+    pub(crate) fn is_expr_type_at_in_progress(
+        &self,
+        expr_syntax: LuaSyntaxId,
+        offset: rowan::TextSize,
+    ) -> bool {
+        matches!(
+            self.cache
+                .borrow()
+                .expr_type_at
+                .get(&(self.file_id(), expr_syntax, offset)),
+            Some(cache::CacheEntry::InProgress)
+        )
+    }
+
     pub(crate) fn begin_closure_return_infer(&self, closure_syntax: LuaSyntaxId) {
         self.cache
             .borrow_mut()

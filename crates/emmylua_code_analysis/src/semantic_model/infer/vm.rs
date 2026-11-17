@@ -552,7 +552,19 @@ impl<'a> InferVm<'a> {
                 // generic calls can back-infer from the cast type.
                 let arg_count = args.len();
                 for (index, arg) in args.iter_mut().enumerate() {
-                    if let Some(syntax) = arg_syntaxes.get(index) {
+                    // A param query's own closure, already being typed as a value further out
+                    // (its signature reads the param): the read would only find that entry
+                    // unfinished, answer unknown, and leave this query incomplete for nothing.
+                    let own_closure_in_progress = |syntax: &LuaSyntaxId| {
+                        self.params_for
+                            .is_some_and(|target| arg.closure_syntax == Some(target))
+                            && self
+                                .model
+                                .is_expr_type_at_in_progress(*syntax, syntax.get_range().start())
+                    };
+                    if let Some(syntax) = arg_syntaxes.get(index)
+                        && !own_closure_in_progress(syntax)
+                    {
                         let flow_ty = self
                             .model
                             .type_of_expr_at(*syntax, syntax.get_range().start());

@@ -1114,4 +1114,28 @@ mod tests {
             .collect();
         assert!(wrong.is_empty(), "{wrong:#?}");
     }
+
+    /// A closure argument of an unknown callee leaves its param environment unfilled, so the
+    /// param's query runs the whole call and re-reads the closure body. The value it feeds,
+    /// unknown, must still fit a returned literal's field (luagnd `devcheck.cmd_emmylua`).
+    #[test]
+    fn test_unknown_callee_closure_value_fits_a_returned_field() {
+        let diagnostics = check_source(
+            r#"
+            ---@class Cmd
+            ---@field command string
+            ---@return Cmd
+            local function cmd()
+                local env = unknownfn(function(k) return k end)
+                return { command = env }
+            end
+            return cmd
+            "#,
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ReturnTypeMismatch),
+            0,
+            "{diagnostics:#?}"
+        );
+    }
 }
