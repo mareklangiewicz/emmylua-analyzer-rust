@@ -69,6 +69,12 @@ Assumptions:
 - **G1.** A guard narrows the member's *value*. Guards that narrow the *owner* by a member
   (`MemberTruthy`, `MemberDiscriminant`) go through `apply_narrowing` on the owner's own trace
   (`filter_type_by_member_truthiness`, 6238).
+- **G1b.** Owner narrowing by a member test (`if t.k then`, dropping the components of `t` with
+  no `k`) works when `t` is a local, not when it is itself a member (`if a.t.k then`): the
+  missing-union-member rule (§6) then reports `a.t.k` as `found nil` inside its own guard.
+  Fixture: snacks `notifier.lua:700` reduced to a conditional `a.t = size()` (a type without
+  `k`), then `a.t.k = v`, then `if a.t.k then use(a.t.k) end`. Found on branch
+  `fix-runtime-member-writes`, where `a.t` first reads as the union.
 - **G2.** An `Unreachable` node returns the entry type like `Start` (3314). Unlike `walk_decl`,
   the member walk has no `TraceMode::MergeBranch`, so a branch that ends at `Unreachable` still
   contributes to a merge. Not yet tied to a bug: note it when placing one.
