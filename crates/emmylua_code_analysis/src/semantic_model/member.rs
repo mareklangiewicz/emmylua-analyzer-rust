@@ -498,14 +498,7 @@ pub(crate) fn member_info_impl(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Option<MemberInfo> {
-    // Single-key direct lookup avoids collecting every member of a type when only one key is needed.
-    if let Some(info) = direct_member_info(model, prefix_type, key) {
-        return Some(info);
-    }
-    if let Some(info) = member_infos_with_key(model, prefix_type, key)
-        .into_iter()
-        .find(|info| &info.key == key)
-    {
+    if let Some(info) = raw_member_info(model, prefix_type, key) {
         return Some(info);
     }
     // An anonymous table literal can supply missing members through the
@@ -690,13 +683,31 @@ pub(crate) fn table_const_class_type(
 }
 
 /// Returns the `__index` member info on the metatable corresponding to a table literal.
+///
+/// Lua reads a metamethod raw (`rawget(mt, "__index")`), so the metatable's own metatable
+/// takes no part. Following it would also never end on a cycle (`setmetatable(M, M)`).
 pub(crate) fn table_metatable_index_info(
     model: &SemanticModel,
     table: &InFiled<rowan::TextRange>,
 ) -> Option<MemberInfo> {
     let metatable_ty = table_metatable_type(model, table)?;
     let key = LuaMemberKey::Name(SmolStr::new("__index"));
-    member_info(model, &metatable_ty, &key)
+    raw_member_info(model, &metatable_ty, &key)
+}
+
+/// A member a type declares or stores itself, without a metatable `__index` fallback.
+fn raw_member_info(
+    model: &SemanticModel,
+    prefix_type: &LuaType,
+    key: &LuaMemberKey,
+) -> Option<MemberInfo> {
+    // Single-key direct lookup avoids collecting every member of a type when only one key is needed.
+    if let Some(info) = direct_member_info(model, prefix_type, key) {
+        return Some(info);
+    }
+    member_infos_with_key(model, prefix_type, key)
+        .into_iter()
+        .find(|info| &info.key == key)
 }
 
 /// Finds a member with a `self` return_cast by method name.

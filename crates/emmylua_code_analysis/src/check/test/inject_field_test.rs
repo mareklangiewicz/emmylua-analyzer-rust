@@ -1940,6 +1940,23 @@ return items
             }
         }
 
+        /// A table that is its own metatable (`setmetatable(M, M)`) passed for a record: reading an
+        /// absent field asks the metatable's `__index`, which Lua reads raw. Following the
+        /// metatable's own metatable for it recursed without end (a stack overflow on neotest).
+        #[test]
+        fn test_self_metatable_table_against_a_record_terminates() {
+            assert_diagnostics(
+                r#"
+                local M = {}
+                setmetatable(M, M)
+                ---@param t { x: integer, y?: integer }
+                local function f(t) return t end
+                f(M)
+                "#,
+                &[ParamTypeMismatch],
+            );
+        }
+
         #[test]
         fn test_object_index_signatures_allow_nil_entries() {
             assert_diagnostics(
