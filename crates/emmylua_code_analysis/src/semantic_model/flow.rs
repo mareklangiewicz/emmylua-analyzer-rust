@@ -5003,6 +5003,18 @@ fn narrow_member_condition(
             return Some(narrowing);
         }
     }
+    // `if t.x.k then`: owner narrowing of the member `t.x` by its own member `k`, as
+    // `direct_narrow_condition` does for `if x.k then` on a local.
+    if let LuaExpr::IndexExpr(index_expr) = &cond
+        && let Some(LuaExpr::IndexExpr(owner)) = index_expr.get_prefix_expr()
+        && member_access_matches(model, member, access, &owner)
+        && let Some(key) = member_key_from_index_expr(model, index_expr)
+    {
+        return Some(Narrowing::MemberTruthy {
+            key,
+            keep_matching: branch_is_true,
+        });
+    }
     if branch_is_true {
         if let LuaExpr::IndexExpr(index_expr) = &cond
             && member_access_matches(model, member, access, index_expr)

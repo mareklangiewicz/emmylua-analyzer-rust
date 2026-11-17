@@ -5281,6 +5281,48 @@ _ = a[2]
     }
 
     #[test]
+    fn test_member_test_narrows_a_member_owner() {
+        // `if a.t.k then` drops the components of `a.t` without `k`, as `if t.k then` does on a
+        // local (snacks `notifier.lua`: `notif.layout = notif.win:size()` on one path).
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class MoN
+            ---@field layout { top?: number }
+
+            ---@param a MoN
+            ---@param c boolean
+            local function f(a, c)
+                local h = { height = 1 } ---@type { height: number }
+                if c then
+                    a.layout = h
+                end
+                local local_owner = a.layout
+                if local_owner.top then
+                    local control = local_owner
+                    print(control)
+                end
+                if a.layout.top then
+                    local guarded = a.layout
+                    print(guarded)
+                end
+                if not a.layout.top then
+                else
+                    local negated = a.layout
+                    print(negated)
+                end
+            end
+            "#,
+        );
+        let ty = |name| ws.humanize_type(last_name_expr_type(&ws, file, name));
+        assert_eq!(ty("control"), "{ top: number? }");
+        assert_eq!(
+            [ty("guarded"), ty("negated")],
+            [ty("control"), ty("control")]
+        );
+    }
+
+    #[test]
     fn test_member_read_after_owner_reassignment_reads_the_new_owner() {
         // `y = { ... }` replaces the owner of `y.h`: the read takes the field of what `y` holds on
         // each path, not the first literal's field.

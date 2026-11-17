@@ -74,7 +74,9 @@ Assumptions:
   missing-union-member rule (§6) then reports `a.t.k` as `found nil` inside its own guard.
   Fixture: snacks `notifier.lua:700` reduced to a conditional `a.t = size()` (a type without
   `k`), then `a.t.k = v`, then `if a.t.k then use(a.t.k) end`. Found on branch
-  `fix-runtime-member-writes`, where `a.t` first reads as the union.
+  `fix-runtime-member-writes`, where `a.t` first reads as the union. **Fixed**: the member trace
+  had no owner arm; `narrow_member_condition` now turns `<access>.k` into `MemberTruthy`, as
+  `direct_narrow_condition` does for a local (test `test_member_test_narrows_a_member_owner`).
 - **G2.** An `Unreachable` node returns the entry type like `Start` (3314). Unlike `walk_decl`,
   the member walk has no `TraceMode::MergeBranch`, so a branch that ends at `Unreachable` still
   contributes to a merge. Not yet tied to a bug: note it when placing one.
