@@ -33,6 +33,9 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   every "before" test run against main's source). Fork numbers do not carry over.
 - Timings: trust only interleaved `gndx emmylua ab` with resolved ranges; re-run anything marked
   `LOADED`. Other agents load this machine.
+- Crash, hang or blowup on a tree: `outcome` on all three builds → `stack` the failing one →
+  `gndx emmylua fork` for the fix touching those frames → cherry-pick onto upstream in a scratch
+  worktree, re-run `outcome` → `reduce` last.
 - Pin an editor fix (completion, hover, gd) as a `myemmylab.FEATURE_PROBES` probe and prove it
   RED on a revert build. For `gd`/hover gaps, fix in `emmylua_ls` first so diagnostics cannot move.
 
