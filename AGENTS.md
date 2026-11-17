@@ -93,7 +93,9 @@ enforces headroom and `lab.BLOWUPS` (never upstream/0.25.1 over mason.nvim). Out
 
 Main checkout `~/code/rust/emmylua-analyzer-rust` on `main` (upstream); this worktree
 `~/code/rust/emmylua-analyzer-rust-worktrees/main`; topic and scratch worktrees beside it, each
-with its own `target/`.
+with its own `target/`. Remotes: `marek` = this fork, `origin` = upstream. An upstream-PR branch
+starts with no tracking, so a bare `git push` goes nowhere; its first push is
+`git push -u marek <branch>`.
 
 ## Agent skills
 
