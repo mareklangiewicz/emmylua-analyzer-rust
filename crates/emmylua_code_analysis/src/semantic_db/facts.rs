@@ -2115,11 +2115,9 @@ impl FactsBuilder {
                     .and_then(member_key_from_index_key)?;
                 // Local root: `M.A.f` belongs to the table `M.A` holds, not to `M`. A path stops at
                 // the deepest table it reached (`resolve_expr_root` resolves reads the same way).
-                let table = Some(key)
-                    .filter(|_| reached)
-                    .and_then(|key| {
-                        nested_table_owner(self.members.iter(), &owner, &key, parent.get_position())
-                    });
+                let table = reached.then_some(key).and_then(|key| {
+                    nested_table_owner(self.members.iter(), &owner, &key, parent.get_position())
+                });
                 Some(match table {
                     Some(table) => (table, implicit_self, true),
                     None => (owner, implicit_self, false),
