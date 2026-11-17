@@ -34,6 +34,9 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   `resolve_member` change once passed everything and added 71 false hits on neotest.
 - Corpus trees are live plugin checkouts: re-run the baseline binary today, never diff against an
   old run. `corpus diff` exit 2 means "not comparable", not "no difference".
+- Spend CPU on the narrow loop. Reduce each added corpus line to a fixture, iterate with
+  `gndx emmylua test --filter=…` and `corpus run LABEL BIN --trees=a,b` (diffed against today's full
+  run), and run the full corpus and the full test suite once, before the commit.
 - Porting a fork fix upstream: re-measure on upstream main (corpus diff with main as base, and
   every "before" test run against main's source). Fork numbers do not carry over.
   - A lowering fix ("spelling X now means Y"): copy a corpus tree, respell X as Y in its
