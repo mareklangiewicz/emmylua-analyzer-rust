@@ -5217,6 +5217,70 @@ _ = a[2]
     }
 
     #[test]
+    fn test_field_written_in_another_method_reads_its_declared_type() {
+        // `invalidate` writes nil; in `get`, where no write ran, the read holds the declared field.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class RtEntry
+            ---@field text? string[]
+            local RtEntry = {}
+
+            function RtEntry:invalidate()
+                self.text = nil
+            end
+
+            function RtEntry:get()
+                local text = self.text
+                print(text)
+            end
+
+            ---@param run fun(cb: fun())
+            function RtEntry:later(run)
+                self.text = {}
+                run(function()
+                    local in_callback = self.text
+                    print(in_callback)
+                end)
+            end
+            "#,
+        );
+        assert_eq!(
+            ws.humanize_type(last_name_expr_type(&ws, file, "text")),
+            "string[]?"
+        );
+        // The callback is made after the enclosing method's write: it reads what was set.
+        let in_callback = last_name_expr_type(&ws, file, "in_callback");
+        assert!(!in_callback.is_nullable(), "{in_callback:?}");
+    }
+
+    #[test]
+    fn test_negated_member_guard_narrows_the_member_trace() {
+        // `if not t.x then t.x = v end`: the path skipping the write passed `not t.x` false.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file = ws.def(
+            r#"
+            ---@class NgCtx
+            ---@field path string
+
+            ---@class NgOpt
+            ---@field ctx NgCtx?
+
+            ---@param opt NgOpt
+            local function get(opt)
+                if not opt.ctx then
+                    opt.ctx = { path = "" }
+                end
+                local ctx = opt.ctx
+                print(ctx)
+            end
+            "#,
+        );
+        let ctx = last_name_expr_type(&ws, file, "ctx");
+        assert!(!ctx.is_nullable(), "{}", ws.humanize_type(ctx.clone()));
+    }
+
+    #[test]
     fn test_member_read_after_owner_reassignment_reads_the_new_owner() {
         // `y = { ... }` replaces the owner of `y.h`: the read takes the field of what `y` holds on
         // each path, not the first literal's field.

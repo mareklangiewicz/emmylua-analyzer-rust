@@ -885,6 +885,28 @@ fn member_type_at(
         .unwrap_or_else(fallback)
 }
 
+/// Whether `member` has a write before `offset` in a function that holds `read`: its own (the
+/// walk can reach it) or an enclosing one (a callback reads what was set before it was made).
+/// A write in a sibling function, such as another method, precedes the read on no path.
+fn write_around_read(
+    model: &SemanticModel,
+    tree: &FlowTree,
+    member: &SemanticId,
+    read: &emmylua_parser::LuaIndexExpr,
+    offset: TextSize,
+) -> bool {
+    let read_pos = read.get_position();
+    tree.member_assignments_between(member, TextSize::default(), offset)
+        .iter()
+        .any(|(_, flow_id)| {
+            flow_assign_stat(model, tree, *flow_id).is_some_and(|assign| {
+                LuaClosureId::from_node(assign.syntax())
+                    .get_range()
+                    .contains(read_pos)
+            })
+        })
+}
+
 /// The latest write before `offset` to what `member` names. For a read, that is any runtime
 /// member of the same owner and key: each `s.x = v` site is its own member.
 fn latest_field_write(
@@ -1159,12 +1181,13 @@ pub(crate) fn type_of_expr_at_node(
                         // Table fields from a declared initializer are not "runtime overrides": `local b: B = { field = 1 }`
                         // field access is still governed by the class `@field` type, avoiding widening `integer` to `number`.
                         && !model.is_initializer_table_field(&runtime_member.id, runtime_member)
-                        // A runtime member only overrides the field once one of its writes precedes the read:
-                        // before that, `t.x` still holds the declared field, not a later `t.x = value`.
+                        // A runtime member only overrides the field once one of its writes precedes the
+                        // read in the read's function or one enclosing it. A write in a sibling function
+                        // (another method) leaves the declared field, traced above.
                         && model.flow_tree().is_some_and(|tree| {
-                            std::iter::once(runtime_member).chain(runtime_members).any(|m| {
-                                tree.latest_member_assignment(&m.id, offset).is_some()
-                            })
+                            std::iter::once(runtime_member)
+                                .chain(runtime_members)
+                                .any(|m| write_around_read(model, &tree, &m.id, index_expr, offset))
                         })
                     {
                         // By the read's access, so writes through every runtime member of this
@@ -3182,24 +3205,20 @@ fn member_annotation_type(model: &SemanticModel, member: &SemanticId) -> Option<
     Some(model.doc_type_lua_in(member_file, syntax, &[]))
 }
 
-/// The declared type a write to `member` is held to: its own annotation, else that of the field
-/// the read resolves to. A runtime member (one per `s.x = v` site) has no annotation of its own,
-/// but a write to a declared `---@field x` is still a write to that field.
-fn written_field_annotation(
+/// The declared type of the field a runtime write targets, for a member with no annotation of its
+/// own. A runtime member (one per `s.x = v` site) has none, but `s.x = "a"` still writes the
+/// declared `---@field x string?`, which widens the literal as an annotation would.
+fn declared_field_type(
     model: &SemanticModel,
     member: &SemanticId,
     access: Option<&emmylua_parser::LuaIndexExpr>,
 ) -> Option<LuaType> {
-    member_annotation_type(model, member).or_else(|| {
-        let field = model.resolve_member(access?)?.member_id?;
-        if &field == member {
-            return None;
-        }
-        member_annotation_type(model, &field).or_else(|| {
-            let declared = model.type_of_member(&field)?;
-            Some(apply_field_nullable(model, &field, declared))
-        })
-    })
+    let field = model.resolve_member(access?)?.member_id?;
+    if &field == member {
+        return None;
+    }
+    let declared = model.type_of_member(&field)?;
+    Some(apply_field_nullable(model, &field, declared))
 }
 
 /// Backtrack along the CFG for the member's most recent assignment type.
@@ -3325,12 +3344,18 @@ fn trace_member_uncached(
                             *target_index,
                             *value_syntax,
                         );
-                        if let Some(annotation) = written_field_annotation(model, member, access) {
+                        if let Some(annotation) = member_annotation_type(model, member) {
                             if model.type_check(&value_ty, &annotation) {
                                 value_ty = widen_const_type(value_ty);
                             } else {
                                 value_ty = annotation;
                             }
+                        } else if let Some(declared) = declared_field_type(model, member, access)
+                            && model.type_check(&value_ty, &declared)
+                        {
+                            // Widen only: a value the field rejects is the write's mismatch to
+                            // report, not a reason to read the field's type (and its nil) back.
+                            value_ty = widen_const_type(value_ty);
                         }
                         return Some(finalize(model, value_ty, &assign_path));
                     }
@@ -4963,6 +4988,8 @@ fn narrow_member_condition(
 ) -> Option<Narrowing> {
     let chunk = model.chunk()?;
     let cond = LuaExpr::cast(cond_ptr.to_node(&chunk)?.syntax().clone())?;
+    // `not t.x` on its false branch is `t.x` on its true one.
+    let (cond, branch_is_true) = normalize_condition(cond, branch_is_true)?;
     if let LuaExpr::CallExpr(call) = &cond {
         if let Some((arg, guard_ty)) = type_guard_call_target(model, call)
             && let LuaExpr::IndexExpr(index_expr) = &arg
