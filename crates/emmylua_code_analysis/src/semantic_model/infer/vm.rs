@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use emmylua_parser::{
     BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocType, LuaExpr, LuaIndexKey,
-    LuaReturnStat, LuaSyntaxId, LuaSyntaxKind,
+    LuaNameExpr, LuaReturnStat, LuaSyntaxId, LuaSyntaxKind,
 };
 
 use hashbrown::HashMap;
@@ -548,7 +548,9 @@ impl<'a> InferVm<'a> {
                 // generic calls can back-infer from the cast type.
                 let arg_count = args.len();
                 for (index, arg) in args.iter_mut().enumerate() {
-                    if let Some(syntax) = arg_syntaxes.get(index) {
+                    if let Some(syntax) = arg_syntaxes.get(index)
+                        && !self.is_env_bound_param(*syntax)
+                    {
                         let flow_ty = self
                             .model
                             .type_of_expr_at(*syntax, syntax.get_range().start());
@@ -756,6 +758,41 @@ impl<'a> InferVm<'a> {
             }
         }
         None
+    }
+
+    /// Whether `syntax` is a bare name of a closure param this VM's environment binds. Its flow
+    /// type starts from the decl type the environment stands in for (the call being inferred),
+    /// so reading it re-enters that call and leaves the read unresolved.
+    fn is_env_bound_param(&self, syntax: LuaSyntaxId) -> bool {
+        if self.closure_params.is_empty() {
+            return false;
+        }
+        let Some(name) = self
+            .model
+            .syntax_tree()
+            .and_then(|tree| syntax.to_node_from_root(&tree.get_red_root()))
+            .and_then(LuaNameExpr::cast)
+        else {
+            return false;
+        };
+        let Some(decl) = self.model.resolve_name(name.get_position()) else {
+            return false;
+        };
+        let Some(facts) = self.model.file_facts() else {
+            return false;
+        };
+        let Some(decl) = facts.decl_by_id(&decl) else {
+            return false;
+        };
+        matches!(decl.kind, DeclKind::Param)
+            && facts
+                .signature_and_param_index_of_decl(decl)
+                .is_some_and(|(signature, index)| {
+                    signature.param_doc_syntax(index).is_none()
+                        && self
+                            .closure_params
+                            .contains_key(&(signature.closure_syntax, index))
+                })
     }
 
     /// If `decl` is a closure param and that closure is in the environment, infer its type.
