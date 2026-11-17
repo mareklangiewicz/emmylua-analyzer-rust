@@ -1138,4 +1138,31 @@ mod tests {
             "{diagnostics:#?}"
         );
     }
+
+    /// `t[i]` inside `for i = a, #t` is an element, also from a loop nested in that one: the
+    /// bound belongs to the loop that declares `i`, not to the nearest loop (neospector's
+    /// `logsync/match.lua`: `old_blocks[start]` inside `for ending = start, #old_blocks`).
+    #[test]
+    fn test_outer_numeric_for_bound_narrows_an_index_in_an_inner_loop() {
+        let diagnostics = check_source(
+            r#"
+            ---@param t { title?: string }[]
+            ---@param k integer
+            ---@return { block: table }?
+            local function f(t, k)
+                for start = k, #t do
+                    for ending = start, #t do
+                        if ending > 1 then return { block = t[start] } end
+                    end
+                end
+            end
+            return f
+            "#,
+        );
+        assert_eq!(
+            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ReturnTypeMismatch),
+            0,
+            "{diagnostics:#?}"
+        );
+    }
 }

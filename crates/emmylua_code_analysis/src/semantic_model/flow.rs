@@ -1752,15 +1752,20 @@ fn numeric_for_loop_index(model: &SemanticModel, key_expr: &LuaExpr, prefix: &Lu
     let Some(node) = name_expr.get_syntax_id().to_node_from_root(&root) else {
         return false;
     };
-    let Some(for_stat) = node.ancestors().find_map(emmylua_parser::LuaForStat::cast) else {
+    // The loop that declares the name, which need not be the nearest one: `t[i]` inside
+    // `for j = i, #t` nested in `for i = 1, #t` is bounded by the outer loop.
+    let name = name_expr.get_name_text().unwrap_or_default();
+    let Some(for_stat) = node
+        .ancestors()
+        .filter_map(emmylua_parser::LuaForStat::cast)
+        .find(|for_stat| {
+            for_stat
+                .get_var_name()
+                .is_some_and(|var| var.get_name_text() == name)
+        })
+    else {
         return false;
     };
-    let Some(var_token) = for_stat.get_var_name() else {
-        return false;
-    };
-    if var_token.get_name_text() != name_expr.get_name_text().as_deref().unwrap_or_default() {
-        return false;
-    }
     let iter_exprs: Vec<LuaExpr> = for_stat.get_iter_expr().collect();
     if iter_exprs.len() < 2 {
         return false;
