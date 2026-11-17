@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use emmylua_parser::{
     BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocType, LuaExpr, LuaIndexKey,
-    LuaNameExpr, LuaReturnStat, LuaSyntaxId, LuaSyntaxKind,
+    LuaReturnStat, LuaSyntaxId, LuaSyntaxKind,
 };
 
 use hashbrown::HashMap;
@@ -410,6 +410,9 @@ pub struct InferVm<'a> {
     /// Recursion depth for callback-call back-inference (prevents infinite expansion of
     /// self-referential calls like `wrap(wrap, ...)`).
     callback_call_depth: usize,
+    /// A param query (`closure_param_in`): the closure whose params this run is for. Its wrapping
+    /// call stops once they are filled, before reading any closure body.
+    params_for: Option<LuaSyntaxId>,
 }
 
 impl<'a> InferVm<'a> {
@@ -422,6 +425,7 @@ impl<'a> InferVm<'a> {
             computing: HashSet::new(),
             closure_params: HashMap::new(),
             callback_call_depth: 0,
+            params_for: None,
         }
     }
 
@@ -548,9 +552,7 @@ impl<'a> InferVm<'a> {
                 // generic calls can back-infer from the cast type.
                 let arg_count = args.len();
                 for (index, arg) in args.iter_mut().enumerate() {
-                    if let Some(syntax) = arg_syntaxes.get(index)
-                        && !self.is_env_bound_param(*syntax)
-                    {
+                    if let Some(syntax) = arg_syntaxes.get(index) {
                         let flow_ty = self
                             .model
                             .type_of_expr_at(*syntax, syntax.get_range().start());
@@ -758,41 +760,6 @@ impl<'a> InferVm<'a> {
             }
         }
         None
-    }
-
-    /// Whether `syntax` is a bare name of a closure param this VM's environment binds. Its flow
-    /// type starts from the decl type the environment stands in for (the call being inferred),
-    /// so reading it re-enters that call and leaves the read unresolved.
-    fn is_env_bound_param(&self, syntax: LuaSyntaxId) -> bool {
-        if self.closure_params.is_empty() {
-            return false;
-        }
-        let Some(name) = self
-            .model
-            .syntax_tree()
-            .and_then(|tree| syntax.to_node_from_root(&tree.get_red_root()))
-            .and_then(LuaNameExpr::cast)
-        else {
-            return false;
-        };
-        let Some(decl) = self.model.resolve_name(name.get_position()) else {
-            return false;
-        };
-        let Some(facts) = self.model.file_facts() else {
-            return false;
-        };
-        let Some(decl) = facts.decl_by_id(&decl) else {
-            return false;
-        };
-        matches!(decl.kind, DeclKind::Param)
-            && facts
-                .signature_and_param_index_of_decl(decl)
-                .is_some_and(|(signature, index)| {
-                    signature.param_doc_syntax(index).is_none()
-                        && self
-                            .closure_params
-                            .contains_key(&(signature.closure_syntax, index))
-                })
     }
 
     /// If `decl` is a closure param and that closure is in the environment, infer its type.
@@ -1871,6 +1838,16 @@ impl<'a> InferVm<'a> {
                 self.bind_table_literal_closure_params(&arg.ty, &param_ty, &bindings);
             }
         }
+        // A param query has its answer: what follows reads closure bodies, which read the
+        // params being asked for, and never changes them.
+        if let Some(target) = self.params_for
+            && self
+                .closure_params
+                .keys()
+                .any(|(closure, _)| *closure == target)
+        {
+            return Value::plain(LuaType::Unknown);
+        }
         // Closure-arg return back-inference: after the param environment is filled, use the
         // real closure body return type to complete callback return generics (e.g. in
         // `map(list, function(item) return item end)`, U = T = string).
@@ -1970,13 +1947,7 @@ impl<'a> InferVm<'a> {
             } else if let Some(closure_syntax) = arg.closure_syntax
                 && !matches!(original_callback_ret, LuaType::Variadic(_))
             {
-                // A returned literal reads as the back-inference pass above read it: raw, it is
-                // checked against the `U[]` that pass bound, and typing its elements outside
-                // the param environment re-enters this call, leaving them unresolved.
-                let ret = self.array_literals_for(
-                    callback_fun.get_ret(),
-                    self.closure_return_type_with_env(closure_syntax),
-                );
+                let ret = self.closure_return_type_with_env(closure_syntax);
                 if !matches!(ret, LuaType::Unknown | LuaType::Any) {
                     ret
                 } else {
@@ -4570,6 +4541,7 @@ fn closure_param_in(
     code.push(Instr::Result);
     let mut vm = InferVm::new(model, &code);
     vm.computing = computing;
+    vm.params_for = Some(closure_syntax);
     let _ = vm.run();
     vm.closure_params
         .get(&(closure_syntax, param_index))

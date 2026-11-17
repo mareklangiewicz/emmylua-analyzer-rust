@@ -5637,15 +5637,17 @@ mod test {
     /// `U[]` (luagnd's `Seq:flatmap(function(t) return { '-x', t } end)`).
     #[test]
     fn test_closure_returning_param_built_array_literal_binds_element_generic() {
-        for element in ["v", "tostring(v)"] {
+        for element in ["v", "tostring(v)", "names[v]"] {
             let diagnostics = check_source(&format!(
                 r#"
+                ---@type string[]
+                local names = {{}}
                 ---@generic U
                 ---@param f fun(v: integer): U[]
                 ---@return U
                 local function flatmap(f) end
                 local r = flatmap(function(v) return {{ {element} }} end)
-                return r
+                return r, names
                 "#
             ));
             assert_eq!(
