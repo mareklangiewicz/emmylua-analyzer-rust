@@ -233,4 +233,35 @@ mod test {
             "---@type SyncField\nlocal c = { call = function(a) aw() end }"
         ));
     }
+
+    /// #58: an expected type spelled through an alias of an `async fun` makes the closure async
+    /// just like the inline spelling: as a parameter, an optional parameter (`Alias|nil`) and a
+    /// table field. An alias of a plain `fun` keeps the closure sync.
+    #[test]
+    fn test_closure_async_from_alias_expected_type() {
+        let pre = r#"
+            ---@async
+            local function aw() end
+            ---@alias AsyncFn async fun(x: integer)
+            ---@alias PlainFn fun(x: integer)
+            ---@param fn AsyncFn
+            local function run(fn) end
+            ---@param fn? AsyncFn
+            local function run_opt(fn) end
+            ---@param fn PlainFn
+            local function run_plain(fn) end
+            ---@class AliasField
+            ---@field call AsyncFn
+            ---@param c AliasField
+            local function use(c) end
+        "#;
+        let ok = |code: &str| {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.has_no_diagnostic(DiagnosticCode::AwaitInSync, &format!("{pre}\n{code}"))
+        };
+        assert!(ok("run(function(x) aw() end)"));
+        assert!(ok("run_opt(function(x) aw() end)"));
+        assert!(ok("use({ call = function(x) aw() end })"));
+        assert!(!ok("run_plain(function(x) aw() end)"));
+    }
 }

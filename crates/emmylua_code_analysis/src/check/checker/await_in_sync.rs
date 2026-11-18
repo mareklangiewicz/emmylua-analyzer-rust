@@ -22,6 +22,7 @@ use emmylua_parser::{
 
 use crate::DiagnosticCode;
 use crate::semantic_model::SemanticModel;
+use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{AsyncState, LuaFunctionType, LuaType, SemanticId};
 
 use super::param_count::closure_table_field_info;
@@ -192,7 +193,7 @@ fn check_call_as_arg(
             let Some(param_type) = param_type else {
                 continue;
             };
-            if param_type_async_state(param_type) != Some(AsyncState::Sync) {
+            if param_type_async_state(semantic_model, param_type) != Some(AsyncState::Sync) {
                 continue;
             }
             let arg_idx = match (colon_define, colon_call) {
@@ -266,7 +267,7 @@ fn closure_is_async(
     // Argument closure: the corresponding outer callee parameter is an async function type.
     if expected_arg_types(semantic_model, closure.syntax())
         .iter()
-        .any(|ty| param_type_async_state(ty) == Some(AsyncState::Async))
+        .any(|ty| param_type_async_state(semantic_model, ty) == Some(AsyncState::Async))
     {
         return true;
     }
@@ -280,7 +281,7 @@ fn closure_is_async(
         semantic_model
             .member_type(table_ty, &key)
             .as_ref()
-            .and_then(param_type_async_state)
+            .and_then(|ty| param_type_async_state(semantic_model, ty))
             == Some(AsyncState::Async)
     })
 }
@@ -333,9 +334,11 @@ fn call_arg_position(arg: &LuaSyntaxNode) -> Option<(LuaCallExpr, usize)> {
     Some((call_expr, index))
 }
 
-/// Async state of a parameter type (determined by any function component in the union).
-fn param_type_async_state(ty: &LuaType) -> Option<AsyncState> {
-    match ty {
+/// Async state of a parameter type (determined by any function component in the union), seen
+/// through aliases: `---@param fn? AsyncFn` is `AsyncFn|nil`, and `AsyncFn` names an `async fun`.
+fn param_type_async_state(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> Option<AsyncState> {
+    let ty = expand_alias_branches(semantic_model, ty).unwrap_or_else(|| ty.clone());
+    match &ty {
         LuaType::DocFunction(fun) => Some(fun.get_async_state()),
         LuaType::Union(union) => {
             let mut state = None;
