@@ -122,6 +122,19 @@ Assumptions:
 
 ## 6. After the read: checkers that re-derive member facts
 
+**First: does the checker reach the read layer at all?** §1–5 run only under
+`type_of_expr_at` (types.rs:1591 → `type_of_expr_at_node`, types.rs:1658). Plain `type_of_expr`
+(signature.rs:198) runs the inference VM: a static member read `t.x` there is `IndexMember(Static)`
+(vm.rs:528), the prefix's VM type indexed, with no member trace. Only a dynamic key (vm.rs:518) and
+a call argument (vm.rs:571) re-enter flow. So instrumenting §1 for a checker on the VM path shows
+nothing fire (#49: `unnecessary_if.rs:39` types its condition with `type_of_expr`). At fork
+0883e61a, `grep -rn 'type_of_expr_at(' src/check/checker/`: only need_check_nil,
+unnecessary_assert, assign_type_mismatch, call_non_callable, undefined_field,
+return_type_mismatch and check_return_count call it (some also call `type_of_expr`, so check
+the call site); every other checker (unnecessary_if,
+param_type_check, cast_type_mismatch, …) reads member values without flow. Grep again before
+relying on this list.
+
 - `member_missing_in_union` (access.rs:694), used by `param_type_check.rs:838`: for an
   index-expression argument whose prefix is a union with a component lacking the key, the checker
   reports `found nil` itself. The read's type never contains that `nil`: the read layer takes the
