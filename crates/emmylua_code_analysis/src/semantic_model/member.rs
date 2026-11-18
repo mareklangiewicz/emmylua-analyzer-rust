@@ -1,11 +1,11 @@
 use std::rc::Rc;
 
 use emmylua_parser::{LuaAstNode, LuaExpr, LuaTableExpr, LuaTableField};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
 use crate::semantic_model::infer::unify::{self, TplBindings};
-use crate::semantic_model::type_eval::{map_type, substitute_named_refs, with_expanded_alias};
+use crate::semantic_model::type_eval::{substitute_named_refs, with_expanded_alias};
 use crate::{
     FileId, GenericTplId, InFiled, LuaAliasCallKind, LuaGenericType, LuaIntersectionType,
     LuaMemberKey, LuaObjectType, LuaType,
@@ -14,7 +14,6 @@ use crate::{Member, semantic_db::facts::FileFacts};
 use smol_str::SmolStr;
 
 use super::SemanticModel;
-use super::infer::vm::reassign_function_generics_to_func_ids;
 use super::table_constructor::expanded_results;
 
 /// Maximum inheritance/parent-type depth expanded during member lookup.
@@ -76,7 +75,16 @@ pub(crate) fn class_fields(model: &SemanticModel, target: &LuaType) -> LuaObject
 pub(super) fn member_infos_all(model: &SemanticModel, prefix_type: &LuaType) -> Vec<MemberInfo> {
     let mut out = Vec::new();
     let mut visited = Vec::new();
-    collect_members(model, prefix_type, None, None, &mut visited, &mut out, None);
+    collect_members(
+        model,
+        prefix_type,
+        None,
+        None,
+        &mut visited,
+        &mut out,
+        None,
+        MemberCollectMode::Effective,
+    );
     out
 }
 
@@ -208,6 +216,7 @@ fn find_type_def_member(
             visited,
             &mut infos,
             Some(key),
+            MemberCollectMode::Effective,
         );
         if let Some(info) = infos.into_iter().next() {
             visited.pop();
@@ -523,7 +532,7 @@ pub(crate) fn member_info_impl(
     None
 }
 
-/// Members with the given key of a prefix type (all matches, overload scenario).
+/// The effective member of the key for a prefix type (first declaration per key).
 ///
 /// Keyed lookup must not enumerate every member of the owner: assignment-heavy files
 /// (`local M = {}; M.a = 1; M.b = 2; ...`) would otherwise become O(N^2).
@@ -532,25 +541,24 @@ pub fn member_infos_with_key(
     prefix_type: &LuaType,
     key: &LuaMemberKey,
 ) -> Vec<MemberInfo> {
-    let mut out = Vec::new();
-    let mut visited = Vec::new();
-    collect_members(
+    dedup_by_key(member_infos_with_key_mode(
         model,
         prefix_type,
-        None,
-        None,
-        &mut visited,
-        &mut out,
-        Some(key),
-    );
-    dedup_by_key(out)
+        key,
+        MemberCollectMode::Effective,
+    ))
 }
 
-/// Members with the given key of a prefix type (all matches, no dedup; duplicate `@field` lines are kept as overloads).
-pub(crate) fn member_infos_with_key_all(
+/// Members with the given key of a prefix type under the given collection mode.
+///
+/// - `Effective`:  keeps the highest-priority layer's declarations: same-key declarations in later layers
+///   are shadowed, while repeated `@field` lines inside the winning layer stay as overloads.
+/// - `AllDefinitions`: keeps every definition site, including declarations shadowed by a higher layer.
+pub fn member_infos_with_key_mode(
     model: &SemanticModel,
     prefix_type: &LuaType,
     key: &LuaMemberKey,
+    mode: MemberCollectMode,
 ) -> Vec<MemberInfo> {
     let mut out = Vec::new();
     let mut visited = Vec::new();
@@ -562,6 +570,7 @@ pub(crate) fn member_infos_with_key_all(
         &mut visited,
         &mut out,
         Some(key),
+        mode,
     );
     out
 }
@@ -798,6 +807,15 @@ fn push_member_info(out: &mut Vec<MemberInfo>, filter: Option<&LuaMemberKey>, in
     }
 }
 
+/// How member collection treats same-key declarations from different layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberCollectMode {
+    /// Effective members: a declaration in an earlier layer shadows the same key in later layers.
+    Effective,
+    /// All definitions: shadowed declarations are kept so every definition site stays reachable.
+    AllDefinitions,
+}
+
 fn collect_members(
     model: &SemanticModel,
     prefix_type: &LuaType,
@@ -806,6 +824,7 @@ fn collect_members(
     visited: &mut Vec<SemanticId>,
     out: &mut Vec<MemberInfo>,
     filter: Option<&LuaMemberKey>,
+    mode: MemberCollectMode,
 ) {
     match prefix_type {
         // Named type: @field + inheritance + runtime value members.
@@ -822,6 +841,7 @@ fn collect_members(
                             visited,
                             out,
                             filter,
+                            mode,
                         );
                     });
                     return;
@@ -865,6 +885,7 @@ fn collect_members(
                             visited,
                             out,
                             filter,
+                            mode,
                         );
                         return;
                     }
@@ -877,6 +898,7 @@ fn collect_members(
                     visited,
                     out,
                     filter,
+                    mode,
                 );
             }
         }
@@ -887,7 +909,7 @@ fn collect_members(
             {
                 let start = out.len();
                 with_expanded_alias(model, prefix_type, |expanded| {
-                    collect_members(model, expanded, None, None, visited, out, filter);
+                    collect_members(model, expanded, None, None, visited, out, filter, mode);
                 });
                 if out[start..].iter().any(|info| info.id.is_none())
                     && let Some(source) = mapped_alias_source(model, &def, generic)
@@ -927,6 +949,7 @@ fn collect_members(
                 visited,
                 out,
                 filter,
+                mode,
             );
         }
         // Anonymous table literal: field members of the synthesized owner (file, range).
@@ -990,6 +1013,7 @@ fn collect_members(
                     visited,
                     out,
                     filter,
+                    mode,
                 );
             }
         }
@@ -997,19 +1021,31 @@ fn collect_members(
         LuaType::Union(union) => {
             for component in union.iter() {
                 let mut component_members = Vec::new();
+                let mut component_visited = visited.clone();
                 collect_members(
                     model,
                     component,
                     bindings,
                     name_bindings,
-                    visited,
+                    &mut component_visited,
                     &mut component_members,
                     filter,
+                    mode,
                 );
                 // A declared `---@type` member is the whole answer for its key within a component:
                 // a module is `Ref(M) | TableConst`, so `sp.state = {…}` in a spec must not union into
                 // the declared `M.state`. Undeclared duplicates still merge (`---@meta` overloads).
-                for info in keep_declared_by_key(model, component_members) {
+                // Enumerating every definition (`gd`) keeps them all.
+                let component_members = if mode == MemberCollectMode::AllDefinitions {
+                    component_members
+                } else {
+                    keep_declared_by_key(model, component_members)
+                };
+                for info in component_members {
+                    if mode == MemberCollectMode::AllDefinitions {
+                        push_declaration_info(out, filter, info);
+                        continue;
+                    }
                     if let Some(existing) = out.iter_mut().find(|existing| existing.key == info.key)
                     {
                         if existing.typ != info.typ {
@@ -1100,6 +1136,8 @@ fn expand_table_multi_return_member(
 }
 
 /// Named type members: this class's `@field` → parent type recursion → runtime value members.
+///
+/// Each layer shadows the layers before it by key, while overloads inside one layer stay complete.
 fn collect_type_def_members(
     model: &SemanticModel,
     def: &TypeDef,
@@ -1108,22 +1146,37 @@ fn collect_type_def_members(
     visited: &mut Vec<SemanticId>,
     out: &mut Vec<MemberInfo>,
     filter: Option<&LuaMemberKey>,
+    mode: MemberCollectMode,
 ) {
     if visited.contains(&def.id) || visited.len() >= MAX_MEMBER_INHERITANCE_DEPTH {
         return;
     }
     visited.push(def.id.clone());
+    let mut shadowed = HashSet::new();
+    let mut layer = Vec::new();
 
     // 1. This class's `@field` (workspace member index, cross-file).
     for member_ref in owner_member_refs(model, &def.id, filter) {
         if let Some(info) = member_info_of(model, &member_ref, bindings, name_bindings) {
-            push_member_info(out, filter, info);
+            push_member_info(&mut layer, filter, info);
         }
     }
+    push_member_layer(out, &mut shadowed, layer, mode);
 
     // 2. Parent types
     for super_type in inherited_base_types(model, def, bindings, name_bindings) {
-        collect_members(model, &super_type, None, None, visited, out, filter);
+        let mut layer = Vec::new();
+        collect_members(
+            model,
+            &super_type,
+            None,
+            None,
+            visited,
+            &mut layer,
+            filter,
+            mode,
+        );
+        push_member_layer(out, &mut shadowed, layer, mode);
     }
 
     // 3. Runtime value members: members of the type's runtime value decl (same-file same-name `local M = {}`) (`M.x = 1`).
@@ -1131,11 +1184,55 @@ fn collect_type_def_members(
         if owner == def.id {
             continue;
         }
+        let mut layer = Vec::new();
         for member_ref in owner_member_refs(model, &owner, filter) {
             if let Some(info) = member_info_of(model, &member_ref, bindings, name_bindings) {
-                push_member_info(out, filter, info);
+                push_member_info(&mut layer, filter, info);
             }
         }
+        push_member_layer(out, &mut shadowed, layer, mode);
+    }
+}
+
+fn push_member_layer(
+    out: &mut Vec<MemberInfo>,
+    shadowed: &mut HashSet<LuaMemberKey>,
+    layer: Vec<MemberInfo>,
+    mode: MemberCollectMode,
+) {
+    if mode == MemberCollectMode::AllDefinitions {
+        for info in layer {
+            push_declaration_info(out, None, info);
+        }
+        return;
+    }
+    let visible: Vec<_> = layer
+        .into_iter()
+        .filter(|info| !shadowed.contains(&info.key))
+        .collect();
+    shadowed.extend(visible.iter().map(|info| info.key.clone()));
+    out.extend(visible);
+}
+
+/// Appends a definition site, skipping declarations that are already collected.
+fn push_declaration_info(
+    out: &mut Vec<MemberInfo>,
+    filter: Option<&LuaMemberKey>,
+    info: MemberInfo,
+) {
+    if filter.is_some_and(|key| &info.key != key) {
+        return;
+    }
+    let duplicate = match (&info.id, info.file_id) {
+        (Some(id), Some(file_id)) => out
+            .iter()
+            .any(|existing| existing.file_id == Some(file_id) && existing.id.as_ref() == Some(id)),
+        _ => out.iter().any(|existing| {
+            existing.id.is_none() && existing.key == info.key && existing.typ == info.typ
+        }),
+    };
+    if !duplicate {
+        out.push(info);
     }
 }
 
@@ -1244,7 +1341,7 @@ pub(super) fn projected_member_type(
         if member_ref.file_id == model.file_id() {
             let expr_ty = model.type_of_expr(value_syntax);
             // Table literal closure fields need a callable real signature; class methods keep the original wide Function projection.
-            if model.is_initializer_table_field(&member_ref.id, &member)
+            if model.is_initializer_table_field(&member)
                 && let Some(fun) = model.type_of_signature_in_file(member_ref.file_id, value_syntax)
             {
                 typ = LuaType::DocFunction(Rc::new(fun));
@@ -1279,15 +1376,6 @@ pub(super) fn projected_member_type(
     {
         typ = LuaType::from_vec(vec![typ, LuaType::Nil]);
     }
-    // Function generics need separate IDs before class substitution, including
-    // functions inside lazy alias arguments.
-    typ = map_type(&typ, &mut |ty| match ty {
-        LuaType::DocFunction(fun) if !fun.get_generic_params().is_empty() => {
-            let fun = reassign_function_generics_to_func_ids(fun.as_ref().clone());
-            Some(LuaType::DocFunction(Rc::new(fun)))
-        }
-        _ => None,
-    });
     if let Some(bindings) = bindings {
         typ = unify::substitute(&typ, bindings);
     }

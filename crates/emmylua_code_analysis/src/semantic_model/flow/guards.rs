@@ -42,6 +42,23 @@ pub(super) fn guarded_on_all_paths(
                     continue;
                 }
             }
+            // A `---@cast` of this same access between the guard and the read re-types it:
+            // guards before the cast no longer hold (the member trace orders the two).
+            FlowNodeKind::TagCast(cast_ptr)
+                if model
+                    .chunk()
+                    .and_then(|chunk| cast_ptr.to_node(&chunk))
+                    .and_then(|cast| cast.get_key_expr())
+                    .is_some_and(|target| {
+                        super::same_member_access(
+                            model,
+                            &target,
+                            &LuaExpr::IndexExpr(index.clone()),
+                        )
+                    }) =>
+            {
+                return None;
+            }
             FlowNodeKind::TrueCondition(ptr) | FlowNodeKind::FalseCondition(ptr) => {
                 let cond = flow_condition_expr(model, ptr)?;
                 if LuaClosureId::from_node(cond.syntax()) != closure {

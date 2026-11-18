@@ -240,8 +240,7 @@ fn expand_union_alias_members(model: &SemanticModel, ty: &mut LuaType) {
 
 /// Resolve the `self` type of a callable type.
 ///
-/// Mirrors the old `call_operator_self_type`: only `---@overload` /
-/// `---@operator call` on a `---@class` provides `self`; plain function types do not.
+/// Only `---@overload` / `---@operator call` on a `---@class` provides `self`; plain function types do not.
 /// A union keeps only callable members, aliases pass through to the real callable type,
 /// and if an intersection is callable as a whole, `self` is the whole intersection.
 pub(crate) fn call_operator_self_type(model: &SemanticModel, ty: &LuaType) -> Option<LuaType> {

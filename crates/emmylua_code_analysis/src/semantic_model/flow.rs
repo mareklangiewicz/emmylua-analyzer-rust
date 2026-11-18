@@ -851,7 +851,18 @@ fn member_type_at(
     // `M.x` reads in long straight-line files from O(offset) into O(1).
     if start == flow_id && !tree.has_complex_control() {
         let latest = latest_field_write(model, &tree, member, access, offset);
-        if let Some((assign_pos, assign_flow)) = latest
+        // Jumping to the latest write by position is the flow only when that write runs on the
+        // way to the read: in the read's function or one enclosing it, never in another closure
+        // (`local function update() t.x = 2 end` may never run).
+        let on_the_way = latest.is_none_or(|(_, assign_flow)| {
+            flow_assign_stat(model, &tree, assign_flow).is_none_or(|assign| {
+                LuaClosureId::from_node(assign.syntax())
+                    .get_range()
+                    .contains(offset)
+            })
+        });
+        if on_the_way
+            && let Some((assign_pos, assign_flow)) = latest
             && !tree.has_flow_event_between(assign_pos, offset, false)
         {
             let mut visited = HashSet::new();
@@ -1042,9 +1053,9 @@ pub(crate) fn type_of_expr_at_node(
     match &expr {
         LuaExpr::NameExpr(name_expr) => {
             if let Some(decl) = model.resolve_name(name_expr.get_position()) {
-                return apply_casts(model.type_of_decl_at(&decl, offset), AsOnly);
+                return apply_casts(model.type_of_decl_at(&decl, offset), All);
             }
-            apply_casts(model.type_of_expr_node(&expr), AsOnly)
+            apply_casts(model.type_of_expr_node(&expr), All)
         }
         LuaExpr::IndexExpr(index_expr) => {
             // A guard (`if t.x then`) narrows every member read, whichever source typed it.
@@ -1146,7 +1157,7 @@ pub(crate) fn type_of_expr_at_node(
                     }
                     && let Some(member_facts) = model.file_facts_of(member_file)
                     && let Some(member_def) = member_facts.member_by_id(&member_id)
-                    && model.is_initializer_table_field(&member_id, member_def)
+                    && model.is_initializer_table_field(member_def)
                 {
                     let prefix_ty = model.type_of_expr_at(prefix.get_syntax_id(), offset);
                     if let Some(value_syntax) = member_def.value_syntax {
@@ -1180,7 +1191,7 @@ pub(crate) fn type_of_expr_at_node(
                     if let Some(runtime_member) = runtime_members.next()
                         // Table fields from a declared initializer are not "runtime overrides": `local b: B = { field = 1 }`
                         // field access is still governed by the class `@field` type, avoiding widening `integer` to `number`.
-                        && !model.is_initializer_table_field(&runtime_member.id, runtime_member)
+                        && !model.is_initializer_table_field(runtime_member)
                         // A runtime member only overrides the field once one of its writes precedes the
                         // read in the read's function or one enclosing it. A write in a sibling function
                         // (another method) leaves the declared field, traced above.
@@ -1241,7 +1252,7 @@ pub(crate) fn type_of_expr_at_node(
                     }
                 }
                 let member_ty = guarded(member_ty);
-                return apply_casts(member_ty, AsOnly);
+                return apply_casts(member_ty, All);
             }
             let loop_index = index_expr.get_prefix_expr().is_some_and(|prefix| {
                 matches!(index_expr.get_index_key(), Some(emmylua_parser::LuaIndexKey::Expr(key_expr))
@@ -1324,7 +1335,7 @@ pub(crate) fn type_of_expr_at_node(
             let result = binary_type(model, op_token.get_op(), &left_ty, &right_ty);
             apply_casts(result, All)
         }
-        _ => apply_casts(model.type_of_expr_node(&expr), AsOnly),
+        _ => apply_casts(model.type_of_expr_node(&expr), All),
     }
 }
 
@@ -2017,7 +2028,7 @@ pub(super) fn apply_expr_casts(
     apply_expr_casts_to_node(model, &node, base, mode)
 }
 
-fn inline_cast_target(tag: &emmylua_parser::LuaDocTagAs) -> Option<LuaExpr> {
+fn inline_cast_target(tag: &impl LuaAstNode) -> Option<LuaExpr> {
     let owner = tag.get_parent::<LuaComment>()?.get_owner()?;
     // Statement comments cast the last value, never its operands or later reads.
     LuaExpr::cast(owner.syntax().clone()).or_else(|| owner.children::<LuaExpr>().last())
@@ -2090,33 +2101,24 @@ fn apply_expr_casts_to_node(
                     // Declaration/member tracing handles named casts with a unique target.
                     // Ambiguous union members have no member ID; retain their immediate
                     // cast only for the exact owner/path, never an enclosing expression.
-                    if let Some(target) = cast.get_key_expr()
-                        && !ambiguous_cast_target_matches(model, &target, expr_syntax)
-                    {
+                    // A keyless inline `--[[@cast -?]]` casts the expression it is attached to.
+                    let matches_target = match cast.get_key_expr() {
+                        Some(target) => ambiguous_cast_target_matches(model, &target, expr_syntax),
+                        None => inline_cast_target(&cast)
+                            .is_some_and(|target| target.get_syntax_id() == expr_syntax),
+                    };
+                    if !matches_target {
                         continue;
                     }
-                    for op_type in cast.get_op_types() {
-                        let Some(doc_type) = op_type.get_type() else {
-                            // `-?`: ? is not a DocType node, only the subtraction operator → remove nil.
-                            if op_type
-                                .get_op()
-                                .is_some_and(|op| op.get_op() == BinaryOperator::OpSub)
-                            {
-                                ty = remove_type(ty, &LuaType::Nil);
-                            }
-                            continue;
+                    for op in cast
+                        .get_op_types()
+                        .filter_map(|op_type| cast_op_from_op_type(model, &op_type))
+                    {
+                        ty = match op {
+                            CastOp::Replace(target) => target,
+                            CastOp::Add(target) => merge_types(ty, target),
+                            CastOp::Remove(target) => remove_type(ty, &target),
                         };
-                        let target = if doc_type.get_text().trim() == "?" {
-                            LuaType::Nil
-                        } else {
-                            model.doc_type_lua(doc_type.get_syntax_id())
-                        };
-                        match op_type.get_op().map(|op| op.get_op()) {
-                            None => ty = target,
-                            Some(BinaryOperator::OpAdd) => ty = merge_types(ty, target),
-                            Some(BinaryOperator::OpSub) => ty = remove_type(ty, &target),
-                            _ => {}
-                        }
                     }
                 }
                 FlowEffect::AsCast(as_ptr) => {
@@ -3372,7 +3374,7 @@ fn trace_member_uncached(
                 }
             }
             FlowNodeKind::TagCast(cast_ptr) => {
-                collect_member_cast(model, member, cast_ptr, path);
+                collect_member_cast(model, member, access, cast_ptr, path);
             }
             FlowNodeKind::TrueCondition(cond_ptr) => {
                 if !path.ignore_guards
@@ -3561,6 +3563,39 @@ fn cast_targets_decl(
         if model.resolve_name(name.get_position()).as_ref() == Some(decl))
 }
 
+/// Path operation of one `---@cast` operand: `T` replaces, `+T` widens, `-T` narrows,
+/// and the bare `?` operand adds (`+?`) or removes (`-?`) nil.
+fn cast_op_from_op_type(
+    model: &SemanticModel,
+    op_type: &emmylua_parser::LuaDocOpType,
+) -> Option<CastOp> {
+    let op = op_type.get_op().map(|op| op.get_op());
+    let Some(doc_type) = op_type.get_type() else {
+        if !op_type.is_nullable() {
+            return None;
+        }
+        return match op {
+            Some(BinaryOperator::OpAdd) => Some(CastOp::Add(LuaType::Nil)),
+            Some(BinaryOperator::OpSub) => Some(CastOp::Remove(LuaType::Nil)),
+            _ => None,
+        };
+    };
+    let ty = if doc_type.get_text().trim() == "?" {
+        LuaType::Nil
+    } else {
+        model.doc_type_lua(doc_type.get_syntax_id())
+    };
+    if matches!(ty, LuaType::Unknown) {
+        return None;
+    }
+    match op {
+        None => Some(CastOp::Replace(ty)),
+        Some(BinaryOperator::OpAdd) => Some(CastOp::Add(ty)),
+        Some(BinaryOperator::OpSub) => Some(CastOp::Remove(ty)),
+        _ => None,
+    }
+}
+
 /// Collect named casts that target this declaration.
 fn collect_decl_cast(
     model: &SemanticModel,
@@ -3577,31 +3612,11 @@ fn collect_decl_cast(
     if !cast_targets_decl(model, decl, &cast) {
         return;
     }
-    for op_type in cast.get_op_types() {
-        let Some(doc_type) = op_type.get_type() else {
-            // `-?`: subtraction with no DocType → remove nil.
-            if op_type
-                .get_op()
-                .is_some_and(|op| op.get_op() == BinaryOperator::OpSub)
-            {
-                path.push_cast(CastOp::Remove(LuaType::Nil));
-            }
-            continue;
-        };
-        let ty = if doc_type.get_text().trim() == "?" {
-            LuaType::Nil
-        } else {
-            model.doc_type_lua(doc_type.get_syntax_id())
-        };
-        if matches!(ty, LuaType::Unknown) {
-            continue;
-        }
-        match op_type.get_op().map(|op| op.get_op()) {
-            None => path.push_cast(CastOp::Replace(ty)),
-            Some(BinaryOperator::OpAdd) => path.push_cast(CastOp::Add(ty)),
-            Some(BinaryOperator::OpSub) => path.push_cast(CastOp::Remove(ty)),
-            _ => {}
-        }
+    for op in cast
+        .get_op_types()
+        .filter_map(|op_type| cast_op_from_op_type(model, &op_type))
+    {
+        path.push_cast(op);
     }
 }
 
@@ -3629,6 +3644,7 @@ fn narrowed_member_id(
 fn collect_member_cast(
     model: &SemanticModel,
     member: &SemanticId,
+    access: Option<&emmylua_parser::LuaIndexExpr>,
     cast_ptr: &emmylua_parser::LuaAstPtr<emmylua_parser::LuaDocTagCast>,
     path: &mut PathState,
 ) {
@@ -3641,45 +3657,27 @@ fn collect_member_cast(
     let Some(key_expr) = cast.get_key_expr() else {
         return;
     };
+    // The cast names the read's own access path (`self.values`), or else the read's member.
     let matches = match &key_expr {
         LuaExpr::IndexExpr(index_expr) => {
-            model
-                .resolve_member(index_expr)
-                .and_then(|resolved| resolved.member_id)
-                .or_else(|| narrowed_member_id(model, index_expr, index_expr.get_position()))
-                .as_ref()
-                == Some(member)
+            member_access_matches(model, member, access, index_expr)
+                || model
+                    .resolve_member(index_expr)
+                    .and_then(|resolved| resolved.member_id)
+                    .or_else(|| narrowed_member_id(model, index_expr, index_expr.get_position()))
+                    .as_ref()
+                    == Some(member)
         }
         _ => false,
     };
     if !matches {
         return;
     }
-    for op_type in cast.get_op_types() {
-        let Some(doc_type) = op_type.get_type() else {
-            // `-?`: subtraction with no DocType → remove nil.
-            if op_type
-                .get_op()
-                .is_some_and(|op| op.get_op() == BinaryOperator::OpSub)
-            {
-                path.push_cast(CastOp::Remove(LuaType::Nil));
-            }
-            continue;
-        };
-        let ty = if doc_type.get_text().trim() == "?" {
-            LuaType::Nil
-        } else {
-            model.doc_type_lua(doc_type.get_syntax_id())
-        };
-        if matches!(ty, LuaType::Unknown) {
-            continue;
-        }
-        match op_type.get_op().map(|op| op.get_op()) {
-            None => path.push_cast(CastOp::Replace(ty)),
-            Some(BinaryOperator::OpAdd) => path.push_cast(CastOp::Add(ty)),
-            Some(BinaryOperator::OpSub) => path.push_cast(CastOp::Remove(ty)),
-            _ => {}
-        }
+    for op in cast
+        .get_op_types()
+        .filter_map(|op_type| cast_op_from_op_type(model, &op_type))
+    {
+        path.push_cast(op);
     }
 }
 
@@ -5024,6 +5022,11 @@ fn narrow_member_condition(
         if let Some(narrowing) = alias_member_condition_narrowing(model, member, access, &cond) {
             return Some(narrowing);
         }
+    } else if let LuaExpr::IndexExpr(index_expr) = &cond
+        && member_access_matches(model, member, access, index_expr)
+    {
+        // A falsy member keeps only the falsy components on this path, so `if not t.x then` holds nil.
+        return Some(Narrowing::Falsy);
     }
     direct_narrow_member_condition(model, member, access, &cond, branch_is_true)
 }
@@ -6931,8 +6934,12 @@ fn merge_types(left: LuaType, right: LuaType) -> LuaType {
     }
     let mut types: Vec<LuaType> = Vec::new();
     for ty in candidates {
-        // Wider base types absorb their constant/narrower type subsets (`"a" | string` → `string`).
-        if types.iter().any(|existing| type_is_broader(existing, &ty)) {
+        // Wider base types absorb their constant/narrower type subsets (`"a" | string` → `string`),
+        // and a part already present stays one part (`T? | nil` is `T?`, not `T | nil | nil`).
+        if types
+            .iter()
+            .any(|existing| existing == &ty || type_is_broader(existing, &ty))
+        {
             continue;
         }
         types.retain(|existing| !type_is_broader(&ty, existing));

@@ -74,11 +74,27 @@ fn check_index_expr(
     let Some(module_file) = import_module_file(semantic_model, &prefix) else {
         return;
     };
-    let Some(module_facts) = semantic_model.file_facts_of(module_file) else {
+    let module_model = semantic_model.model_for(module_file);
+    let Some(module_facts) = module_model.file_facts() else {
         return;
     };
-    let Some(export_ty) = export_table_type(module_file, module_facts) else {
-        return;
+    let export_ty = match &module_facts.module_export {
+        ModuleExport::Decl { decl, .. } => module_model.type_of_decl(decl),
+        ModuleExport::Expr { value_syntax } => Some(module_model.type_of_expr(*value_syntax)),
+        ModuleExport::Global { .. } | ModuleExport::None => None,
+    };
+    // A class-bound export (`---@class M` + `local M = {}`) types as the class, but its table is
+    // still the export surface: an undeclared write to it is an injection. Its undeclared reads
+    // are undefined_field's, which checks the class.
+    let export_ty = match export_ty {
+        Some(ty @ LuaType::TableConst(_)) => ty,
+        _ if code == DiagnosticCode::InjectField => {
+            match export_table_type(module_file, module_facts) {
+                Some(ty) => ty,
+                None => return,
+            }
+        }
+        _ => return,
     };
     let Some(index_key) = index_expr.get_index_key() else {
         return;
@@ -96,7 +112,16 @@ fn check_index_expr(
         .member_infos_with_key(&export_ty, &key)
         .into_iter()
         .any(|info| info.file_id.is_none_or(|file_id| file_id == module_file));
+    // `local M = f({...}); function M.g() end; return M`: the export's own runtime members are part
+    // of the surface even when its value types as a table literal they are not written into.
+    let is_export_decl_member = match &module_facts.module_export {
+        ModuleExport::Decl { decl, .. } => module_facts
+            .members_of_owner(decl)
+            .any(|member| member.key == key),
+        _ => false,
+    };
     if is_surface_member
+        || is_export_decl_member
         || is_declared_class_field(semantic_model, &prefix_ty, &key)
         || admits_by_index_signature(semantic_model, &prefix_ty, &key)
     {
@@ -167,8 +192,9 @@ fn admits_by_index_signature(
         })
 }
 
-/// Table type of a module export surface (`return { ... }` / `local M = {}; return M`).
-/// Non-table exports (functions / named types) return `None` and are left to undefined_field and other checkers.
+/// The table literal a module exports (`return { ... }` / `local M = {}; return M`), whatever type
+/// it is declared as. Non-table exports (functions / named types) return `None` and are left to
+/// undefined_field and other checkers.
 fn export_table_type(module_file: FileId, facts: &FileFacts) -> Option<LuaType> {
     let syntax = match &facts.module_export {
         ModuleExport::Expr { value_syntax } => Some(*value_syntax),

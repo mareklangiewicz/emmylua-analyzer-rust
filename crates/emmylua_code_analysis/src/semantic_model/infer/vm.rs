@@ -11,8 +11,8 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use emmylua_parser::{
-    BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocType, LuaExpr, LuaIndexKey,
-    LuaReturnStat, LuaSyntaxId, LuaSyntaxKind,
+    BinaryOperator, LuaAstNode, LuaCallExpr, LuaClosureExpr, LuaDocFuncType, LuaDocType, LuaExpr,
+    LuaIndexKey, LuaReturnStat, LuaSyntaxId, LuaSyntaxKind,
 };
 
 use hashbrown::HashMap;
@@ -24,6 +24,7 @@ use crate::semantic_db::def::{
 };
 use crate::semantic_db::facts::member_key_from_index_key;
 use crate::semantic_db::types::PrimitiveType;
+use crate::semantic_model::doc_types::DocTypeScope;
 use crate::semantic_model::flow::{
     ExprCastMode, apply_expr_casts, original_decl_signatures_at, type_of_expr_with_cast,
 };
@@ -891,7 +892,7 @@ impl<'a> InferVm<'a> {
                     }) else {
                         return Value::plain(LuaType::Unknown);
                     };
-                    let Some(enum_owner) = self.model.enum_runtime_owner(&def) else {
+                    let Some(enum_owner) = self.model.enum_table_owner(&def) else {
                         return Value::plain(LuaType::Unknown);
                     };
                     let mut types = Vec::new();
@@ -976,7 +977,16 @@ impl<'a> InferVm<'a> {
     /// signature's value type without adding nil; with no known members, unknown.
     fn index_member_dynamic_string(&mut self, owner: Value) -> Value {
         if !matches!(&owner.ty, LuaType::TableConst(_)) {
-            return Value::plain(LuaType::Unknown);
+            let ty = self
+                .model
+                .applicable_index_infos(&owner.ty, &LuaType::String)
+                .ok()
+                .filter(|infos| !infos.is_empty())
+                .map(|infos| {
+                    LuaType::from_vec(infos.into_iter().map(|info| info.value_type).collect())
+                })
+                .unwrap_or(LuaType::Unknown);
+            return Value::plain(ty);
         }
         let infos = self.model.member_infos(&owner.ty);
         let mut named_types = Vec::new();
@@ -1042,7 +1052,7 @@ impl<'a> InferVm<'a> {
             };
             return Some(
                 self.model
-                    .doc_type_lua_rich_in(self.model.file_id(), constraint),
+                    .project_doc_type(self.model.file_id(), constraint, &[]),
             );
         }
         None
@@ -2516,13 +2526,8 @@ impl<'a> InferVm<'a> {
                 && let Some(docs) = signature.docs.as_ref()
                 && !docs.return_overload_rows.is_empty()
             {
-                let generic_params = docs.generic_params.clone();
-                return self.return_overload_types_lua(
-                    file_id,
-                    docs,
-                    &generic_params,
-                    Some(bindings),
-                );
+                let scope = self.model.doc_type_scope(file_id, &docs.generic_params);
+                return self.return_overload_types_lua(docs, &scope, Some(bindings));
             }
         }
         let ret = bind_signature_generics(callee_fun.get_ret(), callee_fun.get_generic_params());
@@ -2777,10 +2782,14 @@ impl<'a> InferVm<'a> {
         signature: &Signature,
     ) -> Option<SignatureProjection> {
         let docs = signature.docs.as_ref()?;
-        let generic_params = &docs.generic_params;
-        let overloads = self.overload_functions(file_id, &docs.overloads, generic_params);
+        let scope = self.model.doc_type_scope(file_id, &docs.generic_params);
+        let overloads = docs
+            .overloads
+            .iter()
+            .filter_map(|syntax| self.doc_func_from_syntax(*syntax, &scope, false))
+            .collect();
         Some(SignatureProjection {
-            main: self.main_signature_function(file_id, signature, generic_params),
+            main: self.main_signature_function(signature, &scope),
             overloads,
         })
     }
@@ -2827,29 +2836,18 @@ impl<'a> InferVm<'a> {
         overload_syntaxes: &[LuaSyntaxId],
         generic_params: &[DocGenericParam],
     ) -> Vec<LuaFunctionType> {
+        let scope = self.model.doc_type_scope(file_id, generic_params);
         overload_syntaxes
             .iter()
-            .filter_map(|syntax| self.doc_func_from_syntax(file_id, *syntax, generic_params, false))
+            .filter_map(|syntax| self.doc_func_from_syntax(*syntax, &scope, false))
             .collect()
-    }
-
-    /// Build `GenericTpl`s with default/constraint metadata from `DocGenericParam`.
-    /// Delegates uniformly to `SemanticModel`, sharing the same implementation as other
-    /// signature-projection paths.
-    fn generic_tpls_with_metadata(
-        &self,
-        file_id: FileId,
-        params: &[DocGenericParam],
-    ) -> Vec<GenericTpl> {
-        self.model.generic_tpls_with_metadata(file_id, params)
     }
 
     /// Main signature (`---@param` + `---@return`), preserving variadic params and multi-returns.
     fn main_signature_function(
         &self,
-        file_id: FileId,
         signature: &Signature,
-        generic_params: &[DocGenericParam],
+        scope: &DocTypeScope,
     ) -> Option<LuaFunctionType> {
         let docs = signature.docs.as_ref()?;
         let is_variadic = signature.is_variadic;
@@ -2859,9 +2857,7 @@ impl<'a> InferVm<'a> {
                 .param_types
                 .iter()
                 .find(|(param_name, _)| param_name == name)
-                .map(|(_, syntax)| {
-                    self.doc_type_lua_with_generics(file_id, *syntax, generic_params)
-                })
+                .map(|(_, syntax)| self.model.project_doc_type_in_scope(*syntax, scope))
                 .unwrap_or(LuaType::Any);
             if docs.nullable_params.iter().any(|n| n == name) {
                 ty = LuaType::make_nullable(ty);
@@ -2869,30 +2865,25 @@ impl<'a> InferVm<'a> {
             params.push((name.to_string(), Some(ty)));
         }
 
-        let mut ret = self.return_overload_types_lua(file_id, docs, generic_params, None);
+        let mut ret = self.return_overload_types_lua(docs, scope, None);
         // Parameter docs must not hide inferred return slots.
         if matches!(ret, LuaType::Unknown)
             && docs.returns.is_empty()
             && docs.return_overloads.is_empty()
         {
-            let generic_names: Vec<_> = generic_params
+            let generic_names: Vec<_> = scope
+                .params
                 .iter()
                 .map(|param| param.name.clone())
                 .collect();
             ret = self.model.signature_return_type(
-                file_id,
+                scope.file_id,
                 signature.closure_syntax,
                 signature,
                 &generic_names,
             );
+            ret = bind_signature_generics(&ret, &scope.templates);
         }
-        let generic_tpls = self.generic_tpls_with_metadata(file_id, generic_params);
-        for (_, ty) in &mut params {
-            if let Some(ty) = ty {
-                *ty = bind_signature_generics(ty, &generic_tpls);
-            }
-        }
-        ret = bind_signature_generics(&ret, &generic_tpls);
         let async_state = if docs.is_async {
             AsyncState::Async
         } else {
@@ -2904,24 +2895,19 @@ impl<'a> InferVm<'a> {
             is_variadic,
             params,
             ret,
-            Some(generic_tpls),
+            Some(scope.templates.clone()),
         ))
     }
 
     /// Multi-return projection: a single return keeps its type; multiple / variadic returns
     /// are packed as `Variadic::Multi`.
-    fn return_types_lua(
-        &self,
-        file_id: FileId,
-        returns: &[LuaSyntaxId],
-        generic_params: &[DocGenericParam],
-    ) -> LuaType {
+    fn return_types_lua(&self, returns: &[LuaSyntaxId], scope: &DocTypeScope) -> LuaType {
         if returns.is_empty() {
             return LuaType::Unknown;
         }
         let mut types = returns
             .iter()
-            .map(|syntax| self.doc_type_lua_with_generics(file_id, *syntax, generic_params))
+            .map(|syntax| self.model.project_doc_type_in_scope(*syntax, scope))
             .collect::<Vec<_>>();
         if types.len() == 1 {
             return types.pop().unwrap_or(LuaType::Unknown);
@@ -2933,16 +2919,13 @@ impl<'a> InferVm<'a> {
     /// filled with nil).
     fn return_overload_types_lua(
         &self,
-        file_id: FileId,
         docs: &SignatureDoc,
-        generic_params: &[DocGenericParam],
+        scope: &DocTypeScope,
         bindings: Option<&unify::TplBindings>,
     ) -> LuaType {
         if docs.return_overload_rows.is_empty() {
-            return self.return_types_lua(file_id, &docs.returns, generic_params);
+            return self.return_types_lua(&docs.returns, scope);
         }
-
-        let generic_tpls = self.generic_tpls_with_metadata(file_id, generic_params);
 
         fn flatten_row_types(
             types: &[LuaType],
@@ -2974,8 +2957,7 @@ impl<'a> InferVm<'a> {
             let raw_row: Vec<LuaType> = docs.return_overloads[index..end]
                 .iter()
                 .map(|(_, syntax)| {
-                    let ty = self.doc_type_lua_with_generics(file_id, *syntax, generic_params);
-                    let ty = bind_signature_generics(&ty, &generic_tpls);
+                    let ty = self.model.project_doc_type_in_scope(*syntax, scope);
                     if let Some(bindings) = bindings {
                         unify::substitute(&ty, bindings)
                     } else {
@@ -2995,8 +2977,7 @@ impl<'a> InferVm<'a> {
             .returns
             .iter()
             .map(|syntax| {
-                let ty = self.doc_type_lua_with_generics(file_id, *syntax, generic_params);
-                let ty = bind_signature_generics(&ty, &generic_tpls);
+                let ty = self.model.project_doc_type_in_scope(*syntax, scope);
                 if let Some(bindings) = bindings {
                     unify::substitute(&ty, bindings)
                 } else {
@@ -3111,31 +3092,27 @@ impl<'a> InferVm<'a> {
     /// `---@overload fun(...)` / `fun(...)` doc node -> function type.
     fn doc_func_from_syntax(
         &self,
-        file_id: FileId,
         syntax: LuaSyntaxId,
-        generic_params: &[DocGenericParam],
+        scope: &DocTypeScope,
         is_method: bool,
     ) -> Option<LuaFunctionType> {
-        let tree = self.model.syntax_tree_of(file_id)?;
+        let tree = self.model.syntax_tree_of(scope.file_id)?;
         let root = tree.get_red_root();
         let node = syntax.to_node_from_root(&root)?;
         let doc_ty = LuaDocType::cast(node)?;
         match doc_ty {
-            LuaDocType::Func(func) => {
-                self.doc_func_from_ast(file_id, &func, generic_params, is_method)
-            }
+            LuaDocType::Func(func) => Some(self.doc_func_from_ast(&func, scope, is_method)),
             _ => None,
         }
     }
 
     /// Build a function type from the `LuaDocType::Func` AST.
-    fn doc_func_from_ast(
+    pub(crate) fn doc_func_from_ast(
         &self,
-        file_id: FileId,
-        func: &emmylua_parser::LuaDocFuncType,
-        outer_generics: &[DocGenericParam],
+        func: &LuaDocFuncType,
+        outer_scope: &DocTypeScope,
         is_method: bool,
-    ) -> Option<LuaFunctionType> {
+    ) -> LuaFunctionType {
         // A function type's own generic declarations shadow same-named outer generics (when
         // `fun<T>(value: T): T` is returned inside an outer `---@generic T`, T is the returned
         // function's generic, not the outer T).
@@ -3154,11 +3131,11 @@ impl<'a> InferVm<'a> {
             }
         }
         let has_own_generics = !own_generics.is_empty();
-        let generic_params = if has_own_generics {
-            own_generics
-        } else {
-            outer_generics.to_vec()
-        };
+        let own_scope = has_own_generics.then(|| {
+            self.model
+                .doc_type_scope(outer_scope.file_id, &own_generics)
+        });
+        let scope = own_scope.as_ref().unwrap_or(outer_scope);
 
         let mut params = Vec::new();
         let mut is_variadic = false;
@@ -3176,33 +3153,22 @@ impl<'a> InferVm<'a> {
                         String::new()
                     }
                 });
-            let ty = match param.get_type() {
-                Some(doc_ty) => self.doc_type_lua_with_generics(
-                    file_id,
-                    doc_ty.get_syntax_id(),
-                    &generic_params,
-                ),
+            let mut ty = match param.get_type() {
+                Some(doc_ty) => self.model.project_doc_type_node(&doc_ty, scope),
                 None => LuaType::Unknown,
             };
-            // `fun(i?: integer)`: the nullable marker is on the param, not on its type node.
-            let ty = if param.is_nullable() && !ty.is_nullable() {
-                LuaType::from_vec(vec![ty, LuaType::Nil])
-            } else {
-                ty
-            };
+            if param.is_nullable() && !ty.is_nullable() {
+                ty = LuaType::from_vec(vec![ty, LuaType::Nil]);
+            }
             params.push((name, Some(ty)));
         }
 
-        let mut ret = match func.get_return_type_list() {
+        let ret = match func.get_return_type_list() {
             Some(list) => {
                 let mut types = Vec::new();
                 for ret in list.get_return_type_list() {
                     if let (_, Some(ret_type)) = ret.get_name_and_type() {
-                        types.push(self.doc_type_lua_with_generics(
-                            file_id,
-                            ret_type.get_syntax_id(),
-                            &generic_params,
-                        ));
+                        types.push(self.model.project_doc_type_node(&ret_type, scope));
                     }
                 }
                 if types.is_empty() {
@@ -3217,17 +3183,11 @@ impl<'a> InferVm<'a> {
         };
 
         // Overloads need the same nested generic bindings as the main signature.
-        let generic_tpls = self.generic_tpls_with_metadata(file_id, &generic_params);
-        for (_, ty) in &mut params {
-            if let Some(ty) = ty {
-                *ty = bind_signature_generics(ty, &generic_tpls);
-            }
-        }
-        ret = bind_signature_generics(&ret, &generic_tpls);
-
         let mut fun = LuaFunctionType::new(
             if func.is_async() {
                 AsyncState::Async
+            } else if func.is_sync() {
+                AsyncState::Sync
             } else {
                 AsyncState::None
             },
@@ -3235,83 +3195,12 @@ impl<'a> InferVm<'a> {
             is_variadic,
             params,
             ret,
-            Some(generic_tpls),
+            Some(scope.templates.clone()),
         );
         if has_own_generics {
             fun = reassign_function_generics_to_func_ids(fun);
         }
-        Some(fun)
-    }
-
-    /// Doc type projection: `T...` / `fun(...)` go through AST, everything else uses semantic
-    /// projection.
-    fn doc_type_lua_with_generics(
-        &self,
-        file_id: FileId,
-        type_syntax: LuaSyntaxId,
-        generic_params: &[DocGenericParam],
-    ) -> LuaType {
-        let Some(tree) = self.model.syntax_tree_of(file_id) else {
-            return self
-                .model
-                .analysis()
-                .doc_type_lua(file_id, type_syntax, generic_params);
-        };
-        let root = tree.get_red_root();
-        let Some(node) = type_syntax.to_node_from_root(&root) else {
-            return self
-                .model
-                .analysis()
-                .doc_type_lua(file_id, type_syntax, generic_params);
-        };
-        let Some(doc_ty) = LuaDocType::cast(node) else {
-            return self
-                .model
-                .analysis()
-                .doc_type_lua(file_id, type_syntax, generic_params);
-        };
-
-        match doc_ty {
-            LuaDocType::Variadic(variadic) => {
-                let inner = match variadic.get_type() {
-                    Some(inner) => self.doc_type_lua_with_generics(
-                        file_id,
-                        inner.get_syntax_id(),
-                        generic_params,
-                    ),
-                    None => LuaType::Unknown,
-                };
-                LuaType::Variadic(Rc::new(VariadicType::Base(inner)))
-            }
-            LuaDocType::Func(func) => {
-                match self.doc_func_from_ast(file_id, &func, generic_params, false) {
-                    Some(fun) => LuaType::DocFunction(Rc::new(fun)),
-                    None => LuaType::Unknown,
-                }
-            }
-            // The element lowers like a whole type: an object element keeps its fields (the shell
-            // makes `{ t: string }[]` a `table[]`), a `T` element still binds.
-            LuaDocType::Array(array) => match array.get_type() {
-                Some(base) => LuaType::Array(Rc::new(LuaArrayType::from_base_type(
-                    self.doc_type_lua_with_generics(file_id, base.get_syntax_id(), generic_params),
-                ))),
-                None => self
-                    .model
-                    .analysis()
-                    .doc_type_lua(file_id, type_syntax, generic_params),
-            },
-            LuaDocType::Literal(_)
-            | LuaDocType::Object(_)
-            | LuaDocType::Binary(_)
-            | LuaDocType::IndexAccess(_)
-            | LuaDocType::Mapped(_)
-            | LuaDocType::Unary(_)
-            | LuaDocType::Conditional(_) => self.model.doc_type_lua_rich_in(file_id, type_syntax),
-            _ => self
-                .model
-                .analysis()
-                .doc_type_lua(file_id, type_syntax, generic_params),
-        }
+        fun
     }
 
     /// Expand function candidates in named aliases / unions / intersections /
@@ -3354,14 +3243,12 @@ impl<'a> InferVm<'a> {
                 if out.is_empty()
                     && let Some(def) = self.model.callable_type_def_of(id)
                 {
-                    for syntax in &def.call_overloads {
-                        if let Some(fun) = self.doc_func_from_syntax(
-                            def.file_id,
-                            *syntax,
-                            &def.generic_params,
-                            false,
-                        ) {
-                            out.push(fun);
+                    if !def.call_overloads.is_empty() {
+                        let scope = self.model.doc_type_scope(def.file_id, &def.generic_params);
+                        for syntax in &def.call_overloads {
+                            if let Some(fun) = self.doc_func_from_syntax(*syntax, &scope, false) {
+                                out.push(fun);
+                            }
                         }
                     }
                     if let Some(facts) = self.model.file_facts_of(def.file_id)
@@ -3389,14 +3276,12 @@ impl<'a> InferVm<'a> {
                 if out.is_empty()
                     && let Some(def) = self.model.callable_type_def_of(&base_id)
                 {
-                    for syntax in &def.call_overloads {
-                        if let Some(fun) = self.doc_func_from_syntax(
-                            def.file_id,
-                            *syntax,
-                            &def.generic_params,
-                            false,
-                        ) {
-                            out.push(fun);
+                    if !def.call_overloads.is_empty() {
+                        let scope = self.model.doc_type_scope(def.file_id, &def.generic_params);
+                        for syntax in &def.call_overloads {
+                            if let Some(fun) = self.doc_func_from_syntax(*syntax, &scope, false) {
+                                out.push(fun);
+                            }
                         }
                     }
                     if let Some(facts) = self.model.file_facts_of(def.file_id)
@@ -4348,8 +4233,15 @@ pub(crate) fn unify_call_bindings(
                     // to a named type instead of widening through the ordinary TplRef to string.
                     true
                 } else {
-                    pv.iter()
-                        .any(|p| unify_call_bindings(model, p, arg, bindings))
+                    pv.iter().any(|p| {
+                        let mut trial = bindings.clone();
+                        if unify_call_bindings(model, p, arg, &mut trial) {
+                            *bindings = trial;
+                            true
+                        } else {
+                            false
+                        }
+                    })
                 }
             }
         }
@@ -4457,17 +4349,6 @@ fn is_variadic_tuple_return(fun: &LuaFunctionType, _ret: &LuaType) -> bool {
 // ──────────────────────────────────────────────
 // Convenience: compile + run
 // ──────────────────────────────────────────────
-
-/// Build a `LuaFunctionType` from an inline `fun<T>(...): ...` doc type (rich projection
-/// version).
-pub fn infer_doc_func(
-    model: &SemanticModel,
-    file_id: FileId,
-    type_syntax: LuaSyntaxId,
-) -> Option<LuaFunctionType> {
-    let vm = InferVm::new(model, &[]);
-    vm.doc_func_from_syntax(file_id, type_syntax, &[], false)
-}
 
 /// Infer an expression (VM): compile -> interpret. Result = LuaType.
 pub fn infer_expr_vm(model: &SemanticModel, expr_syntax: LuaSyntaxId) -> LuaType {
@@ -5115,6 +4996,14 @@ pub(crate) fn bind_signature_generics(ty: &LuaType, generics: &[GenericTpl]) -> 
         ))),
         LuaType::Array(array) => LuaType::Array(Rc::new(LuaArrayType::from_base_type(
             bind_signature_generics(array.get_base(), generics),
+        ))),
+        LuaType::Tuple(tuple) => LuaType::Tuple(Rc::new(LuaTupleType::new(
+            tuple
+                .get_types()
+                .iter()
+                .map(|ty| bind_signature_generics(ty, generics))
+                .collect(),
+            tuple.status,
         ))),
         LuaType::Variadic(variadic) => {
             let resolved = match variadic.as_ref() {

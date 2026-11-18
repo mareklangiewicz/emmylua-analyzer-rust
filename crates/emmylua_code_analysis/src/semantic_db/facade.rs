@@ -6,28 +6,29 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use emmylua_parser::{LuaChunk, LuaExpr, LuaParseError, LuaSyntaxId, LuaSyntaxTree};
+use emmylua_parser::{LuaChunk, LuaDocType, LuaExpr, LuaParseError, LuaSyntaxId, LuaSyntaxTree};
 use rowan::{TextRange, TextSize};
 use smol_str::SmolStr;
 
+use crate::LuaObjectType;
 use crate::semantic_db::types::LiteralShell;
 use crate::{
     GenericTpl, GenericTplId, LuaAliasCallKind, LuaAliasCallType, LuaArrayType, LuaStringTplType,
     LuaTupleStatus, LuaTupleType, VariadicType,
 };
-use crate::{LuaMemberKey, LuaObjectType};
 
 use super::SemanticDatabase;
 use super::def::{
-    ConstructorAttribute, Decl, DocGenericParam, Member, MemberRef, ModuleExport, NameUse, OwnerId,
-    Scope, SemanticId, Signature, TypeDef, TypeScope,
+    AccessPath, ConstructorAttribute, Decl, DocGenericParam, LuaMemberKey, Member, MemberRef,
+    MemberUse, ModuleExport, NameUse, OwnerId, Scope, SemanticId, Signature, TypeDef, TypeScope,
 };
 use super::exports::FileExports;
 use super::facts::FileFacts;
 use super::flow::FlowTree;
 use super::query::{
-    self, decl_references, decl_type, member_keys_of_decl, member_keys_of_type, member_type,
-    module_export_type, resolve_name, resolve_type_def, signature_return,
+    self, decl_references, decl_type, lower_doc_type_node, member_keys_of_decl,
+    member_keys_of_type, member_type, module_export_type, resolve_name, resolve_type_def,
+    signature_return,
 };
 use super::types::{ObjectFieldKey, PrimitiveType, TypeCandidate, TypeShell};
 use crate::{
@@ -373,6 +374,14 @@ impl<'db> AnalysisView<'db> {
         query::member_ref_from_index_expr(facts, &index_expr)
     }
 
+    pub fn member_use(&self, file_id: FileId, index_syntax: LuaSyntaxId) -> Option<&'db MemberUse> {
+        self.db.file_facts_of(file_id)?.member_use(index_syntax)
+    }
+
+    pub fn members_of_receiver_key(&self, receiver: &AccessPath, key: &LuaMemberKey) -> MemberList {
+        MemberList::from(query::members_of_receiver_key(self.db, receiver, key))
+    }
+
     /// Direct member names of a local declaration (completion candidates).
     #[allow(unused)]
     pub fn member_keys_of_decl(&self, file_id: FileId, decl: SemanticId) -> Vec<SmolStr> {
@@ -574,6 +583,18 @@ impl<'db> AnalysisView<'db> {
         self.type_shell_lua_in(file_id, &shell, &generic_names)
     }
 
+    /// 按所属文件和泛型作用域投影已取得的注解节点.
+    pub(crate) fn doc_type_node_lua(
+        &self,
+        file_id: FileId,
+        doc_type: &LuaDocType,
+        generics: &[DocGenericParam],
+    ) -> LuaType {
+        let shell = lower_doc_type_node(self.db, file_id, generics, doc_type);
+        let generic_names: Vec<SmolStr> = generics.iter().map(|g| g.name.clone()).collect();
+        self.type_shell_lua_in(file_id, &shell, &generic_names)
+    }
+
     fn project_shell(&self, file_id: FileId, shell: &TypeShell) -> LuaType {
         self.project_shell_in(file_id, shell, &[])
     }
@@ -733,25 +754,11 @@ impl<'db> AnalysisView<'db> {
                 TypeCandidate::GenericInstance(ins) => {
                     let name = &ins.name;
                     let args = &ins.args;
-                    let base_id = self.resolve_named_id(file_id, name);
                     let params: Vec<LuaType> = args
                         .iter()
                         .map(|arg| self.project_shell_in(file_id, arg, generic_names))
                         .collect();
-                    // `TypeGuard<T>` is a built-in type guard: projected to `LuaType::TypeGuard(T)`,
-                    // which flow analysis uses to narrow the argument in `if isX(v) then`.
-                    if name == "TypeGuard"
-                        && let Some(inner) = params.first()
-                    {
-                        LuaType::TypeGuard(Rc::new(inner.clone()))
-                    } else if name == "std.Unpack" {
-                        LuaType::Call(Rc::new(LuaAliasCallType::new(
-                            LuaAliasCallKind::Unpack,
-                            params,
-                        )))
-                    } else {
-                        LuaType::Generic(Rc::new(LuaGenericType::new(base_id, params)))
-                    }
+                    self.project_generic_type(file_id, name, params)
                 }
                 // String template type → StrTplRef (string arguments replace placeholder names).
                 TypeCandidate::StrTpl(str_tpl) => {
@@ -778,6 +785,30 @@ impl<'db> AnalysisView<'db> {
             0 => LuaType::Unknown,
             1 => types.pop().expect("len checked"),
             _ => LuaType::Union(LuaUnionType::from_vec(types).into()),
+        }
+    }
+
+    /// 根据名称和类型实参投影泛型类型, 保留内建泛型的语义.
+    pub(crate) fn project_generic_type(
+        &self,
+        file_id: FileId,
+        name: &str,
+        params: Vec<LuaType>,
+    ) -> LuaType {
+        // `TypeGuard<T>` is a built-in type guard: projected to `LuaType::TypeGuard(T)`,
+        // which flow analysis uses to narrow the argument in `if isX(v) then`.
+        if name == "TypeGuard"
+            && let Some(inner) = params.first()
+        {
+            LuaType::TypeGuard(Rc::new(inner.clone()))
+        } else if name == "std.Unpack" {
+            LuaType::Call(Rc::new(LuaAliasCallType::new(
+                LuaAliasCallKind::Unpack,
+                params,
+            )))
+        } else {
+            let base_id = self.resolve_named_id(file_id, name);
+            LuaType::Generic(Rc::new(LuaGenericType::new(base_id, params)))
         }
     }
 

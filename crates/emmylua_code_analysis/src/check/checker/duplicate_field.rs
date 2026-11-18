@@ -42,19 +42,24 @@ impl Checker for DuplicateFieldChecker {
             check_cross_file_member_assign(context, semantic_model, root);
         }
 
-        let mut by_owner: HashMap<(&SemanticId, Option<LuaSyntaxId>), Vec<&Member>> =
-            HashMap::new();
+        let mut by_owner: HashMap<
+            (&SemanticId, &[LuaMemberKey], Option<LuaSyntaxId>),
+            Vec<&Member>,
+        > = HashMap::new();
         for member in &facts.members {
+            let (owner, path) = match facts.member_receiver(member) {
+                Some(receiver) if receiver.is_exact() => (&receiver.root, receiver.keys.as_slice()),
+                Some(_) => continue,
+                None => (&member.owner, &[][..]),
+            };
             by_owner
-                .entry((&member.owner, member.implicit_self))
+                .entry((owner, path, member.implicit_self))
                 .or_default()
                 .push(member);
         }
-        for ((owner, _), members) in by_owner {
-            // Group by key and its index-signature domain, by the table the key is set on (a local
-            // root's owner drops the path below it, so `M.A:init` and `M.B:init` share the owner
-            // `M`), and by the function body that sets it: sets in different bodies run on
-            // different calls.
+        for ((owner, _, _), members) in by_owner {
+            // Group by key and its index-signature domain, and by the function body that sets
+            // it: sets in different bodies run on different calls.
             let mut by_key: HashMap<
                 (LuaMemberKey, Option<SetSite>),
                 Vec<(Option<LuaType>, Vec<&Member>)>,
@@ -193,13 +198,28 @@ fn check_cross_file_member_assign(
             };
             // `self.go = nil` sets no function: clearing a field is not a method to reimplement.
             let module_tree = semantic_model.syntax_tree_of(module_file);
-            if !module_facts
-                .members_named(resolved.name.as_str())
-                .any(|member| {
-                    member.value_syntax.is_some()
-                        && is_function_like(semantic_model, module_tree, member)
-                })
-            {
+            let defines_function = |member: &Member| {
+                member.value_syntax.is_some()
+                    && is_function_like(semantic_model, module_tree, member)
+            };
+            let same_path = resolved.receiver.as_ref().is_some_and(|receiver| {
+                semantic_model
+                    .members_of_receiver_key(receiver, &resolved.key)
+                    .iter()
+                    .any(|member| {
+                        member.file_id == module_file
+                            && module_facts
+                                .member_by_id(&member.id)
+                                .is_some_and(defines_function)
+                    })
+            });
+            let original_definition = resolved.file_id == Some(module_file)
+                && resolved
+                    .member_id
+                    .as_ref()
+                    .and_then(|id| module_facts.member_by_id(id))
+                    .is_some_and(defines_function);
+            if !same_path && !original_definition {
                 continue;
             }
             // Only function/closure right-hand sides count as "reimplementing an existing method"; plain field writes are not reported.

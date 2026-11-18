@@ -11,9 +11,10 @@ use super::SemanticDatabase;
 use super::def::Decl;
 use super::def::TypeScope;
 use super::def::{
-    ChangedKeys, ConstructorAttribute, DeclKind, DependencyKey, DocGenericParam, ExportKey,
-    LuaMemberKey, MemberRef, ModuleExport, ModuleInfo, ModuleNode, ModuleNodeId, ModuleVisibility,
-    OwnerId, SemanticId, TypeDef, TypeDefKind,
+    AccessPath, ChangedKeys, ConstructorAttribute, DeclKind, DependencyKey, DocGenericParam,
+    ExportKey, LuaMemberKey, MemberPathKey, MemberRef, MemberSource, MemberUse, ModuleExport,
+    ModuleInfo, ModuleNode, ModuleNodeId, ModuleVisibility, OwnerId, SemanticId, TypeDef,
+    TypeDefKind,
 };
 use super::exports::{
     FileExports, GlobalExport, MemberExport, module_export_owner_file, owner_id_from_semantic_id,
@@ -150,12 +151,20 @@ pub(crate) fn changed_keys(old: Option<&FileExports>, new: Option<&FileExports>)
     fn member_map(exports: &FileExports) -> HashMap<DependencyKey, Vec<&MemberExport>> {
         let mut map: HashMap<DependencyKey, Vec<&MemberExport>> = HashMap::new();
         for member in &exports.members {
-            let ExportKey::Member(owner_id, key) = member.export_key() else {
-                continue;
+            let key = match member.export_key() {
+                ExportKey::Member(owner_id, key) => DependencyKey::Member(owner_id, key),
+                ExportKey::RuntimeMember(key) => DependencyKey::RuntimeMember(key),
+                _ => continue,
             };
-            map.entry(DependencyKey::Member(owner_id, key))
+            map.entry(key).or_default().push(member);
+            if member.path_key.is_some() && member.is_direct {
+                map.entry(DependencyKey::Member(
+                    member.owner_id.clone(),
+                    member.key.clone(),
+                ))
                 .or_default()
                 .push(member);
+            }
         }
         map
     }
@@ -399,17 +408,122 @@ pub(crate) fn workspace_reference_index_for(
 pub(crate) fn resolve_member_id(
     db: &SemanticDatabase,
     facts: &FileFacts,
-    index_expr: &LuaIndexExpr,
+    member_use: &MemberUse,
 ) -> Option<SemanticId> {
-    let (owner, name) = member_ref_from_index_expr(facts, index_expr)?;
-    for resolved in resolve_owner_set(db, owner) {
-        for member in members_of_owner(db, resolved).iter().cloned() {
-            if member.name == name {
-                return Some(member.id);
+    let receiver = member_use.receiver.as_ref()?;
+    if let Some(member) = facts.member_for_use(member_use)
+        && (member.doc_type_syntax.is_some()
+            || !matches!(
+                canonical_owner_id(db, &receiver.root),
+                Some(OwnerId::Module(module)) if module != facts.file_id
+            ))
+    {
+        return Some(member.id.clone());
+    }
+    if let Some(member) = members_of_receiver_key(db, receiver, &member_use.key).first() {
+        return db
+            .file_facts_of(member.file_id)?
+            .member_definition(&member.id)
+            .map(|member| member.id.clone());
+    }
+    if !member_use.has_direct_owner() {
+        return None;
+    }
+    let owner = member_use.owner.as_ref()?;
+    if let Some(key_expr) = member_use.key_expr
+        && let Some(member) = facts.members_of_owner_computed_key(owner, key_expr).next()
+    {
+        return Some(member.id.clone());
+    }
+    for resolved in resolve_owner_set(db, owner.clone()) {
+        for member in members_of_owner(db, resolved).iter() {
+            let member_facts = if member.file_id == facts.file_id {
+                Some(facts)
+            } else {
+                db.file_facts_of(member.file_id)
+            };
+            if member_facts
+                .and_then(|facts| facts.member_by_id(&member.id))
+                .is_some_and(|member| {
+                    member.key == member_use.key
+                        && !matches!(member.source, MemberSource::Runtime { .. })
+                })
+            {
+                return Some(member.id.clone());
             }
         }
     }
     None
+}
+
+pub(crate) fn member_path_key(
+    db: &SemanticDatabase,
+    receiver: &AccessPath,
+    key: &LuaMemberKey,
+) -> Option<MemberPathKey> {
+    if !receiver.is_exact() || key.is_none() {
+        return None;
+    }
+    Some(MemberPathKey::new(
+        canonical_owner_id(db, &receiver.root)?,
+        &receiver.keys,
+        key.clone(),
+    ))
+}
+
+/// 返回接收者指定键的成员候选.
+pub(crate) fn members_of_receiver_key(
+    db: &SemanticDatabase,
+    receiver: &AccessPath,
+    key: &LuaMemberKey,
+) -> Arc<[MemberRef]> {
+    if !receiver.is_exact() || key.is_none() {
+        return Arc::default();
+    }
+    let mut result: Option<Arc<[MemberRef]>> = None;
+    let mut merged = Vec::new();
+    if db.config().is_some()
+        && let Some(root) = canonical_owner_id(db, &receiver.root)
+    {
+        for &workspace in db.workspace_lookup_order() {
+            let index = workspace_member_index_for(db, workspace);
+            if let Some(bucket) = index.members_of_receiver_key(&root, &receiver.keys, key) {
+                match &result {
+                    None => result = Some(bucket),
+                    Some(previous) => {
+                        if merged.is_empty() {
+                            merged.reserve(previous.len() + bucket.len());
+                            merged.extend_from_slice(previous);
+                        }
+                        merged.extend_from_slice(&bucket);
+                    }
+                }
+            }
+        }
+    }
+    if !merged.is_empty() {
+        result = Some(Arc::from(merged));
+    }
+    result.unwrap_or_else(|| {
+        let SemanticId::Decl(root) = &receiver.root else {
+            return Arc::default();
+        };
+        let Some(facts) = db.file_facts_of(root.file_id) else {
+            return Arc::default();
+        };
+        let members: Vec<_> = facts
+            .members_of_receiver_key(receiver, key)
+            .map(|member| MemberRef {
+                file_id: facts.file_id,
+                id: member.id.clone(),
+                name: match &member.key {
+                    LuaMemberKey::Name(name) => name.clone(),
+                    key => key.to_path().into(),
+                },
+            })
+            .collect();
+        Arc::from(members)
+    })
 }
 
 /// Canonical module owner for a raw file-local owner identity.
@@ -2193,7 +2307,7 @@ pub(crate) fn lower_doc_type(
     lower_doc_type_node(db, file_id, generics, &doc_type)
 }
 
-fn lower_doc_type_node(
+pub(crate) fn lower_doc_type_node(
     db: &SemanticDatabase,
     file: FileId,
     generics: &[DocGenericParam],
@@ -2539,8 +2653,11 @@ pub(crate) fn member_type(
                     .type_def_by_id(&member.owner)
                     .map(|def| def.generic_params.as_slice())
                     .unwrap_or(&[]);
-                let shell = lower_doc_type(db, file_id, value_syntax, generics);
+                let mut shell = lower_doc_type(db, file_id, value_syntax, generics);
                 if !shell.is_unknown() {
+                    if member.is_nullable {
+                        shell.merge(&TypeShell::from_primitive(PrimitiveType::Nil));
+                    }
                     return shell;
                 }
             }
@@ -2626,6 +2743,7 @@ pub(crate) fn type_member(
     db: &SemanticDatabase,
     facts: &FileFacts,
     file: FileId,
+    config: &Emmyrc,
     type_def: SemanticId,
     name: &str,
     visited: &mut Vec<SemanticId>,
@@ -2636,21 +2754,17 @@ pub(crate) fn type_member(
     visited.push(type_def.clone());
 
     if let Some(member) = facts.field_members_of_type(&type_def, name) {
-        if let Some(value_syntax) = member.value_syntax {
-            let generics = facts
-                .type_def_by_id(&type_def)
-                .map(|def| def.generic_params.as_slice())
-                .unwrap_or(&[]);
-            let shell = lower_doc_type(db, file, value_syntax, generics);
-            if !shell.is_unknown() {
-                return Some(shell);
-            }
+        let shell = member_type(db, file, config, member.id.clone());
+        if !shell.is_unknown() {
+            return Some(shell);
         }
     }
 
     let def = facts.type_def_by_id(&type_def)?;
     for super_def in local_base_type_defs(db, facts, def) {
-        if let Some(shell) = type_member(db, facts, file, super_def.id.clone(), name, visited) {
+        if let Some(shell) =
+            type_member(db, facts, file, config, super_def.id.clone(), name, visited)
+        {
             return Some(shell);
         }
     }
@@ -3003,10 +3117,25 @@ fn callee_closure_syntax(facts: &FileFacts, callee: LuaExpr) -> Option<LuaSyntax
             decl.value_expr_syntax
         }
         LuaExpr::IndexExpr(index_expr) => {
-            let (owner, name) = member_ref_from_index_expr(facts, &index_expr)?;
+            let member_use = facts.member_use(index_expr.get_syntax_id())?;
+            let receiver = member_use.receiver.as_ref()?;
             let member = facts
-                .members_of_owner(&owner)
-                .find(|m| m.key.name() == Some(name.as_str()))?;
+                .members_of_receiver_key(receiver, &member_use.key)
+                .next()
+                .or_else(|| {
+                    member_use.has_direct_owner().then_some(())?;
+                    if let Some(key_expr) = member_use.key_expr {
+                        return facts
+                            .members_of_owner_computed_key(member_use.owner.as_ref()?, key_expr)
+                            .next();
+                    }
+                    facts
+                        .members_of_owner(member_use.owner.as_ref()?)
+                        .find(|member| {
+                            member.key == member_use.key
+                                && !matches!(member.source, MemberSource::Runtime { .. })
+                        })
+                })?;
             member.value_syntax
         }
         LuaExpr::ClosureExpr(closure) => Some(closure.get_syntax_id()),
@@ -3597,24 +3726,15 @@ fn expr_type_index(
     index_expr: LuaIndexExpr,
     prefix_shell: TypeShell,
 ) -> TypeShell {
-    let Some((owner, name, exact)) = member_ref_with_exactness(facts, &index_expr) else {
+    let Some(member_use) = facts.member_use(index_expr.get_syntax_id()) else {
         return TypeShell::unknown();
     };
-    // 1/2 read the owner's members, so only when the owner is the table the prefix holds.
-    if exact {
-        // 1. In-file members (owner key).
-        if let Some(member) = facts
-            .members_of_owner(&owner)
-            .find(|m| m.key.name() == Some(name.as_str()))
-        {
-            return member_type(db, file, config, member.id.clone());
-        }
-        // 2/3. Phase 2: cross-file merged lookup + type-member fallback (requires workspace).
-        // 2. Cross-file members by owner key + resolved concrete id key.
-        if let Some(shell) = member_type_via_owner(db, config, &owner, &name) {
-            return shell;
-        }
+    if let Some(member_id) = resolve_member_id(db, facts, member_use)
+        && let SemanticId::Member(location) = &member_id
+    {
+        return member_type(db, location.file_id, config, member_id);
     }
+    let name = member_use.key.to_path();
     // 3. If the prefix type is a named class/export name -> cross-file owner members (@field + runtime), then inherited @fields.
     for candidate in &prefix_shell.candidates {
         // Generic instantiation `Box<number>`: member types contain `Generic(T)`, substitute with actual args.
@@ -3669,7 +3789,7 @@ fn expr_type_index(
             if let Some(def) = def {
                 let mut visited = Vec::new();
                 if let Some(shell) =
-                    type_member(db, facts, file, def.id.clone(), &name, &mut visited)
+                    type_member(db, facts, file, config, def.id.clone(), &name, &mut visited)
                 {
                     return shell;
                 }

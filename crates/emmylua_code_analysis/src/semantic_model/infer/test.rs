@@ -2023,7 +2023,12 @@ fn test_unsigned_integer_key_is_one_member_for_write_and_read() {
         got = t[0xFFFFFFFFFFFFFFFFULL]
     "#,
     );
-    assert_eq!(ws.expr_ty("got"), LuaType::String);
+    // The read sees the write's value, as for a named key: upstream's member-path flow keeps the
+    // assigned literal (its `member_paths_keep_reassignment_flow_on_the_same_path`).
+    assert_eq!(
+        ws.expr_ty("got"),
+        LuaType::StringConst(smol_str::SmolStr::new("x").into())
+    );
 }
 
 #[test]
