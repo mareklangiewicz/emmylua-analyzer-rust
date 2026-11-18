@@ -3171,6 +3171,11 @@ pub(crate) fn module_export_type(
                 .map(|def| def.full_name.clone());
             if let Some(type_name) = declared_type_name {
                 shell = TypeShell::from_name(type_name.as_str());
+            } else if decl_initializer_is_unresolved(db, &facts, file_id, config, decl) {
+                // `local M = require('missing'); function M.f() end; return M` (#48): `M`'s
+                // value is not known, so neither is the export. Its name would export a table
+                // holding only the members written to it, closing a shape whose base is unknown.
+                return TypeShell::unknown();
             } else {
                 shell.merge(&TypeShell::from_name(name.as_str()));
             }
@@ -3202,6 +3207,52 @@ pub(crate) fn module_export_type(
         }
         ModuleExport::None => TypeShell::unknown(),
     }
+}
+
+/// Whether a declaration's initializer, followed through local aliases (`local M = base`), is a
+/// `require` of a module no file provides or a global no file declares: a value of unknown shape.
+fn decl_initializer_is_unresolved(
+    db: &SemanticDatabase,
+    facts: &FileFacts,
+    file_id: FileId,
+    config: &Emmyrc,
+    decl: &SemanticId,
+) -> bool {
+    let Some(tree) = db.syntax_tree_of(file_id) else {
+        return false;
+    };
+    let mut decl = decl.clone();
+    // A bounded walk: an alias chain longer than this is left to the name export.
+    for _ in 0..8 {
+        let Some(info) = facts.decl_by_id(&decl) else {
+            return false;
+        };
+        if info.doc_type_syntax.is_some() || info.multi_return_index.is_some_and(|i| i > 0) {
+            return false;
+        }
+        let Some(expr) = info
+            .value_expr_syntax
+            .and_then(|value| find_expr_by_syntax_id(&tree, &value))
+        else {
+            return false;
+        };
+        match expr {
+            LuaExpr::CallExpr(call) if call.is_require() => {
+                return require_module_name(&call).is_some_and(|module| {
+                    module_file_from(db, config, SmolStr::new(&module), file_id).is_none()
+                });
+            }
+            LuaExpr::NameExpr(name) => match resolve_name(db, file_id, name.get_position()) {
+                None => return true,
+                Some(SemanticId::Decl(key)) if key.file_id == file_id => {
+                    decl = SemanticId::Decl(key)
+                }
+                Some(_) => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
 }
 
 // ──────────────────────────────────────────────

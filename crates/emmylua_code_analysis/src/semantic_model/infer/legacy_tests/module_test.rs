@@ -186,6 +186,46 @@ mod test {
             assert_eq!(ws.humanize_type(typ), expected);
         }
     }
+    /// `local M = require('missing'); function M.f() end; return M` (gitsigns' test helpers, #48):
+    /// `M` is `unknown` in its own file, so its export is too. The flow-free shell exported a table
+    /// holding only `f`, and every other field read through `require` was undefined and nil.
+    /// A module built on a table literal keeps its closed shape.
+    #[test]
+    fn test_require_export_on_an_unknown_base_stays_open() {
+        for (name, base) in [
+            (
+                "alias",
+                "local base = require('missing.helpers')\nlocal M = base",
+            ),
+            ("direct", "local M = require('missing.helpers')"),
+            ("global", "local M = unresolved_global"),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            ws.def_files(vec![(
+                "h.lua",
+                &format!("{base}\nfunction M.extra() end\nreturn M\n"),
+            )]);
+            let read = "local h = require('h')\nlocal eq = h.eq\neq(1, 1)\nh.extra()\n";
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::UndefinedField, read),
+                "{name}: undefined-field"
+            );
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, read),
+                "{name}: need-check-nil"
+            );
+        }
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def_files(vec![(
+            "h.lua",
+            "local M = {}\nfunction M.extra() end\nreturn M\n",
+        )]);
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::UndefinedField,
+            "local h = require('h')\nlocal eq = h.eq\n",
+        ));
+    }
+
     /// `local M = defer('m', { sub = 1 })` (Neovim's `vim._defer_require`): the export's flow-free
     /// shell cannot instantiate the generic call, so `require` lost the literal's fields AND, held
     /// by a member (`vim.lsp = require('vim.lsp')`), the `function M.get()` members too.
