@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use emmylua_parser::{LuaAstNode, LuaExpr, LuaTableExpr, LuaTableField};
+use emmylua_parser::{LuaAstNode, LuaClosureExpr, LuaExpr, LuaTableExpr, LuaTableField};
 use hashbrown::{HashMap, HashSet};
 
 use crate::semantic_db::def::{DeclKind, MemberRef, SemanticId, TypeDef, TypeDefKind};
@@ -188,6 +188,27 @@ fn find_member_in_owner(
     None
 }
 
+/// The member `find_member_in_owner` picks, when its value is a function definition
+/// (`function M:f()`, `function M.f()`, `M.f = function() end`).
+fn find_function_member_in_owner(
+    model: &SemanticModel,
+    owner: &SemanticId,
+    key: &LuaMemberKey,
+    bindings: Option<&TplBindings>,
+    name_bindings: Option<&HashMap<String, LuaType>>,
+) -> Option<MemberInfo> {
+    let info = find_member_in_owner(model, owner, key, bindings, name_bindings)?;
+    let (Some(id), Some(file_id)) = (&info.id, info.file_id) else {
+        return None;
+    };
+    let is_function = model
+        .file_facts_of(file_id)
+        .and_then(|facts| facts.member_by_id(id))
+        .and_then(|member| member.value_syntax)
+        .is_some_and(|value| LuaClosureExpr::can_cast(value.get_kind()));
+    is_function.then_some(info)
+}
+
 fn find_type_def_member(
     model: &SemanticModel,
     def: &TypeDef,
@@ -204,6 +225,22 @@ fn find_type_def_member(
     if let Some(info) = find_member_in_owner(model, &def.id, key, bindings, name_bindings) {
         visited.pop();
         return Some(info);
+    }
+
+    // A function defined on the class's runtime table (`local M = {}` + `function M:f()`) is the
+    // class's own declaration, so it shadows the parents' members as its `@field`s do (#47: an
+    // inherited `---@field f? fun()`). A data write there (`M.cfg = {}`) does not: the parent's
+    // declared field stays the type, as the runtime members below the parents.
+    for owner in model.resolve_owner_set(def.id.clone()) {
+        if owner == def.id {
+            continue;
+        }
+        if let Some(info) =
+            find_function_member_in_owner(model, &owner, key, bindings, name_bindings)
+        {
+            visited.pop();
+            return Some(info);
+        }
     }
 
     for super_type in inherited_base_types(model, def, bindings, name_bindings) {

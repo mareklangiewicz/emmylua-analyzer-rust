@@ -1308,4 +1308,62 @@ mod test {
             .collect();
         assert!(wrong.is_empty(), "{wrong:#?}");
     }
+
+    /// A class's own method shadows an optional field of the same name that it inherits
+    /// (#47: which-key `node:expand`, sidekick `tool:format`; upstream regression in fcc04166).
+    #[test]
+    fn test_own_method_shadows_inherited_optional_field() {
+        let mut ws = VirtualWorkspace::new();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class Cfg
+            ---@field format? fun(s: string): string
+
+            ---@class Tool: Cfg
+            local M = {}
+            M.__index = M
+
+            ---@param s string
+            ---@return string
+            function M:format(s)
+              return s
+            end
+
+            ---@param t Tool
+            local function use(t)
+              return t:format("x")
+            end
+
+            ---@type Tool
+            local tool = setmetatable({}, M)
+            print(tool:format("y"), use(tool))
+            return M
+            "#
+        ));
+        // A data write on the child's table does not shadow the parent's declared field: it stays
+        // the declared type (diffview `GitAdapter.bootstrap = {…}` under `VCSAdapter`).
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@class Ver
+            ---@field major integer
+
+            ---@class Boot
+            ---@field version Ver
+
+            ---@class Base
+            ---@field bootstrap Boot
+
+            ---@class Child: Base
+            local Child = {}
+            Child.bootstrap = { version = {} }
+
+            ---@param v Ver
+            local function check(v) end
+            check(Child.bootstrap.version)
+            return Child
+            "#
+        ));
+    }
 }
