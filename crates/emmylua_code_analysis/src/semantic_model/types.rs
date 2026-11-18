@@ -505,10 +505,19 @@ impl<'db> SemanticModel<'db> {
                 .nth(1)
                 .map(|step| self.type_of_expr_at(step.get_syntax_id(), step.get_position()))
                 .unwrap_or(LuaType::Integer);
-            return Some(if initial_ty.is_integer() && step_ty.is_integer() {
-                LuaType::Integer
-            } else {
+            // Only a possible float makes the loop `number` (Lua 5.3+): a union of integers
+            // (`-1|1`) and a start or step of no numeric type (`unknown`) keep `integer`.
+            let may_be_float = |ty: &LuaType| {
+                let is_float = |ty: &LuaType| ty.is_number() && !ty.is_integer();
+                match ty {
+                    LuaType::Union(union) => union.into_vec().iter().any(is_float),
+                    ty => is_float(ty),
+                }
+            };
+            return Some(if may_be_float(&initial_ty) || may_be_float(&step_ty) {
                 LuaType::Number
+            } else {
+                LuaType::Integer
             });
         }
         let stat = LuaForRangeStat::cast(node)?;

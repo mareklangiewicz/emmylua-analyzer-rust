@@ -186,14 +186,20 @@ mod test {
         let mut ws = VirtualWorkspace::new();
         let code = |header: &str, body: &str| {
             format!(
-                "---@param n integer\nlocal function take(n) end\n---@param a integer\n---@param x number\nlocal function f(a, x)\n  for i = {header} do\n    {body}\n  end\nend\nreturn f"
+                "---@param n integer\nlocal function take(n) end\n---@param a integer\n---@param x number\n---@param s -1|1\n---@param o -1|1|nil\nlocal function f(a, x, s, o)\n  if o then\n  for i = {header} do\n    {body}\n  end\n  end\nend\nreturn f"
             )
         };
         // Lua 5.3+: an integer loop when the start and the step are; the limit does not matter.
+        // Only a float makes it `number`: a union of integers, or a start or step of no numeric
+        // type (an unresolved global, `#` of one), keeps `integer`.
         for (header, integer) in [
             ("a, 10", true),
             ("1, x", true),
             ("a, 10, -1", true),
+            ("a + s, 10, s", true),
+            ("a, 10, o", true),
+            ("unresolved_global, 10", true),
+            ("#(unresolved_global or {}), 1, -1", true),
             ("1.5, 3", false),
             ("1, 3, x", false),
         ] {
