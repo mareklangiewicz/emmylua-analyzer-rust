@@ -234,6 +234,45 @@ mod test {
         ));
     }
 
+    /// A write on a branch that returned does not reach a read after the branch: `ctx.current`
+    /// there reads its declared `Br`, not the `{ arms = {} }` literal (#49, luagnd onest.lua:174).
+    #[test]
+    fn test_member_written_on_a_returned_branch_reads_declared_after_it() {
+        let mut ws = VirtualWorkspace::new();
+        let code = |write: &str, after: &str| {
+            format!(
+                "---@class Br\n---@field arms table<string, Br>\n---@field ended? boolean\n\n---@class Ctx\n---@field current? Br\n\nlocal ctx = {{}} --[[@as Ctx]]\n\n---@param name string\nlocal function run(name)\n  if ctx.current == nil then\n    {write}\n    return\n  end\n  {after}\nend\nreturn run\n"
+            )
+        };
+        // The onest.lua shape: the field read through the member is optional, so the `if` is not.
+        for write in [
+            "ctx.current = { arms = {} }",
+            "ctx.current = { arms = {} }\n    ctx.current = nil",
+        ] {
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::UnnecessaryIf,
+                    &code(write, "local arm = ctx.current.arms[name] or { arms = {} }\n  if arm.ended then return end"),
+                ),
+                "{write}"
+            );
+        }
+        // The read after the branch is the declared `Br`.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            &code(
+                "ctx.current = { arms = {} }",
+                "---@type Br\n  local c = ctx.current"
+            ),
+        ));
+        // The root: `x.k == lit` false drops a component only when its `k` can be nothing but
+        // `lit`. A `"a"|"b"` field keeps its owner past `if k.kind == "a" then return end`.
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            "---@class K\n---@field kind \"a\"|\"b\"\n---@field n? integer\n\n---@param k K\nlocal function f(k)\n  if k.kind == \"a\" then return end\n  if k.n then print(k.n) end\nend\nreturn f\n"
+        ));
+    }
+
     #[test]
     fn test_numeric_for_variable_is_an_integer_unless_start_or_step_is_a_float() {
         let mut ws = VirtualWorkspace::new();

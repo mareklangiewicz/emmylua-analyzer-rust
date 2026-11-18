@@ -6333,11 +6333,17 @@ fn filter_type_by_member_discriminant(
                 continue;
             }
         }
-        let matched = model
-            .member_type(&component, key)
-            .map(|member_ty| types_may_overlap(member_ty, literal.clone()))
-            .unwrap_or(false);
-        if matched == keep_matching {
+        // `x.k == lit` holds for a component whose `k` may be `lit`, and fails for one whose `k`
+        // may be anything else: only a `k` that can be nothing but `lit` rules out the false
+        // branch (`---@field k? B` keeps its owner on `x.k ~= nil`, #49).
+        let kept_here = match model.member_type(&component, key) {
+            Some(member_ty) if keep_matching => types_may_overlap(member_ty, literal.clone()),
+            Some(member_ty) => {
+                !(is_single_value(&member_ty) && types_may_overlap(member_ty, literal.clone()))
+            }
+            None => !keep_matching,
+        };
+        if kept_here {
             kept.push(component);
         }
     }
@@ -6862,6 +6868,20 @@ impl Narrowing {
             Narrowing::ArrayMinLen(min) => Narrowing::ArrayMinLen(*min),
         }
     }
+}
+
+/// A type with exactly one value: `nil` or a boolean, string or integer literal.
+fn is_single_value(ty: &LuaType) -> bool {
+    matches!(
+        ty,
+        LuaType::Nil
+            | LuaType::BooleanConst(_)
+            | LuaType::DocBooleanConst(_)
+            | LuaType::StringConst(_)
+            | LuaType::DocStringConst(_)
+            | LuaType::IntegerConst(_)
+            | LuaType::DocIntegerConst(_)
+    )
 }
 
 /// Whether two types may overlap (used for return_overload discriminant slot matching).
