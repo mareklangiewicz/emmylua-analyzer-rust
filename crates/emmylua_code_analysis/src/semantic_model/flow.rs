@@ -3347,7 +3347,15 @@ fn trace_member_uncached(
                             *value_syntax,
                         );
                         if let Some(annotation) = member_annotation_type(model, member) {
-                            if model.type_check(&value_ty, &annotation) {
+                            if matches!(value_ty, LuaType::TableConst(_))
+                                && model.type_check(&value_ty, &annotation)
+                            {
+                                // A table literal takes its annotation as its shape: its `nil`
+                                // fields (`{ panel = nil }`) are the annotation's `Note?`, as
+                                // for a declaration's `---@type`. A table is never nil, so
+                                // `---@type Env?` gives `Env`.
+                                value_ty = remove_type(annotation, &LuaType::Nil);
+                            } else if model.type_check(&value_ty, &annotation) {
                                 value_ty = widen_const_type(value_ty);
                             } else {
                                 value_ty = annotation;
@@ -3765,7 +3773,18 @@ fn member_assigned_value_type(
     target_index: usize,
     value_syntax: emmylua_parser::LuaSyntaxId,
 ) -> LuaType {
-    let value_ty = type_of_expr_with_cast(model, value_syntax, AsOnly);
+    // A copy of another name or member is its value at the write, as a local's assignment reads
+    // it (`assigned_value_type`): `ctx.current = ctx.root` right after `ctx.root = {}` copies the
+    // table, not the field's `B?`. Other values keep the flow-free read: a flow read of
+    // `M.v = M.v or new()` would trace the member being written.
+    let value_ty = if matches!(
+        value_syntax.get_kind(),
+        emmylua_parser::LuaSyntaxKind::NameExpr | emmylua_parser::LuaSyntaxKind::IndexExpr
+    ) {
+        model.type_of_expr_at(value_syntax, value_syntax.get_range().start())
+    } else {
+        type_of_expr_with_cast(model, value_syntax, AsOnly)
+    };
     let Some(assign) = flow_assign_stat(model, tree, flow_id) else {
         return value_ty;
     };

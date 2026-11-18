@@ -181,6 +181,59 @@ mod test {
         ));
     }
 
+    /// `ctx.current = ctx.root` copies the value `ctx.root` holds at the write, as a local's
+    /// assignment does, not the field's declared `B?` (luagnd onest.lua, after the fcc04166 merge).
+    #[test]
+    fn test_member_copied_from_a_written_member_keeps_the_written_value() {
+        let mut ws = VirtualWorkspace::new();
+        for body in [
+            "ctx.root = {}\n  ctx.current = ctx.root\n  take(ctx.current)",
+            "ctx.root = {}\n  while not ctx.root.ended do\n    ctx.current = ctx.root\n    take(ctx.current)\n  end",
+        ] {
+            assert!(
+                ws.has_no_diagnostic(
+                    DiagnosticCode::ParamTypeMismatch,
+                    &format!(
+                        "---@class B\n---@field ended? boolean\n\n---@class C\n---@field root? B\n---@field current? B\n\n---@param b B\nlocal function take(b) end\n\n---@param ctx C\nlocal function f(ctx)\n  {body}\nend\nreturn {{ f, take }}\n"
+                    ),
+                ),
+                "{body}"
+            );
+        }
+    }
+
+    /// `---@type { panel: Note? }` + `M.state = { panel = nil }`: the annotation is the table's
+    /// shape, so `M.state.panel` reads `Note?`, not the literal's `nil` (myhypr hud.lua).
+    #[test]
+    fn test_annotated_member_table_literal_reads_as_its_annotation() {
+        let mut ws = VirtualWorkspace::new();
+        let code = |body: &str| {
+            format!(
+                "---@class Note\n---@field id integer\n\nlocal M = {{}}\n\n---@type {{ panel: Note?, text: string? }}\nM.state = {{ panel = nil, text = nil }}\n\n{body}\nreturn M\n"
+            )
+        };
+        for body in [
+            "function M.hide()\n  local panel = M.state.panel\n  if panel then print(panel.id) end\nend",
+            "function M.hide()\n  local panel = M.state.panel\n  if panel then print(panel.id) end\n  M.state.panel = nil\nend",
+            "function M.hide()\n  local panel = M.state.panel\n  if panel then print(panel.id) end\nend\n---@param n Note\nfunction M.show(n)\n  M.state.panel = n\nend",
+        ] {
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::UnnecessaryIf, &code(body)),
+                "{body}"
+            );
+        }
+        // A nullable annotation does not make the written table nil (snacks image/terminal.lua).
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            "---@class Env\n---@field name string\n\nlocal M = {}\nM.env = nil ---@type Env?\n\nfunction M.get()\n  M.env = { name = 'a' }\n  M.env.name = M.env.name .. 'b'\n  return M.env\nend\nreturn M\n"
+        ));
+        // The annotation still checks the literal written to it.
+        assert!(!ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            "local M = {}\n---@type { n: integer }\nM.state = { n = 'x' }\nreturn M\n"
+        ));
+    }
+
     #[test]
     fn test_numeric_for_variable_is_an_integer_unless_start_or_step_is_a_float() {
         let mut ws = VirtualWorkspace::new();
