@@ -52,6 +52,9 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 - Crash, hang or blowup on a tree: `outcome` on all three builds → `stack` the failing one →
   `gndx emmylua fork` for the fix touching those frames → cherry-pick onto upstream in a scratch
   worktree, re-run `outcome` → `reduce` last.
+- `probe` and `reduce` run a fixture alone under an empty config. A gate hit that needs the Lua
+  repo's libraries (snacks, `$VIMRUNTIME`) does not show there: rebuild it in library form, a
+  `lib/` dir with the library file and a `ws/.emmyrc.json` naming it, then shrink the library file.
 - Pin an editor fix (completion, hover, gd) as a `myemmylab.FEATURE_PROBES` probe and prove it
   RED on a revert build. For `gd`/hover gaps, fix in `emmylua_ls` first so diagnostics cannot move.
 
@@ -61,7 +64,8 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   (refuses without a passing gate) → `gndx gate all` + `gndx nvim dev check emmylua` → commit.
   What is installed: `gndx builds emmylua status`.
 - **One target dir per worktree.** A shared `CARGO_TARGET_DIR` silently runs the previous
-  worktree's test binary. After a run, grep the log for one of the branch's new test names.
+  worktree's test binary. A passing `gndx emmylua test` prints no test names: confirm with
+  `<target>/debug/build/emmylua_code_analysis/*/out/emmylua_code_analysis-* --list | grep NAME`.
 - **Stage explicit paths.** Workspace `cargo test` rewrites
   `crates/emmylua_code_analysis/resources/std-zh_CN/`; restore it with `git checkout --` and check
   `git show --stat` before pushing.
@@ -73,10 +77,12 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 
 ## Merging upstream
 
-`gndx emmylua sync plan` is the routine. When upstream rewrites a file the fork patched: take
+`gndx emmylua sync plan` is the routine. When upstream rewrites a file the fork patched lightly: take
 upstream's file whole (`git checkout --theirs`), then replay each fork-only commit touching it,
-oldest first (`git show C -- FILE | git apply -3`), led by the fork's failing tests. Behaviour added
-inside merge-commit resolutions is in no replayable commit: diff the old fork tip's file for it. A
+oldest first (`git show C -- FILE | git apply -3`), led by the fork's failing tests. When the fork's
+side of the file is the larger one (`flow.rs`, `vm.rs`), resolve hunk by hunk with
+`git checkout --conflict=diff3`. Behaviour added inside merge-commit resolutions is in no replayable
+commit: diff the old fork tip's file for it, and give new resolution code a test of its own. A
 fork test that fails only because upstream deliberately changed its reporting gets adapted, with
 the reason stated in the test.
 
