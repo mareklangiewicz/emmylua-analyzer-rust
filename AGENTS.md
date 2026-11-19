@@ -90,6 +90,8 @@ enforces headroom and `lab.BLOWUPS` (never upstream/0.25.1 over mason.nvim). Out
 - A flow or narrowing bug (need-check-nil, unnecessary-if, a lost guard, a wrong value after a
   member write) starts with `docs/agents/flow.md`: place the bug in it (the piece and the
   assumption it breaks) before fixing a symptom.
+- A diagnostic reported on the wrong line, with the wrong message, or not at all: start with
+  `docs/agents/checkers.md`, which names the function that decides each code's hits.
 - `rowan` `token_at_offset` scans children linearly: a root lookup per read is O(n²). Use
   `covering_element` (as in the fork's `flow::token_right_of`).
 - `collect_named_indexes` marks a query incomplete for an undeclared name, which sweeps the query
