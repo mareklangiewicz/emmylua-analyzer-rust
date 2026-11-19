@@ -2225,4 +2225,27 @@ mod test {
             "ValueOf<{ value: \"one\" }> = \"one\""
         );
     }
+
+    #[test]
+    fn test_rest_generic_binds_each_row_of_a_maybe_empty_multi_return() {
+        // `K1, K...` from a callback that returns two values or falls through
+        // (`()|(unknown,unknown)`): `K...` takes the second slot of every row, nil where a row
+        // is short. Wrapping the union as one value bound `K...` to `()`, so a later
+        // `fold(init, fun(acc, k, v))` on the result rejected its third param.
+        let mut ws = VirtualWorkspace::new();
+        ws.def(
+            r#"
+            --- @class It<V1, V...>
+            local It = {}
+            --- @overload fun<V1, V..., K1, K...>(self: It<V1, V...>, f: fun(v: V1, ...: V...): K1, K...): It<K1, K...>
+            function It:map(f) return self end
+
+            ---@type It<string, integer>
+            local src
+            Mapped = src:map(function(k, v) if v > 1 then return k, v end end)
+            "#,
+        );
+        let ty = ws.expr_ty("Mapped");
+        assert_eq!(ws.humanize_type(ty), "It<unknown?,(unknown?)>");
+    }
 }

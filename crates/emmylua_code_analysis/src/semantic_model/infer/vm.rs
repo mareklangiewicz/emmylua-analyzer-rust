@@ -3913,6 +3913,17 @@ fn expand_alias_arg(model: &SemanticModel, arg: &LuaType) -> Option<LuaType> {
     (&expanded != arg).then_some(expanded)
 }
 
+/// The most values any row of a call result yields, or `None` when some row is open-ended.
+fn result_rows_max_len(ty: &LuaType) -> Option<usize> {
+    match ty {
+        LuaType::Variadic(variadic) => variadic.get_max_len(),
+        LuaType::Union(union) => union.iter().try_fold(0, |longest, row| {
+            Some(longest.max(result_rows_max_len(row)?))
+        }),
+        _ => Some(1),
+    }
+}
+
 pub(crate) fn unify_call_bindings(
     model: &SemanticModel,
     param: &LuaType,
@@ -4019,6 +4030,19 @@ pub(crate) fn unify_call_bindings(
                     // For `First, Rest...`, slice result slots without losing repeated values.
                     let rest = match arg {
                         Variadic(variadic) => variadic.get_new_variadic_from(fixed_count),
+                        // Rows of different lengths (`()|(a, b)`): `Rest...` takes each slot
+                        // across the rows, nil where a row is short. Row tails kept as a
+                        // union (`(()|(b))`) read as an empty tail wherever `Rest...` is
+                        // substituted.
+                        Union(_) if arg.contain_multi_return() => match result_rows_max_len(arg) {
+                            Some(len) => VariadicType::Multi(
+                                (fixed_count..len)
+                                    .map(|slot| arg.get_result_slot_type(slot).unwrap_or(Nil))
+                                    .collect(),
+                            ),
+                            None => VariadicType::Multi(vec![arg.clone()])
+                                .get_new_variadic_from(fixed_count),
+                        },
                         _ => VariadicType::Multi(vec![arg.clone()])
                             .get_new_variadic_from(fixed_count),
                     };
