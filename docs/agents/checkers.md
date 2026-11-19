@@ -20,3 +20,12 @@ under `crates/emmylua_code_analysis/src/`. Add a code here when a session had to
    checks a literal against an object (`{ [1]: T }`) and against a class (`class_fields` turns it
    into a `LuaObjectType` first). It walks the fields in key order (#59: hash order made the line
    move between runs). `check_constructor_value` builds the `TypeNotMatchAtField`.
+
+## Generic binding from call args (`param-type-mismatch`, `V` left unbound)
+
+`semantic_model/infer/overload.rs` converts each arg before unifying it with the param (a table
+literal becomes an array through `table_literal_as_array` only for an `Array` param). Std's own
+signatures are the heaviest callers of that path: `ipairs` and `pairs` (`resources/std/global.lua`)
+and `table.remove` (`resources/std/table.lua`) take `V[] | table<integer, V> | …` unions. Before a
+corpus run of a binding change, grep `resources/std/*.lua` for the param shape it touches: #50's
++33 corpus lines came almost entirely through those three.
