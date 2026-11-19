@@ -1414,7 +1414,31 @@ pub(super) fn projected_member_type(
         typ = LuaType::from_vec(vec![typ, LuaType::Nil]);
     }
     if let Some(bindings) = bindings {
-        typ = unify::substitute(&typ, bindings);
+        // A method's own generics shadow the class's: both lower to `Type(index)`, so the
+        // class binding for `Type(0)` would replace the method's first generic (`fold`'s `A`
+        // took `vim.Iter<V1, V...>`'s `V1`). A function field carries the class's generics in
+        // the same list, so only names the class does not declare are the method's own.
+        let own: Vec<_> = match &typ {
+            LuaType::DocFunction(fun) => fun
+                .get_generic_params()
+                .iter()
+                .filter(|tpl| {
+                    name_bindings.is_some_and(|names| !names.contains_key(tpl.get_name()))
+                })
+                .map(|tpl| tpl.get_tpl_id())
+                .filter(|id| bindings.contains_key(id))
+                .collect(),
+            _ => Vec::new(),
+        };
+        typ = if own.is_empty() {
+            unify::substitute(&typ, bindings)
+        } else {
+            let mut outer = bindings.clone();
+            for id in &own {
+                outer.remove(id);
+            }
+            unify::substitute(&typ, &outer)
+        };
     }
     if let Some(name_bindings) = name_bindings {
         typ = substitute_named_refs(&typ, name_bindings);

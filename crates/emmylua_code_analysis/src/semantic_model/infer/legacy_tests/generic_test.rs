@@ -2248,4 +2248,26 @@ mod test {
         let ty = ws.expr_ty("Mapped");
         assert_eq!(ws.humanize_type(ty), "It<unknown?,(unknown?)>");
     }
+
+    #[test]
+    fn test_closure_params_fill_from_a_nullable_unknown_receiver_generic() {
+        // Fires only with the class in another file than the call, on a local of another name.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            --- @class It<V1, V...>
+            local Iter = {}
+            --- @generic A
+            --- @param init A
+            --- @param f fun(acc: A, v: V1, ...: V...): A
+            function Iter:fold(init, f) return init end
+            "#,
+        );
+        let source = r#"
+            ---@type It<unknown?, unknown?>
+            local a
+            a:fold({}, function(acc, k, v) acc[k] = v return acc end)
+        "#;
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, source));
+    }
 }
