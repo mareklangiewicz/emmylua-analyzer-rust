@@ -246,6 +246,7 @@ pub(crate) enum TraceSubject {
         decl: SemanticId,
         purpose: DeclTracePurpose,
         merge_branch: bool,
+        correlations: Vec<TraceCorrelation>,
     },
     Member {
         member: SemanticId,
@@ -254,13 +255,22 @@ pub(crate) enum TraceSubject {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct TraceCorrelation {
+    pub(crate) call: LuaSyntaxId,
+    pub(crate) return_index: usize,
+    pub(crate) rows: Vec<(usize, LuaType)>,
+    pub(crate) candidates: LuaType,
+}
+
 /// Memo key for one flow-trace state outside a cycle: `(file, subject, flow node)`.
 /// Original-signature traces keep incoming PathState empty and memoize each
 /// node's transfer during unwind, so a cached node never contains later casts.
 ///
 /// The state is the one for an empty incoming path: `super::flow` applies the guards a
-/// query collected before reaching the node on top of it. The memo is consulted only for
-/// nodes outside a cycle of the flow graph, and recomputed otherwise.
+/// query collected before reaching the node on top of it. Declaration correlations are part
+/// of the subject: assignments can invalidate them. The memo is consulted only for nodes
+/// outside a cycle of the flow graph, and recomputed otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TraceStateKey {
     pub(crate) file_id: FileId,
@@ -310,6 +320,10 @@ pub(crate) struct SemanticLocalCache {
     /// Memoized declaration/member-trace states for flow nodes outside a cycle. See
     /// [`TraceStateKey`] for why the path may be omitted from the key.
     pub(crate) trace_state: HashMap<TraceStateKey, CacheEntry<Option<LuaType>>>,
+    pub(crate) correlated_narrowing:
+        HashMap<(FileId, SemanticId, LuaSyntaxId, bool, FlowId), Vec<TraceCorrelation>>,
+    pub(super) return_overload_rows:
+        HashMap<(FileId, LuaSyntaxId), CacheEntry<Option<Rc<super::flow::ReturnOverloadRows>>>>,
     /// Fast negative/positive cache for `---@return_cast` lookup by call syntax.
     /// Most calls do not have `return_cast`, so caching the `None` result avoids
     /// repeatedly resolving callees and scanning signatures for the same call.
@@ -348,6 +362,8 @@ impl SemanticLocalCache {
         self.member_type.retain(|_, entry| entry.is_ready());
         self.expr_type_at.retain(|_, entry| entry.is_ready());
         self.trace_state.retain(|_, entry| entry.is_ready());
+        self.return_overload_rows
+            .retain(|_, entry| entry.is_ready());
         self.type_check.retain(|_, entry| entry.is_ready());
         self.alias_targets.retain(|_, entry| entry.is_ready());
         self.alias_heads.retain(|_, entry| entry.is_ready());

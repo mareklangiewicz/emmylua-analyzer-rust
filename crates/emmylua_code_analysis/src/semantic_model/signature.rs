@@ -1,5 +1,6 @@
 use crate::semantic_model::infer::vm::expand_callable_types_in_model;
 use crate::semantic_model::type_check::TypeCheckFailReason;
+use crate::types::TypeCandidate;
 use crate::{InFiled, IndexInfo, OperatorDef};
 
 use super::prelude::*;
@@ -392,12 +393,24 @@ impl<'db> SemanticModel<'db> {
                 ret = rich;
             }
         }
-        // The shell types a returned name by its declaration, blind to flow: `buf = mk(); return
-        // buf` with `buf: integer?` read `integer?`. The VM reads each returned name at its
-        // `return`, so a nullable inferred return is re-asked of it (current file only, as the
-        // VM's other return fallbacks).
-        if ret.is_nullable() && !signature.declares_returns() && file_id == self.view.file_id() {
-            let inferred = infer::closure_return_lua(self, closure_syntax);
+        // The shell's result is re-asked of the VM in two cases. (1) The shell types a returned
+        // name by its declaration, blind to flow: `buf = mk(); return buf` with `buf: integer?`
+        // read `integer?`, while the VM reads each returned name at its `return` (current file
+        // only, as the VM's other return fallbacks). (2) A shell can retain a forwarded call's
+        // generic without binding it (upstream); declared contracts are kept.
+        let nullable_here =
+            ret.is_nullable() && !signature.declares_returns() && file_id == self.view.file_id();
+        let unbound_generic = signature.docs.as_ref().is_none_or(|docs| {
+            docs.returns.is_empty()
+                && docs.return_overloads.is_empty()
+                && docs.overloads.is_empty()
+                && docs.return_cast.is_none()
+        }) && return_shells
+            .iter()
+            .flat_map(|shell| shell.first_result().candidates)
+            .any(|candidate| matches!(candidate, TypeCandidate::Generic(_)));
+        if nullable_here || unbound_generic {
+            let inferred = infer::closure_return_lua(&self.model_for(file_id), closure_syntax);
             if !matches!(inferred, LuaType::Unknown | LuaType::Any) {
                 ret = inferred;
             }

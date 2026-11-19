@@ -30,7 +30,7 @@ use crate::semantic_model::flow::{
 };
 use crate::semantic_model::member::{
     MemberInfo, attached_global_table_member, index_signature_type, member_key_type,
-    table_const_class_type, table_metatable_type, table_owners,
+    table_const_class_type, table_metatable_index_info, table_metatable_type, table_owners,
 };
 use crate::semantic_model::type_eval::{
     eval_conditionals, expand_alias_generic, expand_alias_head, instantiate_for_receiver,
@@ -924,13 +924,15 @@ impl<'a> InferVm<'a> {
                     return Value::plain(self.model.array_index_element(array.get_base().clone()));
                 }
                 // Dynamic integer key on a table literal: return the union of all
-                // integer-keyed fields plus nil (unless one of them already admits nil, like the
+                // integer-keyed fields plus the missing-key type (nil, or what an `__index`
+                // function supplies; nil is skipped when a field already admits it, like the
                 // `unknown` of `{ ... }`). This preserves exact shapes for runtime integer
                 // indexing like `Pos[cur]` or `points[index]`.
-                if let LuaType::TableConst(_) = &owner.ty {
+                if let LuaType::TableConst(table) = &owner.ty {
+                    let missing = self.table_missing_index_type(table);
                     // An empty `{}` has no known shape, as for a string key.
                     if !Self::table_literal_has_members(self.model, &owner.ty) {
-                        return Value::plain(LuaType::Unknown);
+                        return Value::plain(self.empty_table_missing(table, missing));
                     }
                     let mut types = Vec::new();
                     for info in self.model.member_infos(&owner.ty) {
@@ -940,8 +942,8 @@ impl<'a> InferVm<'a> {
                             types.push(info.typ.clone());
                         }
                     }
-                    if !types.iter().any(LuaType::is_optional) {
-                        types.push(LuaType::Nil);
+                    if !missing.is_nil() || !types.iter().any(LuaType::is_optional) {
+                        types.push(missing);
                     }
                     return Value::plain(LuaType::from_vec(types));
                 }
@@ -971,12 +973,42 @@ impl<'a> InferVm<'a> {
         }
     }
 
+    fn table_missing_index_type(&self, table: &InFiled<rowan::TextRange>) -> LuaType {
+        let Some(info) = table_metatable_index_info(self.model, table) else {
+            return LuaType::Nil;
+        };
+        let LuaType::DocFunction(fun) = &info.typ else {
+            return LuaType::Nil;
+        };
+        let ret = fun
+            .get_ret()
+            .get_result_slot_type(0)
+            .unwrap_or(LuaType::Nil);
+        let ret = expand_alias_head(self.model, &ret)
+            .unwrap_or_else(|| LuaType::from_vec(vec![LuaType::Unknown, LuaType::Nil]));
+        // A forwarded generic can remain an unresolved name here. It cannot
+        // prove that the missing key has a value.
+        let unresolved = |ty: &LuaType| {
+            matches!(ty, LuaType::Ref(id) | LuaType::Def(id)
+                if self.model.type_def_of(id).is_none())
+        };
+        let may_be_missing = match &ret {
+            LuaType::Union(union) => union.iter().any(unresolved),
+            _ => unresolved(&ret),
+        };
+        if may_be_missing {
+            LuaType::make_nullable(ret)
+        } else {
+            ret
+        }
+    }
+
     /// Dynamic string-key access on a table literal:
-    /// with named fields, return the union of those field types plus nil; when there are
+    /// with named fields, include the missing-key type; when there are
     /// only `[key]` computed keys (currently recorded as `Name("")`), return the index
     /// signature's value type without adding nil; with no known members, unknown.
     fn index_member_dynamic_string(&mut self, owner: Value) -> Value {
-        if !matches!(&owner.ty, LuaType::TableConst(_)) {
+        let LuaType::TableConst(table) = &owner.ty else {
             let ty = self
                 .model
                 .applicable_index_infos(&owner.ty, &LuaType::String)
@@ -987,7 +1019,7 @@ impl<'a> InferVm<'a> {
                 })
                 .unwrap_or(LuaType::Unknown);
             return Value::plain(ty);
-        }
+        };
         let infos = self.model.member_infos(&owner.ty);
         let mut named_types = Vec::new();
         let mut empty_key_types = Vec::new();
@@ -1004,20 +1036,28 @@ impl<'a> InferVm<'a> {
             }
         }
         if !named_types.is_empty() {
-            if !named_types.contains(&LuaType::Nil) {
-                named_types.push(LuaType::Nil);
-            }
+            named_types.push(self.table_missing_index_type(table));
             return Value::plain(LuaType::from_vec(named_types));
         }
         if !empty_key_types.is_empty() {
             return Value::plain(LuaType::from_vec(empty_key_types));
         }
+        let missing = self.table_missing_index_type(table);
         // An empty `{}` has no known shape (dynamic-key writes record no member), as for a
         // named key: see `table_literal_has_members`.
         if !Self::table_literal_has_members(self.model, &owner.ty) {
-            return Value::plain(LuaType::Unknown);
+            return Value::plain(self.empty_table_missing(table, missing));
         }
-        Value::plain(LuaType::Nil)
+        Value::plain(missing)
+    }
+
+    /// A dynamic read of a `{}` with no known members: what its `__index` function supplies
+    /// (`missing`), else `unknown`, since a dynamic-key write records no member.
+    fn empty_table_missing(&self, table: &InFiled<rowan::TextRange>, missing: LuaType) -> LuaType {
+        match table_metatable_index_info(self.model, table) {
+            Some(info) if matches!(info.typ, LuaType::DocFunction(_)) => missing,
+            _ => LuaType::Unknown,
+        }
     }
 
     /// Whether an anonymous table literal already has a known member shape.
@@ -2278,6 +2318,15 @@ impl<'a> InferVm<'a> {
             if !matches!(ty, LuaType::Unknown | LuaType::Any) && !types.contains(&ty) {
                 types.push(ty);
             }
+        }
+        if self.model.file_facts().is_some_and(|facts| !facts.is_meta)
+            && crate::semantic_db::query::closure_can_fall_through(
+                self.model.db(),
+                self.model.file_id(),
+                &closure,
+            )
+        {
+            types.push(LuaType::Variadic(Rc::new(VariadicType::Multi(Vec::new()))));
         }
         if types.is_empty() {
             LuaType::Unknown
@@ -4183,7 +4232,12 @@ pub(crate) fn unify_call_bindings(
                     true
                 } else {
                     let arg_ret = resolve_function_ret_defaults(arg_fun.get_ret(), arg_fun);
-                    unify_call_bindings(model, param_fun.get_ret(), &arg_ret, bindings)
+                    if !param_fun.get_ret().contain_tpl() {
+                        // Check every return row, filling missing results with nil.
+                        model.type_check(&arg_ret, param_fun.get_ret())
+                    } else {
+                        unify_call_bindings(model, param_fun.get_ret(), &arg_ret, bindings)
+                    }
                 }
             } else if matches!(arg, Function) {
                 // Erased `function` can be a fallback for any callback param.
