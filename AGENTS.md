@@ -76,9 +76,11 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 
 ## Building and testing
 
-- Every change takes the gated path: `gndx emmylua test` → `lint` →
-  `gndx builds emmylua install --with-gate` (runs `gndx emmylua gate` on exactly the built binaries
-  and installs only if it passes) → `gndx gate all` + `gndx nvim dev check emmylua` → commit.
+- Every change takes the gated path: `gndx emmylua test` → commit → `lint` →
+  `gndx builds emmylua install --with-gate` → `gndx gate all` + `gndx nvim dev check emmylua`.
+  `lint` and `install` judge the clean committed HEAD (a dirty tree gets no ledger verdict), and
+  `--with-gate` runs `gndx emmylua gate` on exactly the built binaries, installing only on a pass.
+  A gate failure means amending or a fix-up commit, then lint and install again.
   What is installed: `gndx builds emmylua status`.
 - **One target dir per worktree.** A shared `CARGO_TARGET_DIR` silently runs the previous
   worktree's test binary. A passing `gndx emmylua test` prints no test names: confirm with
