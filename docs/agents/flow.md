@@ -208,6 +208,9 @@ Status at 2026-11-20 (fork c60fdcd9, upstream main 70dbcf4d), each checked with 
    Unifying it (the read's type carries the `nil`, or neither does) deletes the checker's special
    case but moves many hits; corpus-measure before choosing. **Parked**: 1 is done, so this is
    the next fix in the cluster, but it is a choice with a large corpus effect, so it is Marek's.
+   Measured 2026-11-20 (#40, branch `x1-union-missing-nil`): nil in the read type plus no
+   checker case gives +95 `need-check-nil`, almost all false on module unions (`(M|{…})`, a
+   required module's literal component lacks the key). It is blocked on #48 / A3.
 4. **Guard sources (G1, G1b, G2): #42, 1361.** 1361 is fixed on the fork (upstream draft open),
    G1b is fixed in 50b21557, and #42 is gone upstream. G2 is still not tied to any bug.
 5. **Outside flow: #9 and the colon-call range.** These are separate issues: #9 is open, and the
