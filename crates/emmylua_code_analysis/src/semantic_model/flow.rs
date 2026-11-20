@@ -738,9 +738,13 @@ fn flow_member_value_type(model: &SemanticModel, member: &SemanticId) -> Option<
     }
 }
 
-/// The member's type where backtracking found none of its writes. A runtime member's own value
-/// is a write that has not happened yet: the read's flow-insensitive type (the declared field,
-/// or that same value for an undeclared table) is what the path holds there.
+/// The member's type where backtracking found none of its writes.
+///
+/// A member owned by a local or param (`s.desc = v`) is a runtime member: its identity is that one
+/// write site, and its own value is the write's value, which this path has not run. Declared
+/// `---@field`s are owned by their class and never take the first branch. For a runtime member,
+/// the read's flow-insensitive type (the declared field, or that same value for an undeclared
+/// table) is what the path holds before the write.
 fn member_entry_type(
     model: &SemanticModel,
     member: &SemanticId,
@@ -755,13 +759,46 @@ fn member_entry_type(
             .file_facts_of(member_file)
             .and_then(|facts| facts.member_by_id(member))
             .is_some_and(|def| matches!(def.owner, SemanticId::Decl(_)))
+        && !defines_a_function(model, member)
     {
+        // `type_of_expr` is memoized with an in-progress marker, so a query that re-enters this
+        // read gets `Unknown` and keeps the old base. A bare `nil` is the VM's answer for a member
+        // the owner doesn't declare, not a field type.
         let ty = model.type_of_expr(access.get_syntax_id());
-        if !matches!(ty, LuaType::Unknown) {
+        if !matches!(ty, LuaType::Unknown | LuaType::Nil) {
             return Some(ty);
         }
     }
     flow_member_value_type(model, member)
+}
+
+/// Whether the write site that is `member` (a runtime member's identity, see `member_entry_type`)
+/// is a function statement, `function M:m()` or `function M.f()`. That defines the member rather
+/// than changing its state, so a read that no definition precedes (another method's body, which
+/// runs after the module has loaded) holds the function, not an inherited `m?` field. An assignment
+/// (`t.cb = function() end`) is a state change like any other write.
+fn defines_a_function(model: &SemanticModel, member: &SemanticId) -> bool {
+    let SemanticId::Member(key) = member else {
+        return false;
+    };
+    let Some(def) = model
+        .file_facts_of(key.file_id)
+        .and_then(|facts| facts.member_by_id(member))
+    else {
+        return false;
+    };
+    let Some(value_syntax) = def.value_syntax else {
+        return false;
+    };
+    model
+        .syntax_tree_of(key.file_id)
+        .and_then(|tree| value_syntax.to_node_from_root(&tree.get_red_root()))
+        .is_some_and(|node| {
+            emmylua_parser::LuaClosureExpr::cast(node.clone()).is_some()
+                && node
+                    .parent()
+                    .is_some_and(|parent| emmylua_parser::LuaFuncStat::cast(parent).is_some())
+        })
 }
 
 /// `---@type { panel: string? }` + `local st = { panel = nil }` (or `M.st = { panel = nil }`): with no

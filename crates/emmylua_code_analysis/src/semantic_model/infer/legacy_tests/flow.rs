@@ -5180,21 +5180,28 @@ _ = a[2]
         ---@field items string[]
         "#,
         );
-        // `t.items[1] = nil` comes later: before it, the element is the declared `string?`.
-        for body in [
-            "---@type nil\nlocal _n = t.items[1]\nt.items[1] = nil",
-            "if _flag then return end\n---@type nil\nlocal _n = t.items[1]\nt.items[1] = nil",
-        ] {
-            assert!(
-                !ws.has_no_diagnostic(
-                    DiagnosticCode::AssignTypeMismatch,
-                    &format!(
-                        "---@param t EntryContainer\n---@param _flag boolean\nlocal function f(t, _flag)\n{body}\nend"
-                    ),
-                ),
-                "{body}"
-            );
-        }
+        // `t.items[1] = nil` comes later: before it, the element is the declared `string?`, not
+        // the later write's `nil`, with or without an earlier exit on the path.
+        let file = ws.def(
+            r#"
+        ---@param t EntryContainer
+        local function plain(t)
+            local before = t.items[1]
+            print(before)
+            t.items[1] = nil
+        end
+        ---@param t EntryContainer
+        ---@param flag boolean
+        local function after_exit(t, flag)
+            if flag then return end
+            local before_guarded = t.items[1]
+            print(before_guarded)
+            t.items[1] = nil
+        end
+        "#,
+        );
+        let ty = |name| ws.humanize_type(last_name_expr_type(&ws, file, name));
+        assert_eq!([ty("before"), ty("before_guarded")], ["string?", "string?"]);
     }
 
     #[test]
@@ -5457,5 +5464,82 @@ _ = a[2]
             [ty("branched"), ty("replaced"), ty("both")],
             ["\"x\"?", "\"x\"", "(\"x\"|1)"]
         );
+    }
+
+    #[test]
+    fn test_method_read_does_not_start_before_a_chunk_level_definition() {
+        // `function M:expand()` is defined at chunk level, after `children` in the file, but the
+        // body of `children` runs later: its read must not start from the inherited `expand?`.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@class GBase
+            ---@field expand? fun(self: GBase): integer
+
+            ---@class GNode: GBase
+            local M = {}
+
+            function M:children()
+                return self:expand() + 1
+            end
+
+            function M:expand()
+                return 1
+            end
+            return M
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_read_before_a_write_to_an_undeclared_member_is_not_nil() {
+        // `args` is untyped, so the VM reads the undeclared `args[1]` as a bare `nil`: that is
+        // no field type to start from before the later `args[1] = missing`.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::AssignTypeMismatch,
+            r#"
+            local function holes(args, arr)
+                local length = args[1]
+                if length == nil then
+                    length = 0
+                    for i in pairs(arr) do
+                        if type(i) == "number" then
+                            length = i
+                        end
+                    end
+                end
+                local missing
+                for i = 1, length do
+                end
+                args[1] = missing
+            end
+            return holes
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_wrapping_an_optional_callback_reads_it_before_the_wrapper() {
+        // `self.args.on_exit = function() end` assigns a function: a state change like any other
+        // write, so the read before it is not that function (lualine `utils/job.lua`).
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::UnnecessaryIf,
+            r#"
+            local Job = {
+                wrap_on_exit = function(self)
+                    local original_cb = self.args.on_exit
+                    if original_cb then
+                        self.args.on_exit = function()
+                            return original_cb()
+                        end
+                    end
+                end,
+            }
+            return Job
+            "#,
+        ));
     }
 }
