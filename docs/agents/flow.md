@@ -186,7 +186,7 @@ position for each captured read, which is a new concept under the policy.
 | upstream 1360 (decl memo loses a later query's guards) | §5 C1 on main's decl memo: no empty-path split | main `trace_decl` vs fork's; 1360's PR body, oracle build (#44) |
 | #49 a member written on a returned branch reads that literal after the branch (luagnd onest.lua:174; main + fork) | §3 G1, owner side: `filter_type_by_member_discriminant` dropped, on the false branch of `x.k == lit`, every component whose `k` *may* be `lit`, so `ctx` (`current?: Br`) read `Never` after `if ctx.current == nil then … return end`; the VM read on `Never` then took the runtime member. Rule now: drop only when `k` is a single value overlapping `lit` | instrumented VM `index_member_impl`: owner `ctx` was `Never`, `type_has_member=false`; fixed in 4ea678e9 |
 | upstream 1361 (false branch of `res and res.ok` drops `Res`) | §3 G1: owner narrowing by member truthiness asked "can be truthy" on both branches | fixed on the fork in 4c1949d5 (same diff as 1361) |
-| #42 `if not t.x then return end` doesn't narrow on main | §1: one of the two guard sources (trace narrowing, `guarded_index_type`) misses this shape on main. Candidate fork fix: 8f94b3fe ("every exit passes through `guarded_index_type`"). G2 (an `Unreachable` branch still merges) is the other candidate | **not verified**: the commit search stays parked until a fix is chosen (#43 step 4) |
+| #42 `if not t.x then return end` doesn't narrow on main | §1: one of the two guard sources (trace narrowing, `guarded_index_type`) missed this shape on main 41366714/2c400ee2 | **gone upstream**: #42's repro is clean on main 70dbcf4d, 0.25.1 and fork c60fdcd9 (probe 2026-11-20); no port needed, so the fork commit was never identified |
 | `self.hunk_cache may be nil` (diffs.nvim `runtime/cache.lua`) | §1 step f + A3/X1, **not** a non-optional field: `self` is the un-annotated `local Cache = {}`, not `diffs.Cache`. `resolve_member` finds owner `Decl(Cache)` and no member id; the VM types the missing member `Nil` | 28-line reduction (`---@class diffs.Cache` beside a bare `local Cache`, constructor `setmetatable({ hunk_cache = {} }, Cache)`) reports on main and fork, clean on 0.25.1; instrumented read: `resolved=(None, Decl(Cache))`, `vm-fallback ty=Nil`. Without the constructor the fork reports `undefined-field` only |
 | missing union member rule (upstream 1423, #40) | §6 X1: the nil is added by the checker, not by the read | access.rs:694, param_type_check.rs:838 |
 | its range on a colon call (which-key `mappings.lua:258:39`) | not flow: `check_arg_pairs` pairs a colon call's receiver with the first argument's range | not traced in this pass |
@@ -194,17 +194,21 @@ position for each captured read, which is a new concept under the policy.
 
 ## Fix ranking (#43 step 4)
 
-1. **Member identity (A1, S1, S2): #41, the straight-line write bug, and likely part of the
-   which-key `unnecessary-if` lines in upstream 1360's corpus diff.** The coarsest sound rule: the
-   step-d override traces with `access = Some(index_expr)` (`type_of_member_access_at`), so writes
-   through any id are seen by access path, and the entry type is the declared field. One-line
-   change at the root; check whether steps c–e then still add anything. Highest value: wrong
-   values in straight-line code, on main and the fork.
-2. **The memo's empty-path state (C1/C2): upstream 1360.** Fixed on the fork; upstream PR open.
-   Nothing new to do.
-3. **Where "missing member ⇒ nil" lives (A3, X1): the diffs.nvim hits, upstream 1423.** Unifying
-   it (the read's type carries the `nil`, or neither does) deletes the checker's special case but
-   moves many hits; corpus-measure before choosing. Park until 1 is done.
-4. **Guard sources (G1, G2): #42, 1361.** 1361 is fixed on the fork. #42: test 8f94b3fe on main
-   first; if it doesn't fix it, look at G2.
-5. **Outside flow: #9, the colon-call range.** Separate issues.
+Status at 2026-11-20 (fork c60fdcd9, upstream main 70dbcf4d), each checked with `gndx emmylua probe`:
+
+1. **Member identity (A1, S1, S2): #41 and the straight-line write bug. Done on the fork**
+   (d29ae223, 3ff0d5c6, merged in abe9fd8a): the step-d override traces by the read's access, and
+   the straight-line path takes the latest write among the owner's runtime members for that key.
+   #41's repro reads `string?` on the fork, as on 0.25.1. Upstream main still reads `string`, so it
+   is an upstream candidate (Marek's call). The straight-line `s.desc = "x"; s.desc = nil` now
+   reads `nil` on upstream main too.
+2. **The memo's empty-path state (C1/C2): upstream 1360.** Fixed on the fork; the upstream PR is
+   open and ready. Nothing new to do.
+3. **Where "missing member ⇒ nil" lives (A3, X1): the diffs.nvim hits, upstream 1423 (draft).**
+   Unifying it (the read's type carries the `nil`, or neither does) deletes the checker's special
+   case but moves many hits; corpus-measure before choosing. **Parked**: 1 is done, so this is
+   the next fix in the cluster, but it is a choice with a large corpus effect, so it is Marek's.
+4. **Guard sources (G1, G1b, G2): #42, 1361.** 1361 is fixed on the fork (upstream draft open),
+   G1b is fixed in 50b21557, and #42 is gone upstream. G2 is still not tied to any bug.
+5. **Outside flow: #9 and the colon-call range.** These are separate issues: #9 is open, and the
+   colon-call range has no issue yet.
