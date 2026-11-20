@@ -52,9 +52,13 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 - Crash, hang or blowup on a tree: `outcome` on all three builds → `stack` the failing one →
   `gndx emmylua fork` for the fix touching those frames → cherry-pick onto upstream in a scratch
   worktree, re-run `outcome` → `reduce` last.
-- `probe` and `reduce` run a fixture alone under an empty config. A gate hit that needs the Lua
+- `probe DIR… --bin=CANDIDATE` prints the three-way table (plus the candidate) for any fixture.
+  `probe` and `reduce` run a fixture alone under an empty config, so a gate hit that needs the Lua
   repo's libraries (snacks, `$VIMRUNTIME`) does not show there: rebuild it in library form, a
   `lib/` dir with the library file and a `ws/.emmyrc.json` naming it, then shrink the library file.
+  The same goes for a one-file `VirtualWorkspace` test: a hit that needs the class in another file
+  (`ws.def`) or a `@class` name other than its local (`---@class vim.Iter` on `local Iter`) passes
+  in one file.
 - Pin an editor fix (completion, hover, gd) as a `myemmylab.FEATURE_PROBES` probe and prove it
   RED on a revert build. For `gd`/hover gaps, fix in `emmylua_ls` first so diagnostics cannot move.
 
@@ -97,8 +101,9 @@ enforces headroom and `lab.BLOWUPS` (never upstream/0.25.1 over mason.nvim). Out
 - A flow or narrowing bug (need-check-nil, unnecessary-if, a lost guard, a wrong value after a
   member write) starts with `docs/agents/flow.md`: place the bug in it (the piece and the
   assumption it breaks) before fixing a symptom.
-- A diagnostic reported on the wrong line, with the wrong message, or not at all: start with
-  `docs/agents/checkers.md`, which names the function that decides each code's hits.
+- A diagnostic reported on the wrong line, with the wrong message, or not at all, or a generic
+  bound or substituted wrong: start with `docs/agents/checkers.md`, which names the function that
+  decides each code's hits and how generic ids collide.
 - `rowan` `token_at_offset` scans children linearly: a root lookup per read is O(n²). Use
   `covering_element` (as in the fork's `flow::token_right_of`).
 - `collect_named_indexes` marks a query incomplete for an undeclared name, which sweeps the query
