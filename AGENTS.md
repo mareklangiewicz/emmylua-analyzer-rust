@@ -33,7 +33,8 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   `corpus diff`). Green tests and gates say nothing about what plugin trees report: a
   `resolve_member` change once passed everything and added 71 false hits on neotest.
 - Corpus trees are live plugin checkouts: a base run is valid while no tree moved since it ran, whatever
-  its date. `gndx emmylua corpus valid LABEL…` checks that (#67); re-run a STALE base before diffing.
+  its date. `gndx emmylua corpus valid LABEL…` checks that (#67); before diffing, `corpus refresh LABEL…`
+  re-runs only a STALE base's moved trees, with its own binary and config.
   `corpus diff` exit 2 means "not comparable", not "no difference".
 - Spend CPU on the narrow loop. Reduce each added corpus line to a fixture, iterate with
   `gndx emmylua test --filter=…` and `corpus run LABEL BIN --trees=a,b` (diffed against today's full
