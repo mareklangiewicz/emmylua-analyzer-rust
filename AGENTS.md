@@ -55,7 +55,8 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 - `probe DIR… --bin=CANDIDATE` prints the three-way table (plus the candidate) for any fixture.
   `probe` and `reduce` run a fixture alone under an empty config, so a gate hit that needs the Lua
   repo's libraries (snacks, `$VIMRUNTIME`) does not show there: rebuild it in library form, a
-  `lib/` dir with the library file and a `ws/.emmyrc.json` naming it, then shrink the library file.
+  `lib/` dir with the library file and a `ws/.emmyrc.json` naming `../lib` (relative to the
+  config's dir), probe it with `--root=ws --config=DIR/ws/.emmyrc.json`, then shrink the library file.
   The same goes for a one-file `VirtualWorkspace` test: a hit that needs the class in another file
   (`ws.def`) or a `@class` name other than its local (`---@class vim.Iter` on `local Iter`) passes
   in one file.
