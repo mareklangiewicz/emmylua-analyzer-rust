@@ -45,10 +45,18 @@ Assumptions:
 Assumptions:
 - **S1.** `access = None` is safe because the id names every write to the member. False for a
   runtime member: each write site has its own id (see A1).
-- **S2.** The entry type (`member_entry_type`, 744) is what the member held before any write on
+- **S2.** The entry type (`member_entry_type`, 748) is what the member held before any write on
   the path. With `access = Some` and a `Decl`-owned member, it is the read's flow-insensitive
-  type. Otherwise `flow_member_value_type` (692): for a runtime member owned by a `Decl`, that is
+  type (72c462ea, #41), except in two cases, which keep the old base:
+  - the write site is a function statement (`function M:m()`, `defines_a_function`): it defines
+    the member, so another method's body reads the function, not an inherited `m?` field;
+  - the read's type is a bare `Nil` (or `Unknown`, a re-entered memo): that is the VM's answer for
+    a member the owner doesn't declare, not a field type.
+
+  Otherwise `flow_member_value_type` (692): for a runtime member owned by a `Decl`, that is
   **the member's own written value** (`type_of_member`), a write that hasn't happened on this path.
+  Both exceptions were found on the corpus, not by tests: a broader first rule ("written in the
+  reading closure", then "the value is a function") added false hits on tuis and lualine (#41).
 
 ## 3. Walking back: collecting guards (`trace_member_uncached`, flow.rs:3216)
 
@@ -199,9 +207,11 @@ Status at 2026-11-20 (fork c60fdcd9, upstream main 70dbcf4d), each checked with 
 1. **Member identity (A1, S1, S2): #41 and the straight-line write bug. Done on the fork**
    (d29ae223, 3ff0d5c6, merged in abe9fd8a): the step-d override traces by the read's access, and
    the straight-line path takes the latest write among the owner's runtime members for that key.
-   #41's repro reads `string?` on the fork, as on 0.25.1. Upstream main still reads `string`, so it
-   is an upstream candidate (Marek's call). The straight-line `s.desc = "x"; s.desc = nil` now
-   reads `nil` on upstream main too.
+   The entry type for a runtime member read before its write is the S2 rule (72c462ea, narrowed
+   in 67e6bfb3: 146 fork-corpus lines removed, 143 of them need-check-nil, all agreeing with 0.25.1).
+   #41's repro reads `string?` on the fork, as on 0.25.1. Upstream: PR 1447 (76f8fb50, ready,
+   awaiting a maintainer). The straight-line `s.desc = "x"; s.desc = nil` reads `nil` on upstream
+   main too.
 2. **The memo's empty-path state (C1/C2): upstream 1360.** Fixed on the fork; the upstream PR is
    open and ready. Nothing new to do.
 3. **Where "missing member ⇒ nil" lives (A3, X1): the diffs.nvim hits, upstream 1423 (draft).**

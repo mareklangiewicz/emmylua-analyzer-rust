@@ -35,6 +35,9 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   Judge an engine experiment this way before the gated install: `gndx emmylua build .` (uncommitted
   changes included) → `corpus run LABEL <its emmylua_check>` → `corpus diff BASE LABEL`. Install only
   what the diff keeps.
+- A fixture is evidence for its own shape only. NOT RED on a build (`test --red-revert`, `probe`)
+  says that shape passes there, not that the class is absent: the corpus diff decides. For #41,
+  `--red-revert` was NOT RED on the fork while the fork corpus held all 146 false hits.
 - Corpus trees are live plugin checkouts: a base run is valid while no tree moved since it ran, whatever
   its date. `gndx emmylua corpus valid LABEL…` checks that (#67); before diffing, `corpus refresh LABEL…`
   re-runs only a STALE base's moved trees, with its own binary and config.
@@ -44,6 +47,10 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   run), and run the full corpus and the full test suite once, before the commit.
 - Porting a fork fix upstream: re-measure on upstream main (corpus diff with main as base, and
   every "before" test run against main's source). Fork numbers do not carry over.
+  - Before the PR goes ready, land the same rule on the fork and diff the fork corpus too. It
+    covers the trees main crashes or blows up on (tuis, neotest, bufferline, async.nvim,
+    neovim-runtime), so upstream's diff is blind there: 1447 went ready with a rule the fork corpus
+    then changed twice (#41).
   - A lowering fix ("spelling X now means Y"): copy a corpus tree, respell X as Y in its
     annotations, run the base build on the copy and the candidate on the original. Equal hits mean
     the new hits are base's own Y behaviour, not the fix (#37: `|?` → `|nil`, 1053 = 1053; 1184 on
@@ -69,8 +76,9 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 
 ## Building and testing
 
-- Every change takes the gated path: `gndx emmylua test` → `lint` → `gndx builds emmylua install`
-  (refuses without a passing gate) → `gndx gate all` + `gndx nvim dev check emmylua` → commit.
+- Every change takes the gated path: `gndx emmylua test` → `lint` →
+  `gndx builds emmylua install --with-gate` (runs `gndx emmylua gate` on exactly the built binaries
+  and installs only if it passes) → `gndx gate all` + `gndx nvim dev check emmylua` → commit.
   What is installed: `gndx builds emmylua status`.
 - **One target dir per worktree.** A shared `CARGO_TARGET_DIR` silently runs the previous
   worktree's test binary. A passing `gndx emmylua test` prints no test names: confirm with
