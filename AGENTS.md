@@ -32,6 +32,9 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 - After any change to `emmylua_code_analysis`, diff the corpus (`gndx emmylua corpus run` +
   `corpus diff`). Green tests and gates say nothing about what plugin trees report: a
   `resolve_member` change once passed everything and added 71 false hits on neotest.
+  Judge an engine experiment this way before the gated install: `gndx emmylua build .` (uncommitted
+  changes included) → `corpus run LABEL <its emmylua_check>` → `corpus diff BASE LABEL`. Install only
+  what the diff keeps.
 - Corpus trees are live plugin checkouts: a base run is valid while no tree moved since it ran, whatever
   its date. `gndx emmylua corpus valid LABEL…` checks that (#67); before diffing, `corpus refresh LABEL…`
   re-runs only a STALE base's moved trees, with its own binary and config.
@@ -101,7 +104,7 @@ enforces headroom and `lab.BLOWUPS` (never upstream/0.25.1 over mason.nvim). Out
 ## Engine notes
 
 - A flow or narrowing bug (need-check-nil, unnecessary-if, a lost guard, a wrong value after a
-  member write) starts with `docs/agents/flow.md`: place the bug in it (the piece and the
+  member write, a local widened in a loop or a closure) starts with `docs/agents/flow.md`: place the bug in it (the piece and the
   assumption it breaks) before fixing a symptom.
 - A diagnostic reported on the wrong line, with the wrong message, or not at all, or a generic
   bound or substituted wrong: start with `docs/agents/checkers.md`, which names the function that

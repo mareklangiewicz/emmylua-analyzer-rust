@@ -145,6 +145,38 @@ Assumption:
   other places with two answers (the VM's `Nil` for a plain table, A3; the checker's special case
   for a union), and the read layer gives a third (the present components' type).
 
+## 7. Widening a local: loop-carried and captured reads (`widen_loop_carried`, flow.rs:203)
+
+Line numbers in this section are at fork `b73b7f6c`. Two reads of an un-annotated, reassigned local
+can't trust the backward walk, so both keep only the value's **kind**:
+
+- **Loop-carried** (`widen_if_loop_carried`, flow.rs:165): a read inside a loop that assigns the
+  local, or after such a loop in the same function. Not a fixpoint: no body write is evaluated.
+- **Captured** (`decl_position_type`, flow.rs:2710, `captured = true`): a read that a closure
+  writing the local may run before. Its base is the type **at the declaration**, the initializer's
+  kind (716f9638).
+
+`widen_loop_carried` maps a constant to its kind and `nil`/`never` to `unknown`. Inside a union
+that `unknown` is absorbed, so `string?` becomes `string`. On the captured path, a bare `unknown`
+becomes `any`.
+
+Assumptions, each broken by one of #72's parked fixes (branch `park-72-captured-nil`):
+- **W1.** Losing a union's `nil` is harmless. It isn't on the captured path: #72's repro
+  (`local function change() value = nil end`) misses the `need-check-nil` that 0.25.1 and
+  upstream report.
+- **W2.** Keeping the `nil` for every caller is the fix. 92b26137 did, and the loop path paid:
+  105 corpus lines, almost all loop reads of a correlated pair (lazy.nvim `view/text.lua:138`,
+  `from, to = s:find(p)` then `while from do … to + 1`). A loop read sees no correlation across
+  passes, and the old `nil` → `unknown` was hiding that.
+- **W3.** The declaration's type stands for every captured read. fc1704a0 kept the `nil` on the
+  captured path only. 26 of its 28 lines were false: the code rules the nil out *before* the closure
+  exists (`if not w then w = api.nvim_get_current_win() end`, neovim `treesitter/dev.lua:411`),
+  but the base is still the initializer's `integer?`.
+
+The sound direction (not started): a captured read's base is the local's type **where the closure
+is created**, joined with the kinds of the closure's writes. That needs a trace at the closure's
+position for each captured read, which is a new concept under the policy.
+
 ## Bug placement (#43 step 3)
 
 | bug | piece, assumption broken | evidence |
