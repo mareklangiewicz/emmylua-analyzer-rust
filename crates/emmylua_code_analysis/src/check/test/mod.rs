@@ -126,6 +126,15 @@ pub(crate) fn count_by_code(diagnostics: &[Diagnostic], code: DiagnosticCode) ->
     diagnostics.iter().filter(|d| d.code == code).count()
 }
 
+/// The message of each diagnostic of `code`, in report order: what a check says.
+pub(crate) fn messages_by_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> Vec<&str> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == code)
+        .map(|d| d.message.as_str())
+        .collect()
+}
+
 /// The source text each diagnostic of `code` covers, in report order: where a check points.
 pub(crate) fn texts_by_code<'a>(
     source: &'a str,

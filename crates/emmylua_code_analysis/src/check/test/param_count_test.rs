@@ -4,7 +4,7 @@ use crate::DiagnosticCode;
 use crate::Emmyrc;
 use crate::VirtualWorkspace;
 
-use super::{Diagnostic, check_source, check_source_with_emmyrc, count_by_code};
+use super::{Diagnostic, check_source, check_source_with_emmyrc, count_by_code, messages_by_code};
 
 fn check_with_codes(source: &str, codes: &[DiagnosticCode]) -> Vec<Diagnostic> {
     let mut emmyrc = Emmyrc::default();
@@ -471,16 +471,10 @@ fn test_constructor_checker_honors_strip_self() {
 #[test]
 fn test_optional_param_before_required_does_not_lower_the_minimum() {
     let head = "local M = {}\n---@param a any?\n---@param x number\nfunction M.f(a, x) end\n---@param a number?\n---@param x number\nfunction M.h(a, x) end\n";
-    for call in ["M:f()", "M.f(1)", "M.h(1)", "M.f()"] {
+    for (call, found) in [("M:f()", 1), ("M.f(1)", 1), ("M.h(1)", 1), ("M.f()", 0)] {
         let diagnostics = check_source(&format!("{head}{call}\n"));
-        let missing: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == DiagnosticCode::MissingParameter)
-            .map(|d| d.message.clone())
-            .collect();
-        let found = if call == "M.f()" { 0 } else { 1 };
         assert_eq!(
-            missing,
+            messages_by_code(&diagnostics, DiagnosticCode::MissingParameter),
             vec![format!("expected at least 2 parameters but found {found}")],
             "{call}"
         );

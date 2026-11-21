@@ -6,7 +6,9 @@ mod test {
     use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
     use tokio_util::sync::CancellationToken;
 
-    use crate::check::test::{check_source, check_source_with_emmyrc, texts_by_code};
+    use crate::check::test::{
+        check_source, check_source_with_emmyrc, messages_by_code, texts_by_code,
+    };
     use crate::{DiagnosticCode, Emmyrc, LuaType, VirtualWorkspace};
 
     // 普通联合参数接受其中的具体类型, 保留返回信息并拒绝不属于联合的实参.
@@ -5391,14 +5393,9 @@ mod test {
             log('INFOX', 'x')
             "#,
         );
-        let messages: Vec<String> = diagnostics
-            .iter()
-            .filter(|d| d.code == DiagnosticCode::ParamTypeMismatch)
-            .map(|d| d.message.clone())
-            .collect();
         assert_eq!(
-            messages,
-            vec!["expected `integer` but found `\"INFOX\"`. ".to_string()],
+            messages_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+            vec!["expected `integer` but found `\"INFOX\"`. "],
             "{diagnostics:#?}"
         );
     }
