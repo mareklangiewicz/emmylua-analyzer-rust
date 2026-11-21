@@ -2788,6 +2788,46 @@ mod test {
         ));
     }
 
+    /// A colon call's receiver mismatch is reported at the receiver, which is the value the message
+    /// names (#73: which-key's `s:gsub("^%+", "")` with `s: string?` flagged `"^%+"`). With no
+    /// explicit argument, the first one is not there to point at either.
+    #[test]
+    fn test_colon_call_receiver_mismatch_is_reported_at_the_receiver() {
+        for (call, receiver) in [
+            ("x:gsub(\"^%+\")", "x"),
+            ("m.desc:gsub(\"^%+\")", "m.desc"),
+            ("x:gsub()", "x"),
+        ] {
+            let source = format!(
+                r#"
+                ---@class Str
+                local Str = {{}}
+
+                ---@param s Str
+                ---@param p? string
+                function Str.gsub(s, p) end
+
+                ---@class M
+                ---@field desc? Str
+
+                ---@param x Str?
+                ---@param m M
+                local function f(x, m)
+                    return {call}
+                end
+                return f
+                "#
+            );
+            let diags = check_source(&source);
+            let ranges: Vec<&str> = diags
+                .iter()
+                .filter(|diag| diag.code == DiagnosticCode::ParamTypeMismatch)
+                .map(|diag| &source.as_str()[diag.range])
+                .collect();
+            assert_eq!(ranges, vec![receiver], "{call}: {diags:#?}");
+        }
+    }
+
     #[test]
     fn test_colon_call_and_not_colon_define() {
         let mut ws = VirtualWorkspace::new();

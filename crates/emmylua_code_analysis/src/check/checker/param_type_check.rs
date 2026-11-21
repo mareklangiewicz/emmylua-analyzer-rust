@@ -76,6 +76,7 @@ fn check_pcall_forward(
             forwarded,
             false,
             &LuaType::Unknown,
+            rowan::TextRange::default(),
             &[],
             None,
         );
@@ -311,6 +312,15 @@ fn check_call(
     }
     let colon_call = analysis.colon_call;
     let receiver_ty = analysis.receiver_ty;
+    // A colon call's receiver is the callee's prefix (`s` of `s:gsub(p)`), not the first explicit
+    // argument (#73). An empty range falls back to the callee below.
+    let receiver_range = match &callee {
+        LuaExpr::IndexExpr(index) if colon_call => index
+            .get_prefix_expr()
+            .map(|prefix| prefix.get_range())
+            .unwrap_or_default(),
+        _ => rowan::TextRange::default(),
+    };
     let explicit_generics = &analysis.explicit_generics;
 
     // Cheap candidate ordering: check likely overloads first so the common
@@ -329,6 +339,7 @@ fn check_call(
             &args,
             colon_call,
             &receiver_ty,
+            receiver_range,
             explicit_generics,
             Some(&analysis.arg_types),
         );
@@ -550,6 +561,7 @@ fn check_candidate(
     args: &[LuaExpr],
     colon_call: bool,
     receiver_ty: &LuaType,
+    receiver_range: rowan::TextRange,
     explicit_generics: &[LuaSyntaxId],
     arg_types: Option<&[LuaType]>,
 ) -> Vec<Mismatch> {
@@ -584,7 +596,7 @@ fn check_candidate(
             if !is_compatible(semantic_model, receiver_ty, &param_ty) {
                 mismatches.push(Mismatch {
                     code: DiagnosticCode::ParamTypeMismatch,
-                    range: receiver_range(args),
+                    range: receiver_range,
                     message: mismatch_message(semantic_model, receiver_ty, &param_ty, name),
                 });
             }
@@ -1175,10 +1187,6 @@ fn effective_param(param_ty: &LuaType, arg_ty: &LuaType) -> LuaType {
         }
     }
     param_ty.clone()
-}
-
-fn receiver_range(args: &[LuaExpr]) -> rowan::TextRange {
-    args.first().map(|arg| arg.get_range()).unwrap_or_default()
 }
 
 /// Argument type normalization for diagnostics: expand normal/conditional aliases, but keep mapped aliases as-is.
