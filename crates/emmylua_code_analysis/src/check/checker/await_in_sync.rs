@@ -25,9 +25,10 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{AsyncState, LuaFunctionType, LuaType, SemanticId};
 
-use super::param_count::{CallAlignment, closure_table_field_info};
+use super::param_count::closure_table_field_info;
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
+use crate::semantic_model::infer::call_alignment::CallAlignment;
 
 pub struct AwaitInSyncChecker;
 

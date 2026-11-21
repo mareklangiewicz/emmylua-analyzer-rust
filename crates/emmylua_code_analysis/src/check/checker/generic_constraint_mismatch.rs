@@ -22,8 +22,8 @@ use crate::{
     LuaType, LuaUnionType,
 };
 
-use super::param_count::CallAlignment;
 use super::{CheckContext, Checker};
+use crate::semantic_model::infer::call_alignment::CallAlignment;
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::table_constructor::static_member_key;
 

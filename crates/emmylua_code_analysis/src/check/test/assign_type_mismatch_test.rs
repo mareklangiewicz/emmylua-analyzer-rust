@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::check::test::{
-        assert_clean_cases, check_source, check_source_with_emmyrc, count_by_code,
+        assert_clean_cases, check_source, check_source_with_emmyrc, count_by_code, texts_by_code,
     };
     use crate::{DiagnosticCode, Emmyrc, LuaMemberKey, LuaType, VirtualWorkspace};
     use tokio_util::sync::CancellationToken;
@@ -3786,6 +3786,54 @@ return t
                 b:put({ name = 'x' })
             "#
         ));
+    }
+
+    /// A closure argument's params come from the param it meets under the receiver rule
+    /// (`CallAlignment`), in every call style: each `sN` is `string`, so assigning it to an
+    /// `integer` is reported (#77: `o:f(cb)` on a plain `M.f(a, cb)` and `M.m(o, cb)` on
+    /// `M:m(cb)` left `s` untyped).
+    #[test]
+    fn test_closure_arg_params_come_from_the_param_it_meets_through_the_receiver_rule() {
+        let source = r#"
+            ---@class CbM
+            local M = {}
+
+            ---@param a CbM
+            ---@param cb fun(s: string)
+            function M.plain(a, cb) end
+
+            ---@param cb fun(s: string)
+            function M:colon(cb) end
+
+            ---@param o self
+            ---@param cb fun(s: string)
+            function M.selfref(o, cb) end
+
+            M:plain(function(s1)
+                ---@type integer
+                local _ = s1 -- ReceiverIsParam0
+            end)
+            M.colon(M, function(s2)
+                ---@type integer
+                local _ = s2 -- ArgIsReceiver
+            end)
+            M:selfref(function(s3)
+                ---@type integer
+                local _ = s3 -- ReceiverIsSelf
+            end)
+            M:colon(function(s4)
+                ---@type integer
+                local _ = s4 -- Plain, colon
+            end)
+            M.plain(M, function(s5)
+                ---@type integer
+                local _ = s5 -- Plain, dot
+            end)
+        "#;
+        let diags = check_source(source);
+        let mut hit = texts_by_code(source, &diags, DiagnosticCode::AssignTypeMismatch);
+        hit.sort();
+        assert_eq!(hit, vec!["s1", "s2", "s3", "s4", "s5"], "{diags:#?}");
     }
 
     #[test]

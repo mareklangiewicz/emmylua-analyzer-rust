@@ -44,6 +44,7 @@ use crate::{
     VariadicType,
 };
 
+use super::call_alignment::CallAlignment;
 use super::callable::CallableCandidateSet;
 use super::overload::{
     CallArg, call_operator_self_type, match_call_candidate, pcall_callback_ret, pcall_return_type,
@@ -1820,29 +1821,16 @@ impl<'a> InferVm<'a> {
             }
         }
 
-        // The first param of a colon-called member function type is often `self`, which is
-        // absent from the actual arg list. Closure arg indices must align with function
-        // param indices (e.g. `obj:event(fn)`'s fn corresponds to param 1).
-        let callback_param_offset = if colon_call
-            && callee_fun
-                .get_params()
-                .first()
-                .is_some_and(|(name, ty)| name == "self" || matches!(ty, Some(LuaType::SelfInfer)))
-        {
-            1
-        } else {
-            0
-        };
+        // The param each argument meets, under the checkers' receiver rule (#77): `obj:event(fn)`'s
+        // fn meets param 1 when the receiver fills param 0, and `M.m(o, fn)` on `M:m(fn)` meets 0.
+        let align = CallAlignment::of(&callee_fun, colon_call);
+        let param_met = |index: usize| align.param(callee_fun.get_params(), index).cloned();
         let receiver_ty = callee.receiver.clone();
 
         // Closure args: substitute the callee's function-typed params and fill the param environment.
         for (index, arg) in args.iter().enumerate() {
             if let Some(closure_syntax) = arg.closure_syntax {
-                let Some(callback_param_ty) = callee_fun
-                    .get_params()
-                    .get(index + callback_param_offset)
-                    .and_then(|p| p.1.clone())
-                else {
+                let Some(callback_param_ty) = param_met(index) else {
                     continue;
                 };
                 let callback_param_ty =
@@ -1887,11 +1875,7 @@ impl<'a> InferVm<'a> {
             if !matches!(arg.ty, LuaType::TableConst(_)) {
                 continue;
             }
-            let Some(param_ty) = callee_fun
-                .get_params()
-                .get(index + callback_param_offset)
-                .and_then(|p| p.1.clone())
-            else {
+            let Some(param_ty) = param_met(index) else {
                 continue;
             };
             let param_ty = bind_signature_generics(&param_ty, callee_fun.get_generic_params());
@@ -1917,11 +1901,7 @@ impl<'a> InferVm<'a> {
             let Some(closure_syntax) = arg.closure_syntax else {
                 continue;
             };
-            let Some(callback_param_ty) = callee_fun
-                .get_params()
-                .get(index + callback_param_offset)
-                .and_then(|p| p.1.clone())
-            else {
+            let Some(callback_param_ty) = param_met(index) else {
                 continue;
             };
             let callback_param_ty =
@@ -1950,11 +1930,7 @@ impl<'a> InferVm<'a> {
         // value with the later args and use the real return type to complete callback return
         // generics (`apply(run, cb)`'s R = run(cb)).
         for (index, arg) in args.iter().enumerate() {
-            let Some(callback_param_ty) = callee_fun
-                .get_params()
-                .get(index + callback_param_offset)
-                .and_then(|p| p.1.clone())
-            else {
+            let Some(callback_param_ty) = param_met(index) else {
                 continue;
             };
             let callback_param_ty =

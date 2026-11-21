@@ -25,8 +25,8 @@ use crate::{
     LuaTypeNode, SemanticId, TypeDefKind, VariadicType,
 };
 
-use super::param_count::CallAlignment;
 use super::{CheckContext, Checker, Mismatch};
+use crate::semantic_model::infer::call_alignment::CallAlignment;
 
 pub struct ParamTypeChecker;
 

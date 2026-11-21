@@ -16,6 +16,7 @@
 //! contains engine-level functions (VM expression inference, call generic
 //! back-inference, closure parameter back-inference) and does not duplicate model methods.
 
+pub(crate) mod call_alignment;
 pub(crate) mod callable;
 pub(crate) mod function_solver;
 pub(crate) mod overload;
