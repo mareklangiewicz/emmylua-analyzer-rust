@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod test {
 
+    use crate::check::test::{check_source, texts_by_code};
     use crate::{DiagnosticCode, VirtualWorkspace};
     use lsp_types::NumberOrString;
     use tokio_util::sync::CancellationToken;
@@ -599,12 +600,8 @@ mod test {
             }
             return r
         "#;
-        let diags = crate::check::test::check_source(source);
-        let mut ranges: Vec<&str> = diags
-            .iter()
-            .filter(|diag| diag.code == DiagnosticCode::GenericConstraintMismatch)
-            .map(|diag| &source[diag.range])
-            .collect();
+        let diags = check_source(source);
+        let mut ranges = texts_by_code(source, &diags, DiagnosticCode::GenericConstraintMismatch);
         ranges.sort();
         assert_eq!(
             ranges,

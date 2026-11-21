@@ -625,6 +625,12 @@ pub(crate) fn call_arg_param_index(
     }
 }
 
+/// `obj:f(x)` on a plain function (`function M.f(a, x)`): the receiver fills the first declared
+/// parameter, which the explicit arguments then skip.
+pub(crate) fn colon_receiver_param(func: &LuaFunctionType, colon_call: bool) -> bool {
+    colon_call && !first_param_is_self(func) && !func.is_colon_define()
+}
+
 pub(crate) fn first_param_is_self(func: &LuaFunctionType) -> bool {
     func.get_params().first().is_some_and(|(name, ty)| {
         name == "self"

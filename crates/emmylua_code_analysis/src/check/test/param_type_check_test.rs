@@ -6,7 +6,7 @@ mod test {
     use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
     use tokio_util::sync::CancellationToken;
 
-    use crate::check::test::{check_source, check_source_with_emmyrc};
+    use crate::check::test::{check_source, check_source_with_emmyrc, texts_by_code};
     use crate::{DiagnosticCode, Emmyrc, LuaType, VirtualWorkspace};
 
     // 普通联合参数接受其中的具体类型, 保留返回信息并拒绝不属于联合的实参.
@@ -2819,11 +2819,7 @@ mod test {
                 "#
             );
             let diags = check_source(&source);
-            let ranges: Vec<&str> = diags
-                .iter()
-                .filter(|diag| diag.code == DiagnosticCode::ParamTypeMismatch)
-                .map(|diag| &source.as_str()[diag.range])
-                .collect();
+            let ranges = texts_by_code(&source, &diags, DiagnosticCode::ParamTypeMismatch);
             assert_eq!(ranges, vec![receiver], "{call}: {diags:#?}");
         }
     }

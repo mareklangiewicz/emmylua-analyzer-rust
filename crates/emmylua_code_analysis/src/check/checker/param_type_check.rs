@@ -25,7 +25,7 @@ use crate::{
     LuaTypeNode, SemanticId, TypeDefKind, VariadicType,
 };
 
-use super::param_count::first_param_is_self;
+use super::param_count::{colon_receiver_param, first_param_is_self};
 use super::{CheckContext, Checker, Mismatch};
 
 pub struct ParamTypeChecker;
@@ -477,7 +477,7 @@ fn quick_candidate_score(
         }
     };
 
-    if colon_call && !self_param && !func.is_colon_define() {
+    if colon_receiver_param(func, colon_call) {
         if let Some((_, Some(param_ty))) = params.first() {
             check_pair(receiver_ty, param_ty);
         }
@@ -579,7 +579,7 @@ fn check_candidate(
     // Method definitions (`function C:m()`) store only user parameters, so the implicit
     // receiver is not part of the user-facing parameter list and should not be compared
     // against the first declared parameter.
-    if colon_call && !self_param && !func.is_colon_define() {
+    if colon_receiver_param(func, colon_call) {
         let mut mismatches = Vec::new();
         if let Some((name, Some(param_ty))) = params.first() {
             let param_ty = effective_param(param_ty, receiver_ty);

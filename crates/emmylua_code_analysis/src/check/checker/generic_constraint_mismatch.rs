@@ -22,7 +22,7 @@ use crate::{
     LuaType, LuaUnionType,
 };
 
-use super::param_count::{call_arg_param_index, first_param_is_self};
+use super::param_count::{call_arg_param_index, colon_receiver_param};
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::table_constructor::static_member_key;
@@ -325,6 +325,7 @@ fn check_call(
             call_expr,
             &fun,
             &owner_constraints,
+            analysis.colon_call,
             &analysis.arg_types,
         );
     }
@@ -388,7 +389,7 @@ pub(crate) fn resolved_call_signatures(
         let params = fun.get_params();
         // `obj:f(x)` on `function M.f(a, x)` binds `a` to the receiver; the arguments map
         // through the shared receiver rules (`call_arg_param_index`).
-        let colon_receiver = colon_call && !first_param_is_self(&fun) && !fun.is_colon_define();
+        let colon_receiver = colon_receiver_param(&fun, colon_call);
         let mut bindings = unify::TplBindings::new();
         if colon_receiver && let Some((_, Some(param_ty))) = params.first() {
             let _ = unify::unify_bindings(param_ty, receiver_ty, &mut bindings);
@@ -574,6 +575,7 @@ fn check_str_tpl_params(
     call_expr: &LuaCallExpr,
     fun: &LuaFunctionType,
     owner_constraints: &HashMap<smol_str::SmolStr, (usize, LuaType)>,
+    colon_call: bool,
     arg_types: &[LuaType],
 ) {
     let args = call_expr
@@ -583,7 +585,6 @@ fn check_str_tpl_params(
     if args.is_empty() {
         return;
     }
-    let colon_call = call_expr.is_colon_call();
     let params = fun.get_params();
     // Each argument meets the parameter the shared receiver rule gives it, as in the bindings
     // (`resolved_call_signatures`): `obj:f(x)` on `function M.f(a, x)` gives `x`, `M.m(obj, x)` on
@@ -594,11 +595,15 @@ fn check_str_tpl_params(
         else {
             continue;
         };
-        for str_tpl in str_tpl_refs_in(param_ty) {
-            let arg_ty = arg_types
-                .get(index)
-                .cloned()
-                .unwrap_or_else(|| semantic_model.type_of_expr(arg.get_syntax_id()));
+        let str_tpls = str_tpl_refs_in(param_ty);
+        if str_tpls.is_empty() {
+            continue;
+        }
+        let arg_ty = arg_types
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| semantic_model.type_of_expr(arg.get_syntax_id()));
+        for str_tpl in str_tpls {
             // For a union parameter `` `T`|T ``: when the argument is not a string, only the T branch applies, so don't report a template type error.
             if matches!(param_ty, LuaType::Union(_))
                 && !matches!(

@@ -1041,9 +1041,8 @@ impl<'db> SemanticModel<'db> {
             .map(|arg| self.type_of_expr_at(arg.get_syntax_id(), arg.get_position()))
             .collect();
         let colon_call = call_expr.is_colon_call();
-        let receiver = colon_call
-            .then(|| LuaIndexExpr::cast(callee.syntax().clone()))
-            .flatten()
+        let receiver = LuaIndexExpr::cast(callee.syntax().clone())
+            .filter(|_| colon_call)
             .and_then(|index| index.get_prefix_expr());
         let receiver_ty = receiver
             .as_ref()
