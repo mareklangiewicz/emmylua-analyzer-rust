@@ -41,8 +41,9 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   `gndx emmylua test --filter=…` and `corpus run LABEL BIN --trees=a,b` (diffed against today's full
   run), and run the full corpus and the full test suite once, before the commit.
 - `docs/agents/measuring.md`, one section per path: a corpus base or diff (stale base, exit 2,
-  `--exact`, `+dirty`); a `probe` fixture (flags, mapping a class, library form); a `resources/std`
-  edit; porting a fix upstream; timings; a crash, hang or blowup; an editor fix.
+  `--exact`, `+dirty`); a `probe` fixture (flags, mapping a class, library form); mutation
+  evidence (`test --red-patch`); a `resources/std` edit; porting a fix upstream; timings; a crash,
+  hang or blowup; an editor fix.
 
 ## Building and testing
 

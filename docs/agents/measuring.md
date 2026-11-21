@@ -39,6 +39,14 @@ read the section for the path you are on.
   file (`ws.def`) or a `@class` name other than its local (`---@class vim.Iter` on `local Iter`)
   passes in one file.
 
+## Mutation evidence for a test
+
+`gndx emmylua test --filter=… --red-patch=FILE.diff` runs the filtered tests on HEAD with a mutant
+applied, in the scratch worktree. Write the mutant outside the worktree: `git show HEAD:F > a/F`,
+edit a copy as `b/F`, `diff -u a/F b/F > FILE.diff`. Each filter must catch it: a NOT RED filter is
+a test that cannot see that mutation (`colon_extra = 0` in `param_count.rs` is caught by
+`redundant_parameter_test` alone).
+
 ## A `resources/std` annotation edit
 
 It goes through the narrow loop too. First `probe` fixtures of the callers' shapes (a callback
