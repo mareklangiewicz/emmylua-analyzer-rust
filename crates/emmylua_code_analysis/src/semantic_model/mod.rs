@@ -1,3 +1,4 @@
+pub mod attribute_overload;
 pub(crate) mod cache;
 pub mod flow;
 pub mod index_signature;

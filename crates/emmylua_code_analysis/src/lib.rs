@@ -30,7 +30,6 @@ pub use crate::semantic_db::exports::{
     FileExportContribution, FileExports, GlobalExport, MemberExport,
 };
 pub use crate::semantic_db::facts::FileFacts;
-pub use check::checker::attribute_check::attribute_params_accept_arg_count;
 pub use check::{
     CheckConfig, CheckProfile, DiagnosticCode, get_default_severity, is_code_default_enable,
 };
@@ -43,6 +42,7 @@ use resources::load_resource_std;
 pub use semantic_db::*;
 /// Semantic model entry point.
 pub use semantic_model::SemanticModel;
+pub use semantic_model::attribute_overload::select_attribute_overload;
 pub use semantic_model::index_signature::IndexInfo;
 pub use semantic_model::member::MemberCollectMode;
 /// Semantic member lookup result (completion candidate).

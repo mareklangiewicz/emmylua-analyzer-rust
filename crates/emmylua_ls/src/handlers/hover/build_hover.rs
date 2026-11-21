@@ -3,7 +3,7 @@ use std::rc::Rc;
 use emmylua_code_analysis::{
     Decl, DeclKind, GenericTplId, LuaFunctionType, LuaMemberKey, LuaType, LuaTypeDeclId, Member,
     MemberCollectMode, MemberInfo, SemanticDatabase, SemanticId, SemanticModel, TypeDef,
-    TypeDefKind, VariadicType, attribute_params_accept_arg_count,
+    TypeDefKind, VariadicType, select_attribute_overload,
 };
 use emmylua_parser::{
     LuaAssignStat, LuaAstNode, LuaCallExpr, LuaDocAttributeUse, LuaDocDescriptionOwner, LuaDocType,
@@ -2111,59 +2111,7 @@ fn attribute_overload_for_type(
         .iter()
         .map(|arg| model.type_of_expr(LuaExpr::LiteralExpr(arg.clone()).get_syntax_id()))
         .collect::<Vec<_>>();
-    let overloads: Vec<LuaFunctionType> = def
-        .call_overloads
-        .iter()
-        .filter_map(|syntax| match model.doc_type_lua(*syntax) {
-            LuaType::DocFunction(fun) => Some(fun.as_ref().clone()),
-            _ => None,
-        })
-        .collect();
-    if overloads.is_empty() {
-        return None;
-    }
-    let arg_count = arg_types.len();
-    let only_candidate = overloads.len() == 1;
-    let mut fallback = None;
-    let mut count_fallback = None;
-    for func in &overloads {
-        fallback.get_or_insert_with(|| func.clone());
-        if !attribute_params_accept_arg_count(func.get_params(), arg_count) {
-            continue;
-        }
-        count_fallback.get_or_insert_with(|| func.clone());
-        if only_candidate || attribute_callable_accepts_types(model, func, &arg_types) {
-            return Some(func.clone());
-        }
-    }
-    count_fallback.or(fallback)
-}
-
-fn attribute_callable_accepts_types(
-    model: &SemanticModel<'_>,
-    func: &LuaFunctionType,
-    arg_types: &[LuaType],
-) -> bool {
-    for (index, (name, param_ty)) in func.get_params().iter().enumerate() {
-        if name == "..." {
-            if let Some(param_ty) = param_ty {
-                return arg_types[index..]
-                    .iter()
-                    .all(|arg| model.type_check(arg, param_ty));
-            }
-            return true;
-        }
-        let Some(param_ty) = param_ty else {
-            continue;
-        };
-        let Some(arg) = arg_types.get(index) else {
-            return true;
-        };
-        if !model.type_check(arg, param_ty) {
-            return false;
-        }
-    }
-    true
+    select_attribute_overload(model, def, &arg_types)
 }
 
 fn build_type_hover(

@@ -1774,12 +1774,13 @@ impl<'a> InferVm<'a> {
         // No candidate fits, and there is only one: its params still type the closure arguments
         // (a mismatching argument is `param-type-mismatch`'s to report, #80), but the call itself
         // stays `Unknown` (upstream's `test_concrete_union_argument_preserves_return`).
-        let only_for_closures = selected.is_none() && candidates.len() == 1;
-        let Some((callee_fun, mut bindings)) = selected.or_else(|| {
-            let only = candidates.first().filter(|_| only_for_closures)?;
-            Some((only.clone(), unify::TplBindings::new()))
-        }) else {
-            return Value::plain(LuaType::Unknown);
+        let ((callee_fun, mut bindings), only_for_closures) = match selected {
+            Some(selected) => (selected, false),
+            None if candidates.len() == 1 => {
+                let only = candidates.pop().expect("len checked");
+                ((only, unify::TplBindings::new()), true)
+            }
+            None => return Value::plain(LuaType::Unknown),
         };
 
         // Explicit call generics: `f--[[@<string, number>]]()` binds directly in function
@@ -1899,6 +1900,11 @@ impl<'a> InferVm<'a> {
                 .keys()
                 .any(|(closure, _)| *closure == target)
         {
+            return Value::plain(LuaType::Unknown);
+        }
+        // The closure arguments are typed; what follows only binds the call's return, which an
+        // only-for-closures candidate leaves `Unknown`.
+        if only_for_closures {
             return Value::plain(LuaType::Unknown);
         }
         // Closure-arg return back-inference: after the param environment is filled, use the
@@ -2044,9 +2050,6 @@ impl<'a> InferVm<'a> {
             }
         }
 
-        if only_for_closures {
-            return Value::plain(LuaType::Unknown);
-        }
         let mut ret = self.substituted_call_return(&callee, &callee_fun, &bindings);
         // Directly callable unions: when multiple same-priority candidates match (union types
         // or ordinary `---@overload` in higher-order callback return projections), take the
