@@ -19,6 +19,8 @@ read the section for the path you are on.
 - `corpus run` of a `+dirty` build (`gndx emmylua build .` with uncommitted changes) refuses
   mason.nvim, and says so before the first tree: its commit is unknown, so the lab vouches for no
   blowup fix. Diff it against a base on the trees it ran.
+- A scratch run goes with `corpus drop LABEL… --apply` (a plan without it); it refuses `gate-*` runs
+  and #1's base set.
 - Every corpus run keeps its binary at `~/.cache/gndx/emmylua-corpus/<LABEL>/emmylua_check`: probe
   an older rule with `--bin=` on that copy instead of rebuilding it.
 
