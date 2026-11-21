@@ -48,7 +48,7 @@ colon call to a plain function), and plain index pairing was right after that. U
 (3474c99d) dropped that step, so each site aligns for itself, and a site that pairs by plain index
 is wrong in two cells (#75).
 
-The fork's shared rule is `CallAlignment` in `check/checker/param_count.rs`, one variant per cell,
+The fork's shared rule is `CallAlignment` in `semantic_model/infer/call_alignment.rs`, one variant per cell,
 decided once per candidate by `CallAlignment::of(func, colon_call)`:
 - `Plain`: argument `i` fills param `i`. `ReceiverIsSelf`: a colon call's receiver fills a first param
   that is `self` (`first_param_is_self`: a param named `self`, `SelfInfer`, or `Ref("self")` from
@@ -63,10 +63,8 @@ decided once per candidate by `CallAlignment::of(func, colon_call)`:
 On the rule: `resolved_call_signatures` and `check_str_tpl_params` (`generic_constraint_mismatch.rs`),
 `check_candidate` and `quick_candidate_score` (`param_type_check.rs`), `closure_expected_functions`,
 `check_call`, `ArgCountRange::mismatch` and `param_count_range` (`param_count.rs`),
-`expected_arg_types` and `check_call_as_arg` (`await_in_sync.rs`). A new site reads `CallAlignment`,
-with a test per cell: a hand-written argument → param map that reused the param → argument offsets
-was #76's bug.
-
-Off the rule: `semantic_model/infer/overload.rs` `match_call_candidate_impl`, which aligns up front
-as 0.25.1 did (the receiver becomes argument 0), so it pairs right without `Ref("self")` detection
-(probed in every cell, #76).
+`expected_arg_types` and `check_call_as_arg` (`await_in_sync.rs`); in inference, `vm.rs`'s four
+closure-argument sites (#77) and `overload.rs` `match_call_candidate_impl`, which still prepends a
+`ReceiverIsParam0` receiver as argument 0 when its type is known, as 0.25.1 did. A new site reads
+`CallAlignment`, with a test per cell: a hand-written argument → param map that reused the param →
+argument offsets was #76's bug, and in `vm.rs`, #77's.
