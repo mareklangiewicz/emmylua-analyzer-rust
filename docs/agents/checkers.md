@@ -38,3 +38,23 @@ bindings for `C<X, …>` collide with a method's first generics (#71: vim.Iter `
 function field's `generic_params` (`---@field f fun(v: T): T`) also lists the class's generics, so a
 "method's own generics" filter has to drop names the class declares: shadowing every listed generic
 inside `unify::substitute` broke 11 tests. 99282893 filters in `semantic_model/member.rs` instead.
+
+## Argument/param alignment (which param an argument meets)
+
+A colon call and a colon definition each shift the receiver, so argument `i` meets a different
+param per cell. 0.25.1 aligned the call once, up front (`build_call_constraint_context`: it
+inserted a `self` param for a dot call to a colon method, or the receiver as argument 0 for a
+colon call to a plain function), and plain index pairing was right after that. Upstream's rewrite
+(3474c99d) dropped that step, so each site aligns for itself, and a site that pairs by plain index
+is wrong in two cells (#75).
+
+The fork's shared rule is in `check/checker/param_count.rs`:
+- `call_arg_param_index(func, i, colon_call)`: the param argument `i` fills, `None` for a dot call's
+  receiver into a colon method. `first_param_is_self` counts a param named `self`, `SelfInfer`, and
+  `Ref("self")` (`---@param x self`).
+- `colon_receiver_param(func, colon_call)`: the receiver fills param 0 (`o:f(x)` on `function M.f(a, x)`).
+
+On the rule: `resolved_call_signatures` and `check_str_tpl_params` (`generic_constraint_mismatch.rs`),
+`check_candidate` and `quick_candidate_score` (`param_type_check.rs`). A new site goes through these
+two, with a test per cell. The sites that still align for themselves, and whether they are wrong,
+are #76.
