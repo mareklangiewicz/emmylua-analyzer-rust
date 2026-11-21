@@ -55,6 +55,13 @@ The fork's shared rule is in `check/checker/param_count.rs`:
 - `colon_receiver_param(func, colon_call)`: the receiver fills param 0 (`o:f(x)` on `function M.f(a, x)`).
 
 On the rule: `resolved_call_signatures` and `check_str_tpl_params` (`generic_constraint_mismatch.rs`),
-`check_candidate` and `quick_candidate_score` (`param_type_check.rs`). A new site goes through these
-two, with a test per cell. The sites that still align for themselves, and whether they are wrong,
-are #76.
+`check_candidate` and `quick_candidate_score` (`param_type_check.rs`), `closure_expected_functions`,
+`check_call` and `ArgCountRange::accepts` (`param_count.rs`), `expected_arg_types`
+(`await_in_sync.rs`). A new site goes through these two, with a test per cell: a hand-written
+argument → param map that reused the param → argument offsets was #76's bug.
+
+Off the rule, and correct in every cell (#76; the first probed, the second traced):
+- `semantic_model/infer/overload.rs` `match_call_candidate_impl`: a colon call to a plain function
+  inserts the receiver as argument 0, so it pairs right without `Ref("self")` detection.
+- `await_in_sync.rs` `check_call_as_arg`: it maps param → argument, the direction those offsets
+  are for.
