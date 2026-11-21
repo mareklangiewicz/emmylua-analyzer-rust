@@ -571,7 +571,7 @@ mod test {
         ));
     }
 
-    /// A string-template argument is the one the shared receiver rule (`call_arg_param_index`)
+    /// A string-template argument is the one the shared receiver rule (`CallAlignment`)
     /// pairs with the `` `T` `` parameter (#75). Pairing by plain index skipped it on a colon call
     /// to a dot-defined function, and checked the receiver on a dot call to a colon-defined method.
     #[test]

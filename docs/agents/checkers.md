@@ -48,17 +48,23 @@ colon call to a plain function), and plain index pairing was right after that. U
 (3474c99d) dropped that step, so each site aligns for itself, and a site that pairs by plain index
 is wrong in two cells (#75).
 
-The fork's shared rule is in `check/checker/param_count.rs`:
-- `call_arg_param_index(func, i, colon_call)`: the param argument `i` fills, `None` for a dot call's
-  receiver into a colon method. `first_param_is_self` counts a param named `self`, `SelfInfer`, and
-  `Ref("self")` (`---@param x self`).
-- `colon_receiver_param(func, colon_call)`: the receiver fills param 0 (`o:f(x)` on `function M.f(a, x)`).
+The fork's shared rule is `CallAlignment` in `check/checker/param_count.rs`, one variant per cell,
+decided once per candidate by `CallAlignment::of(func, colon_call)`:
+- `Plain`: argument `i` fills param `i`. `ReceiverIsSelf`: a colon call's receiver fills a first param
+  that is `self` (`first_param_is_self`: a param named `self`, `SelfInfer`, or `Ref("self")` from
+  `---@param x self`). `ReceiverIsParam0`: a colon call's receiver fills a plain function's param 0
+  and is checked against it (`o:f(x)` on `function M.f(a, x)`). `ArgIsReceiver`: a dot call's
+  argument 0 is a colon method's receiver and fills no param.
+- `param_of(i)`: the param argument `i` fills (`None` for `ArgIsReceiver`'s receiver);
+  `param_skip()` / `arg_skip()`: the leading params and arguments the receiver accounts for, for a
+  site that pairs slices.
 
 On the rule: `resolved_call_signatures` and `check_str_tpl_params` (`generic_constraint_mismatch.rs`),
 `check_candidate` and `quick_candidate_score` (`param_type_check.rs`), `closure_expected_functions`,
-`check_call` and `ArgCountRange::mismatch` (`param_count.rs`), `expected_arg_types` and
-`check_call_as_arg` (`await_in_sync.rs`). A new site goes through these two, with a test per cell: a
-hand-written argument → param map that reused the param → argument offsets was #76's bug.
+`check_call`, `ArgCountRange::mismatch` and `param_count_range` (`param_count.rs`),
+`expected_arg_types` and `check_call_as_arg` (`await_in_sync.rs`). A new site reads `CallAlignment`,
+with a test per cell: a hand-written argument → param map that reused the param → argument offsets
+was #76's bug.
 
 Off the rule: `semantic_model/infer/overload.rs` `match_call_candidate_impl`, which aligns up front
 as 0.25.1 did (the receiver becomes argument 0), so it pairs right without `Ref("self")` detection

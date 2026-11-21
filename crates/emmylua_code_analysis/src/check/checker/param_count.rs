@@ -407,7 +407,8 @@ fn closure_expected_functions(
         let colon_call = call_expr.is_colon_call();
         let mut out = Vec::new();
         for func in &candidates {
-            let Some(ty) = call_arg_param_index(func, param_idx, colon_call)
+            let Some(ty) = CallAlignment::of(func, colon_call)
+                .param_of(param_idx)
                 .and_then(|idx| func.get_params().get(idx))
                 .and_then(|(_, ty)| ty.as_ref())
             else {
@@ -481,7 +482,7 @@ struct CountMismatch {
     missing: bool,
     expected: usize,
     found: usize,
-    /// 1 when a colon call's receiver fills the first param (`colon_receiver_param`)
+    /// 1 when a colon call's receiver fills the first param (`CallAlignment::ReceiverIsParam0`)
     colon_extra: usize,
 }
 
@@ -503,7 +504,8 @@ impl ArgCountRange {
         colon_call: bool,
     ) -> Option<CountMismatch> {
         let range = param_count_range(semantic_model, func, colon_call);
-        let colon_extra = usize::from(colon_receiver_param(func, colon_call));
+        let colon_extra =
+            usize::from(CallAlignment::of(func, colon_call) == CallAlignment::ReceiverIsParam0);
         let call_min = self.min + colon_extra;
         let call_max = self.max.map(|max| max + colon_extra);
         if let Some(max) = call_max
@@ -614,30 +616,61 @@ fn callee_has_variadic_doc_return(
     }))
 }
 
-/// The declared parameter that argument `arg_index` of a call fills, following
-/// `param_type_check::check_candidate`: a colon call's receiver takes `self` or a plain
-/// function's first parameter, and a colon-defined method called with a dot takes its
-/// receiver as argument 0, which fills no user parameter.
-pub(crate) fn call_arg_param_index(
-    func: &LuaFunctionType,
-    arg_index: usize,
-    colon_call: bool,
-) -> Option<usize> {
-    let self_param = first_param_is_self(func);
-    match (colon_call, self_param || !func.is_colon_define()) {
-        (true, true) => Some(arg_index + 1),
-        (false, false) => arg_index.checked_sub(1),
-        _ => Some(arg_index),
+/// Which declared param each argument of a call meets: the receiver shift, decided once per
+/// candidate from the call's syntax and the definition. Every site that pairs arguments with
+/// params reads it (`docs/agents/checkers.md`, "Argument/param alignment"): a hand-written
+/// offset was #76's bug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallAlignment {
+    /// Argument `i` fills param `i`: a dot call to a plain function or to one whose params name
+    /// `self`, or a colon call to a colon-defined method (whose params hold no `self`).
+    Plain,
+    /// `o:m(x)` where the first param is `self` (named `self`, `fun(self: T)`, `---@param x
+    /// self`): the receiver fills it, and argument `i` fills param `i + 1`.
+    ReceiverIsSelf,
+    /// `o:f(x)` on a plain `function M.f(a, x)`: the receiver fills param 0 as an argument would
+    /// (its type is checked against it), and argument `i` fills param `i + 1`.
+    ReceiverIsParam0,
+    /// `M.m(o, x)` on `function M:m(x)`: argument 0 is the receiver and fills no declared param,
+    /// and argument `i` fills param `i - 1`.
+    ArgIsReceiver,
+}
+
+impl CallAlignment {
+    pub(crate) fn of(func: &LuaFunctionType, colon_call: bool) -> Self {
+        match (
+            colon_call,
+            first_param_is_self(func),
+            func.is_colon_define(),
+        ) {
+            (true, true, _) => Self::ReceiverIsSelf,
+            (true, false, false) => Self::ReceiverIsParam0,
+            (false, false, true) => Self::ArgIsReceiver,
+            _ => Self::Plain,
+        }
+    }
+
+    /// The declared params the receiver fills, before the one argument 0 fills.
+    pub(crate) fn param_skip(self) -> usize {
+        usize::from(matches!(
+            self,
+            Self::ReceiverIsSelf | Self::ReceiverIsParam0
+        ))
+    }
+
+    /// The arguments that fill no declared param, before the one param 0 takes: a dot call's
+    /// receiver.
+    pub(crate) fn arg_skip(self) -> usize {
+        usize::from(self == Self::ArgIsReceiver)
+    }
+
+    /// The declared param argument `arg_index` fills; `None` for `ArgIsReceiver`'s receiver.
+    pub(crate) fn param_of(self, arg_index: usize) -> Option<usize> {
+        (arg_index + self.param_skip()).checked_sub(self.arg_skip())
     }
 }
 
-/// `obj:f(x)` on a plain function (`function M.f(a, x)`): the receiver fills the first declared
-/// parameter, which the explicit arguments then skip.
-pub(crate) fn colon_receiver_param(func: &LuaFunctionType, colon_call: bool) -> bool {
-    colon_call && !func.is_colon_define() && !first_param_is_self(func)
-}
-
-pub(crate) fn first_param_is_self(func: &LuaFunctionType) -> bool {
+fn first_param_is_self(func: &LuaFunctionType) -> bool {
     func.get_params().first().is_some_and(|(name, ty)| {
         name == "self"
             || ty.as_ref().is_some_and(|t| {
@@ -658,10 +691,11 @@ fn param_count_range(
     func: &LuaFunctionType,
     colon_call: bool,
 ) -> ParamCountRange {
+    let align = CallAlignment::of(func, colon_call);
     let params = func.get_params();
-    let self_param = first_param_is_self(func);
-    let explicit_self_in_params = self_param;
-    let params = if colon_call && self_param {
+    // The receiver's `self` is no argument slot; a plain param the receiver fills is one
+    // (`ArgCountRange::mismatch` counts the receiver as an argument there).
+    let params = if align == CallAlignment::ReceiverIsSelf {
         &params[1..]
     } else {
         params
@@ -731,9 +765,9 @@ fn param_count_range(
         Some(params.len())
     };
 
-    // Method definitions (implicit self) need an extra required self slot in non-colon calls;
-    // explicit `fun(self: self)` parameter lists already contain self, so don't double-count.
-    if !colon_call && !explicit_self_in_params && (func.is_colon_define() || self_param) {
+    // A colon method called with a dot takes its receiver as an extra required argument; params
+    // that already name `self` count it (`CallAlignment::ArgIsReceiver` is neither).
+    if align == CallAlignment::ArgIsReceiver {
         min += 1;
         max = max.map(|max| max + 1);
     }

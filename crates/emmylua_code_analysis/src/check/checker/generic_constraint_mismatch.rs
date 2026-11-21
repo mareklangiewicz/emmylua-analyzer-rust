@@ -22,7 +22,7 @@ use crate::{
     LuaType, LuaUnionType,
 };
 
-use super::param_count::{call_arg_param_index, colon_receiver_param};
+use super::param_count::CallAlignment;
 use super::{CheckContext, Checker};
 use crate::semantic_model::render::humanize_type;
 use crate::semantic_model::table_constructor::static_member_key;
@@ -388,15 +388,16 @@ pub(crate) fn resolved_call_signatures(
         let fun = apply_owner_generics(fun.clone(), &owner_constraints);
         let params = fun.get_params();
         // `obj:f(x)` on `function M.f(a, x)` binds `a` to the receiver; the arguments map
-        // through the shared receiver rules (`call_arg_param_index`).
-        let colon_receiver = colon_receiver_param(&fun, colon_call);
+        // through the shared receiver rule (`CallAlignment`).
+        let align = CallAlignment::of(&fun, colon_call);
         let mut bindings = unify::TplBindings::new();
-        if colon_receiver && let Some((_, Some(param_ty))) = params.first() {
+        if align == CallAlignment::ReceiverIsParam0
+            && let Some((_, Some(param_ty))) = params.first()
+        {
             let _ = unify::unify_bindings(param_ty, receiver_ty, &mut bindings);
         }
         for (index, arg_ty) in arg_types.iter().enumerate() {
-            let Some((_, Some(param_ty))) =
-                call_arg_param_index(&fun, index, colon_call).and_then(|i| params.get(i))
+            let Some((_, Some(param_ty))) = align.param_of(index).and_then(|i| params.get(i))
             else {
                 continue;
             };
@@ -589,10 +590,9 @@ fn check_str_tpl_params(
     // Each argument meets the parameter the shared receiver rule gives it, as in the bindings
     // (`resolved_call_signatures`): `obj:f(x)` on `function M.f(a, x)` gives `x`, `M.m(obj, x)` on
     // `function M:m(x)` gives `x` (#75).
+    let align = CallAlignment::of(fun, colon_call);
     for (index, arg) in args.iter().enumerate() {
-        let Some((_, Some(param_ty))) =
-            call_arg_param_index(fun, index, colon_call).and_then(|i| params.get(i))
-        else {
+        let Some((_, Some(param_ty))) = align.param_of(index).and_then(|i| params.get(i)) else {
             continue;
         };
         let str_tpls = str_tpl_refs_in(param_ty);

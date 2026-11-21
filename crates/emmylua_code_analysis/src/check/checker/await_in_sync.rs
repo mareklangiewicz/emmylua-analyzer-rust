@@ -25,7 +25,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{AsyncState, LuaFunctionType, LuaType, SemanticId};
 
-use super::param_count::{call_arg_param_index, closure_table_field_info};
+use super::param_count::{CallAlignment, closure_table_field_info};
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 
@@ -189,8 +189,10 @@ fn check_call_as_arg(
     let mut reported = HashSet::new();
     for fun in &candidates {
         // Each argument meets the parameter the shared receiver rule gives it.
+        let align = CallAlignment::of(fun, colon_call);
         for (arg_idx, arg) in args.iter().enumerate() {
-            let Some((_, Some(param_type))) = call_arg_param_index(fun, arg_idx, colon_call)
+            let Some((_, Some(param_type))) = align
+                .param_of(arg_idx)
                 .and_then(|idx| fun.get_params().get(idx))
             else {
                 continue;
@@ -285,7 +287,7 @@ fn expected_arg_types(semantic_model: &SemanticModel<'_>, arg: &LuaSyntaxNode) -
     callee_candidates(semantic_model, &call_expr)
         .iter()
         .filter_map(|fun| {
-            let idx = call_arg_param_index(fun, param_idx, colon_call)?;
+            let idx = CallAlignment::of(fun, colon_call).param_of(param_idx)?;
             fun.get_params().get(idx)?.1.clone()
         })
         .collect()

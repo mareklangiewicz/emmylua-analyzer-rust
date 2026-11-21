@@ -25,7 +25,7 @@ use crate::{
     LuaTypeNode, SemanticId, TypeDefKind, VariadicType,
 };
 
-use super::param_count::{colon_receiver_param, first_param_is_self};
+use super::param_count::CallAlignment;
 use super::{CheckContext, Checker, Mismatch};
 
 pub struct ParamTypeChecker;
@@ -465,10 +465,7 @@ fn quick_candidate_score(
     receiver_ty: &LuaType,
 ) -> usize {
     let params = func.get_params();
-    let self_param = first_param_is_self(func);
-    let param_start = usize::from(colon_call && self_param);
-    let dot_method_receiver = !colon_call && !self_param && func.is_colon_define();
-    let arg_offset = usize::from(dot_method_receiver);
+    let align = CallAlignment::of(func, colon_call);
     let mut score = 0usize;
 
     let mut check_pair = |arg_ty: &LuaType, param_ty: &LuaType| {
@@ -477,34 +474,20 @@ fn quick_candidate_score(
         }
     };
 
-    if colon_receiver_param(func, colon_call) {
-        if let Some((_, Some(param_ty))) = params.first() {
-            check_pair(receiver_ty, param_ty);
-        }
-        let remainder = if params.is_empty() {
-            params
-        } else {
-            &params[1..]
+    if align == CallAlignment::ReceiverIsParam0
+        && let Some((_, Some(param_ty))) = params.first()
+    {
+        check_pair(receiver_ty, param_ty);
+    }
+    let param_start = align.param_skip().min(params.len());
+    for (index, (_, param_ty)) in params[param_start..].iter().enumerate() {
+        let Some(param_ty) = param_ty else {
+            continue;
         };
-        for (index, (_, param_ty)) in remainder.iter().enumerate() {
-            let Some(param_ty) = param_ty else {
-                continue;
-            };
-            let Some(arg_ty) = arg_types.get(index) else {
-                break;
-            };
-            check_pair(arg_ty, param_ty);
-        }
-    } else {
-        for (index, (_, param_ty)) in params[param_start..].iter().enumerate() {
-            let Some(param_ty) = param_ty else {
-                continue;
-            };
-            let Some(arg_ty) = arg_types.get(index + arg_offset) else {
-                break;
-            };
-            check_pair(arg_ty, param_ty);
-        }
+        let Some(arg_ty) = arg_types.get(index + align.arg_skip()) else {
+            break;
+        };
+        check_pair(arg_ty, param_ty);
     }
     score
 }
@@ -557,12 +540,7 @@ fn check_candidate(
     arg_types: Option<&[LuaType]>,
 ) -> Vec<Mismatch> {
     let params = func.get_params();
-    let self_param = first_param_is_self(func);
-    let param_start = usize::from(colon_call && self_param).min(params.len());
-    // Method definition called with dot syntax (`obj.method(obj, ...)` / `pcall(obj.method, obj, ...)`):
-    // the semantic method signature contains only user parameters; the first actual argument is an explicit receiver and must be skipped.
-    let dot_method_receiver = !colon_call && !self_param && func.is_colon_define();
-    let arg_offset = usize::from(dot_method_receiver).min(args.len());
+    let align = CallAlignment::of(func, colon_call);
 
     // Per-candidate generic binding table: bindings inferred from earlier arguments (T[]) are used for later callback parameters.
     let mut bindings = unify::TplBindings::new();
@@ -575,58 +553,37 @@ fn check_candidate(
         }
     }
 
-    // Plain function called with colon syntax: the receiver occupies the first argument slot.
-    // Method definitions (`function C:m()`) store only user parameters, so the implicit
-    // receiver is not part of the user-facing parameter list and should not be compared
-    // against the first declared parameter.
-    if colon_receiver_param(func, colon_call) {
-        let mut mismatches = Vec::new();
-        if let Some((name, Some(param_ty))) = params.first() {
-            let param_ty = effective_param(param_ty, receiver_ty);
-            let _ = unify_call_bindings(semantic_model, &param_ty, receiver_ty, &mut bindings);
-            if !is_compatible(semantic_model, receiver_ty, &param_ty) {
-                mismatches.push(Mismatch {
-                    code: DiagnosticCode::ParamTypeMismatch,
-                    // The receiver (`s` of `s:gsub(p)`), not the first explicit argument (#73);
-                    // an empty range falls back to the callee.
-                    range: receiver_range.unwrap_or_default(),
-                    message: mismatch_message(semantic_model, receiver_ty, &param_ty, name),
-                });
-            }
+    // `o:f(x)` on a plain function: the receiver is checked against param 0 like an argument,
+    // reported at the receiver. A colon method's params hold no `self` to check it against.
+    let mut mismatches = Vec::new();
+    if align == CallAlignment::ReceiverIsParam0
+        && let Some((name, Some(param_ty))) = params.first()
+    {
+        let param_ty = effective_param(param_ty, receiver_ty);
+        let _ = unify_call_bindings(semantic_model, &param_ty, receiver_ty, &mut bindings);
+        if !is_compatible(semantic_model, receiver_ty, &param_ty) {
+            mismatches.push(Mismatch {
+                code: DiagnosticCode::ParamTypeMismatch,
+                // The receiver (`s` of `s:gsub(p)`), not the first explicit argument (#73);
+                // an empty range falls back to the callee.
+                range: receiver_range.unwrap_or_default(),
+                message: mismatch_message(semantic_model, receiver_ty, &param_ty, name),
+            });
         }
-        let remainder_params = if params.is_empty() {
-            params
-        } else {
-            &params[1..]
-        };
-        mismatches.extend(check_arg_pairs(
-            semantic_model,
-            remainder_params,
-            args,
-            func.is_variadic(),
-            &mut bindings,
-            &constraints,
-            arg_types,
-        ));
-        return mismatches;
     }
-
-    // When a colon-defined method is invoked with dot syntax, the explicit receiver is
-    // part of `args` but not part of the user-facing parameter list. Slice `arg_types` too;
-    // otherwise cached argument types are shifted and the wrong argument is type-checked.
-    let dot_arg_types = arg_types.map(|types| {
-        let offset = arg_offset.min(types.len());
-        &types[offset..]
-    });
-    check_arg_pairs(
+    // A dot call's receiver (`M.m(o, x)` on `function M:m(x)`, `pcall(o.m, o, x)`) fills no
+    // param: skip it in `arg_types` too, or every cached type pairs with the wrong argument.
+    let arg_skip = align.arg_skip().min(args.len());
+    mismatches.extend(check_arg_pairs(
         semantic_model,
-        &params[param_start..],
-        &args[arg_offset..],
+        &params[align.param_skip().min(params.len())..],
+        &args[arg_skip..],
         func.is_variadic(),
         &mut bindings,
         &constraints,
-        dot_arg_types,
-    )
+        arg_types.map(|types| &types[align.arg_skip().min(types.len())..]),
+    ));
+    mismatches
 }
 
 fn param_generic_base_match(

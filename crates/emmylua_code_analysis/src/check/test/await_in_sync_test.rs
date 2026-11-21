@@ -266,7 +266,7 @@ mod test {
     }
 
     /// A closure passed for an `async fun()` parameter is async whatever the call style: the
-    /// argument meets the parameter the shared receiver rule (`call_arg_param_index`) gives it
+    /// argument meets the parameter the shared receiver rule (`CallAlignment`) gives it
     /// (#76). The colon/dot offsets were the param-to-argument ones used backwards, so three
     /// cells reported `await-in-sync` inside an async callback.
     #[test]
@@ -314,7 +314,7 @@ mod test {
 
     /// An async function passed for a `sync fun()` parameter is reported in every call style,
     /// a colon-defined method whose docs also name `self` included: the argument meets the
-    /// parameter `call_arg_param_index` gives it (0.25.1, upstream and the fork all agree).
+    /// parameter `CallAlignment` gives it (0.25.1, upstream and the fork all agree).
     #[test]
     fn test_async_arg_to_sync_param_in_every_call_style() {
         let source = r#"

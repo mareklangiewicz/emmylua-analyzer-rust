@@ -428,7 +428,7 @@ mod test {
         ));
     }
 
-    /// A closure argument meets the parameter the shared receiver rule (`call_arg_param_index`)
+    /// A closure argument meets the parameter the shared receiver rule (`CallAlignment`)
     /// gives it (#76). The colon/dot offsets were the param-to-argument ones used backwards, so a
     /// colon call to a dot-defined function, and a dot call to a colon-defined method, took the
     /// callback's type from no parameter, and its extra parameter went unreported.
