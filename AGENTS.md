@@ -73,6 +73,8 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   `gndx emmylua fork` for the fix touching those frames → cherry-pick onto upstream in a scratch
   worktree, re-run `outcome` → `reduce` last.
 - `probe DIR… --bin=CANDIDATE` prints the three-way table (plus the candidate) for any fixture.
+  Each row ends with its source line. With several cells on one line, add `--exact` so each row
+  carries its `L:C-L:C` range. Parsing the JSON by hand is a sign that `probe` lacks a flag.
   Every corpus run keeps its binary at `~/.cache/gndx/emmylua-corpus/<LABEL>/emmylua_check`: probe
   an older rule with `--bin=` on that copy instead of rebuilding it.
   `probe` and `reduce` run a fixture alone under an empty config, so a gate hit that needs the Lua
