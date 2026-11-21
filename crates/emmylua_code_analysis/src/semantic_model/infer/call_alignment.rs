@@ -38,7 +38,7 @@ impl CallAlignment {
     }
 
     /// The declared params the receiver fills, before the one argument 0 fills.
-    fn param_skip(self) -> usize {
+    pub(crate) fn param_skip(self) -> usize {
         usize::from(matches!(
             self,
             Self::ReceiverIsSelf | Self::ReceiverIsParam0
@@ -47,7 +47,7 @@ impl CallAlignment {
 
     /// The arguments that fill no declared param, before the one param 0 takes: a dot call's
     /// receiver.
-    fn arg_skip(self) -> usize {
+    pub(crate) fn arg_skip(self) -> usize {
         usize::from(self == Self::ArgIsReceiver)
     }
 
@@ -90,7 +90,8 @@ impl CallAlignment {
     }
 }
 
-fn first_param_is_self(func: &LuaFunctionType) -> bool {
+/// Whether `func`'s first param is the receiver's `self`: named `self`, or typed `self`.
+pub(crate) fn first_param_is_self(func: &LuaFunctionType) -> bool {
     func.get_params().first().is_some_and(|(name, ty)| {
         name == "self"
             || ty.as_ref().is_some_and(|t| {

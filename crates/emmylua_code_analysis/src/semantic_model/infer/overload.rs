@@ -17,6 +17,7 @@ use crate::{
     LuaTupleType, LuaType, LuaTypeDeclId, TypeDefKind, VariadicType,
 };
 
+use super::call_alignment::{CallAlignment, first_param_is_self};
 use super::unify::{self, TplBindings};
 use super::vm::{
     bind_signature_generics, is_empty_table_literal, score_param_match, shallow_closure_signature,
@@ -515,29 +516,26 @@ fn match_call_candidate_impl(
     let mut bindings = TplBindings::new();
     let mut score = 0i32;
     let params = fun.get_params().to_vec();
-    let has_self_param = params
-        .first()
-        .is_some_and(|(name, ty)| name == "self" || matches!(ty, Some(LuaType::SelfInfer)));
-    // Method-call argument alignment:
-    // - colon calls implicitly pass the receiver, so an explicit `self` parameter is
-    //   skipped as one logical argument;
-    // - dot calls explicitly pass the receiver; if the method type does not list `self`
-    //   (semantic signatures contain only user params), one actual arg must be skipped.
-    // - when a dot-defined function is called with colon syntax (`a:create()`), the
-    //   receiver is the first implicit argument.
-    let param_start = usize::from(has_self_param);
+    // Which param each argument meets: the receiver rule the checkers and vm's closure typing
+    // read too (`CallAlignment`). A colon call's receiver that fills a plain param 0
+    // (`ReceiverIsParam0`, `a:create()` on `function A.create(o)`) is matched against it as the
+    // first argument, when its type is known.
+    let mut align = CallAlignment::of(fun, colon_call);
     let mut effective_args_storage: Vec<CallArg> = Vec::new();
-    let args: &[CallArg] = if colon_call && !has_self_param && !fun.is_colon_define() {
-        if let Some(receiver) = receiver {
+    let args: &[CallArg] = match receiver {
+        Some(receiver) if align == CallAlignment::ReceiverIsParam0 => {
             effective_args_storage.push(CallArg::new(receiver.clone()));
             effective_args_storage.extend(args.iter().cloned());
-            effective_args_storage.as_slice()
-        } else {
-            args
+            align = CallAlignment::Plain;
+            &effective_args_storage
         }
-    } else {
-        args
+        _ => args,
     };
+    // The first param matched: after those the receiver fills, and after a `self` param, which a
+    // dot call's receiver argument takes unchecked.
+    let param_start = align
+        .param_skip()
+        .max(usize::from(first_param_is_self(fun)));
     // A multi-return call as the last argument passes all its values, one per remaining
     // param: `id(f())` binds `act: T` to `f()`'s first value only, not the whole tuple.
     let mut spread_args_storage: Vec<CallArg> = Vec::new();
@@ -552,13 +550,7 @@ fn match_call_candidate_impl(
     } else {
         args
     };
-    let arg_start = if has_self_param && colon_call {
-        0
-    } else if !has_self_param && fun.is_colon_define() && !colon_call {
-        1
-    } else {
-        param_start
-    };
+    let arg_start = param_start + align.arg_skip() - align.param_skip();
 
     // Handle call-site variadic generic args (`... T...`) first. When callback params
     // (`fun(...: T...)`) contain the same T, the actual T value must be taken from the
