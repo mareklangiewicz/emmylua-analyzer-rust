@@ -54,6 +54,14 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 - Spend CPU on the narrow loop. Reduce each added corpus line to a fixture, iterate with
   `gndx emmylua test --filter=…` and `corpus run LABEL BIN --trees=a,b` (diffed against today's full
   run), and run the full corpus and the full test suite once, before the commit.
+  - A `resources/std` annotation edit goes through that loop too. First `probe` fixtures of the
+    callers' shapes (a callback with one param, with several, variadic, a std function passed as
+    the argument), then `--trees=` a few trees that use the symbol heavily. #76's first `repl`
+    spelling went straight to a full run and added 11 hits (snacks, plenary, sidekick, lspconfig,
+    argparse); `test_gsub_callback_takes_every_capture` pins the shapes they came from.
+  - `corpus run` of a `+dirty` build (`gndx emmylua build .` with uncommitted changes) refuses
+    mason.nvim, and says so before the first tree: its commit is unknown, so the lab vouches for
+    no blowup fix. Diff it against a base on the trees it ran.
 - Porting a fork fix upstream: re-measure on upstream main (corpus diff with main as base, and
   every "before" test run against main's source: `test --red-at=MAIN:FILE`). Fork numbers do not carry over.
   - Before the PR goes ready, land the same rule on the fork and diff the fork corpus too. It
