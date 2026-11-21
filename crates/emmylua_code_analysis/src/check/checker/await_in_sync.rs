@@ -25,7 +25,7 @@ use crate::semantic_model::SemanticModel;
 use crate::semantic_model::type_eval::expand_alias_branches;
 use crate::{AsyncState, LuaFunctionType, LuaType, SemanticId};
 
-use super::param_count::closure_table_field_info;
+use super::param_count::{call_arg_param_index, closure_table_field_info};
 use super::param_type_check::callable_candidates;
 use super::{CheckContext, Checker};
 
@@ -296,11 +296,7 @@ fn expected_arg_types(semantic_model: &SemanticModel<'_>, arg: &LuaSyntaxNode) -
     callee_candidates(semantic_model, &call_expr)
         .iter()
         .filter_map(|fun| {
-            let idx = match (fun.is_colon_define(), colon_call) {
-                (true, false) => param_idx + 1,
-                (false, true) => param_idx.checked_sub(1)?,
-                _ => param_idx,
-            };
+            let idx = call_arg_param_index(fun, param_idx, colon_call)?;
             fun.get_params().get(idx)?.1.clone()
         })
         .collect()

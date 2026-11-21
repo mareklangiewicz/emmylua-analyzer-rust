@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod test {
-    use crate::check::test::check_source;
+    use crate::check::test::{check_source, texts_by_code};
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
@@ -426,5 +426,81 @@ mod test {
             h(1, 2)
         "#
         ));
+    }
+
+    /// A closure argument meets the parameter the shared receiver rule (`call_arg_param_index`)
+    /// gives it (#76). The colon/dot offsets were the param-to-argument ones used backwards, so a
+    /// colon call to a dot-defined function, and a dot call to a colon-defined method, took the
+    /// callback's type from no parameter, and its extra parameter went unreported.
+    #[test]
+    fn test_closure_arg_meets_its_param_through_the_receiver_rule() {
+        let source = r#"
+            ---@class M
+            local M = {}
+
+            ---@param cb fun(a: integer)
+            function M:colon_def(cb) end
+
+            ---@param o M
+            ---@param cb fun(a: integer)
+            function M.dot_def(o, cb) end
+
+            ---@param self M
+            ---@param cb fun(a: integer)
+            function M.named_self(self, cb) end
+
+            ---@param x self
+            ---@param cb fun(a: integer)
+            function M.self_typed(x, cb) end
+
+            M:colon_def(function(a, b1) end)
+            M.colon_def(M, function(a, b2) end)
+            M:dot_def(function(a, b3) end)
+            M.dot_def(M, function(a, b4) end)
+            M:named_self(function(a, b5) end)
+            M.named_self(M, function(a, b6) end)
+            M:self_typed(function(a, b7) end)
+            M.self_typed(M, function(a, b8) end)
+        "#;
+        let diags = check_source(source);
+        let mut extra = texts_by_code(source, &diags, DiagnosticCode::RedundantParameter);
+        extra.sort();
+        assert_eq!(
+            extra,
+            vec!["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8"],
+            "{diags:#?}"
+        );
+    }
+
+    /// `string.gsub` calls a function `repl` with one argument per capture, so a callback taking
+    /// two captures is not redundant in either call style (std typed `repl` as one-param
+    /// `fun(param: string)`; #76 made the colon call read it too: blink.cmp, compat53).
+    #[test]
+    fn test_gsub_callback_takes_every_capture() {
+        // `string` is std's: check_source has none.
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        for call in [
+            r#"string.gsub("ab", "(a)(b)", function(x, y) return x .. y end)"#,
+            r#"("ab"):gsub("(a)(b)", function(x, y) return x .. y end)"#,
+        ] {
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::RedundantParameter, call),
+                "{call}"
+            );
+        }
+        // ... and every callback `repl` accepted before still type-checks (the corpus shapes of
+        // a first, all-variadic `fun(...: string)`: snacks, plenary, sidekick, lspconfig).
+        for call in [
+            r#"("ab"):gsub("a", function(v) return v end)"#,
+            r#"("ab"):gsub("a", string.upper)"#,
+            r#"string.gsub("ab", "a", string.upper)"#,
+            r#"local r = ("ab"):gsub("a", function(...) return ... end)"#,
+            "local r = (\"ab\"):gsub(\"a\",\n---@param v string\nfunction(v) return v end)",
+        ] {
+            assert!(
+                ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, call),
+                "{call}"
+            );
+        }
     }
 }

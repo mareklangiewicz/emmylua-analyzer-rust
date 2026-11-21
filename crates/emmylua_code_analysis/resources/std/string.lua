@@ -280,7 +280,7 @@ function string.gmatch(s, pattern, init) end
 ---
 --- @param s       string | number
 --- @param pattern string | number
---- @param repl    string | number | table | fun(param: string)
+--- @param repl    string | number | table | fun(param: string, ...: string)
 --- @param n?      integer
 --- @return string
 --- @return integer count

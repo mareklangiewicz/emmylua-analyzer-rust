@@ -264,4 +264,51 @@ mod test {
         assert!(ok("use({ call = function(x) aw() end })"));
         assert!(!ok("run_plain(function(x) aw() end)"));
     }
+
+    /// A closure passed for an `async fun()` parameter is async whatever the call style: the
+    /// argument meets the parameter the shared receiver rule (`call_arg_param_index`) gives it
+    /// (#76). The colon/dot offsets were the param-to-argument ones used backwards, so three
+    /// cells reported `await-in-sync` inside an async callback.
+    #[test]
+    fn test_closure_arg_async_param_through_the_receiver_rule() {
+        let source = r#"
+            ---@class N
+            local N = {}
+
+            ---@async
+            local function w1() end
+            ---@async
+            local function w2() end
+            ---@async
+            local function w3() end
+            ---@async
+            local function w4() end
+            ---@async
+            local function w5() end
+            ---@async
+            local function w6() end
+
+            ---@param cb async fun()
+            function N:colon_def(cb) end
+
+            ---@param o N
+            ---@param cb async fun()
+            function N.dot_def(o, cb) end
+
+            ---@param x self
+            ---@param cb async fun()
+            function N.self_typed(x, cb) end
+
+            N:colon_def(function() w1() end)
+            N.colon_def(N, function() w2() end)
+            N:dot_def(function() w3() end)
+            N.dot_def(N, function() w4() end)
+            N:self_typed(function() w5() end)
+            N.self_typed(N, function() w6() end)
+        "#;
+        let diags = crate::check::test::check_source(source);
+        let reported =
+            crate::check::test::texts_by_code(source, &diags, DiagnosticCode::AwaitInSync);
+        assert_eq!(reported, Vec::<&str>::new(), "{diags:#?}");
+    }
 }

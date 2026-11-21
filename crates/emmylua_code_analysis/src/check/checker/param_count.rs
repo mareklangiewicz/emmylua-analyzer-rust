@@ -432,17 +432,10 @@ fn closure_expected_functions(
         let colon_call = call_expr.is_colon_call();
         let mut out = Vec::new();
         for func in &candidates {
-            let idx = match (func.is_colon_define(), colon_call) {
-                (true, false) => param_idx + 1,
-                (false, true) => {
-                    if param_idx == 0 {
-                        continue;
-                    }
-                    param_idx - 1
-                }
-                _ => param_idx,
-            };
-            let Some(ty) = func.get_params().get(idx).and_then(|(_, ty)| ty.as_ref()) else {
+            let Some(ty) = call_arg_param_index(func, param_idx, colon_call)
+                .and_then(|idx| func.get_params().get(idx))
+                .and_then(|(_, ty)| ty.as_ref())
+            else {
                 continue;
             };
             out.extend(function_types(semantic_model, ty));
