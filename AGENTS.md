@@ -38,6 +38,10 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
 - A fixture is evidence for its own shape only. NOT RED on a build (`test --red-revert`, `probe`)
   says that shape passes there, not that the class is absent: the corpus diff decides. For #41,
   `--red-revert` was NOT RED on the fork while the fork corpus held all 146 false hits.
+- Before pinning a fixture as a test, map its class: `probe` variants that each change one feature
+  (annotated or not, before or after the write, straight-line or conditional), then pin the smallest
+  cells that tell the builds apart (#41: a 36-variant grid showed that on main, `---@type` on the
+  write decides whether a read before it goes wrong).
 - Corpus trees are live plugin checkouts: a base run is valid while no tree moved since it ran, whatever
   its date. `gndx emmylua corpus valid LABEL…` checks that (#67); before diffing, `corpus refresh LABEL…`
   re-runs only a STALE base's moved trees, with its own binary and config.
@@ -64,6 +68,8 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   `gndx emmylua fork` for the fix touching those frames → cherry-pick onto upstream in a scratch
   worktree, re-run `outcome` → `reduce` last.
 - `probe DIR… --bin=CANDIDATE` prints the three-way table (plus the candidate) for any fixture.
+  Every corpus run keeps its binary at `~/.cache/gndx/emmylua-corpus/<LABEL>/emmylua_check`: probe
+  an older rule with `--bin=` on that copy instead of rebuilding it.
   `probe` and `reduce` run a fixture alone under an empty config, so a gate hit that needs the Lua
   repo's libraries (snacks, `$VIMRUNTIME`) does not show there: rebuild it in library form, a
   `lib/` dir with the library file and a `ws/.emmyrc.json` naming `../lib` (relative to the
