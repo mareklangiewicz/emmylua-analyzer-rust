@@ -188,27 +188,16 @@ fn check_call_as_arg(
     // Report the same argument only once (overload candidates may reach the same conclusion).
     let mut reported = HashSet::new();
     for fun in &candidates {
-        let colon_define = fun.is_colon_define();
-        for (param_idx, (_, param_type)) in fun.get_params().iter().enumerate() {
-            let Some(param_type) = param_type else {
+        // Each argument meets the parameter the shared receiver rule gives it.
+        for (arg_idx, arg) in args.iter().enumerate() {
+            let Some((_, Some(param_type))) = call_arg_param_index(fun, arg_idx, colon_call)
+                .and_then(|idx| fun.get_params().get(idx))
+            else {
                 continue;
             };
             if param_type_async_state(semantic_model, param_type) != Some(AsyncState::Sync) {
                 continue;
             }
-            let arg_idx = match (colon_define, colon_call) {
-                (true, false) => param_idx + 1,
-                (false, true) => {
-                    if param_idx == 0 {
-                        continue;
-                    }
-                    param_idx - 1
-                }
-                _ => param_idx,
-            };
-            let Some(arg) = args.get(arg_idx) else {
-                continue;
-            };
             if !reported.insert(arg.get_range()) {
                 continue;
             }

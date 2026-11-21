@@ -311,4 +311,65 @@ mod test {
             crate::check::test::texts_by_code(source, &diags, DiagnosticCode::AwaitInSync);
         assert_eq!(reported, Vec::<&str>::new(), "{diags:#?}");
     }
+
+    /// An async function passed for a `sync fun()` parameter is reported in every call style,
+    /// a colon-defined method whose docs also name `self` included: the argument meets the
+    /// parameter `call_arg_param_index` gives it (0.25.1, upstream and the fork all agree).
+    #[test]
+    fn test_async_arg_to_sync_param_in_every_call_style() {
+        let source = r#"
+            ---@class Q
+            local Q = {}
+
+            ---@param cb sync fun()
+            function Q:colon_def(cb) end
+
+            ---@param o Q
+            ---@param cb sync fun()
+            function Q.plain(o, cb) end
+
+            ---@param x self
+            ---@param cb sync fun()
+            function Q.self_typed(x, cb) end
+
+            ---@param self Q
+            ---@param cb sync fun()
+            function Q:explicit_self(cb) end
+
+            ---@async
+            local function a1() end
+            ---@async
+            local function a2() end
+            ---@async
+            local function a3() end
+            ---@async
+            local function a4() end
+            ---@async
+            local function a5() end
+            ---@async
+            local function a6() end
+            ---@async
+            local function a7() end
+            ---@async
+            local function a8() end
+
+            Q:colon_def(a1)
+            Q.colon_def(Q, a2)
+            Q:plain(a3)
+            Q.plain(Q, a4)
+            Q:self_typed(a5)
+            Q.self_typed(Q, a6)
+            Q:explicit_self(a7)
+            Q.explicit_self(Q, a8)
+        "#;
+        let diags = crate::check::test::check_source(source);
+        let mut reported =
+            crate::check::test::texts_by_code(source, &diags, DiagnosticCode::AwaitInSync);
+        reported.sort();
+        assert_eq!(
+            reported,
+            vec!["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"],
+            "{diags:#?}"
+        );
+    }
 }

@@ -108,45 +108,29 @@ fn check_call(
     let arg_range = expanded_arg_range(semantic_model, &args);
     let colon_call = analysis.colon_call;
 
-    if candidates
-        .iter()
-        .any(|candidate| arg_range.accepts(semantic_model, candidate, colon_call))
-    {
-        return;
-    }
-
-    // Pick the smallest mismatch candidate; on equal mismatch, Missing wins.
-    let mut best: Option<(usize, bool, usize, usize, usize)> = None; // (mismatch, is_missing, expected, found, colon_extra)
+    // A candidate the call fits reports nothing; otherwise the smallest mismatch, Missing first on
+    // a tie, then the earlier candidate.
+    let mut best: Option<CountMismatch> = None;
     for candidate in &candidates {
-        let range = param_count_range(semantic_model, candidate, colon_call);
-        let colon_extra = usize::from(colon_receiver_param(candidate, colon_call));
-        let call_min = arg_range.min + colon_extra;
-        let call_max = arg_range.max.map(|max| max + colon_extra);
-        let candidate = if call_max.is_some_and(|max| max < range.min) {
-            let max = call_max.unwrap_or(call_min);
-            Some((range.min - max, true, range.min, max, colon_extra))
-        } else if let Some(max) = range.max
-            && call_min > max
-        {
-            Some((call_min - max, false, max, call_min, colon_extra))
-        } else {
-            None
+        let Some(m) = arg_range.mismatch(semantic_model, candidate, colon_call) else {
+            return;
         };
-        let Some((mismatch, is_missing, expected, found, colon_extra)) = candidate else {
-            continue;
-        };
-        let better = best.is_none_or(|(best_mismatch, best_missing, _, _, _)| {
-            mismatch < best_mismatch || (mismatch == best_mismatch && is_missing && !best_missing)
-        });
-        if better {
-            best = Some((mismatch, is_missing, expected, found, colon_extra));
+        if best.is_none_or(|b| (m.by, !m.missing) < (b.by, !b.missing)) {
+            best = Some(m);
         }
     }
 
-    let Some((_, is_missing, expected, found, colon_extra)) = best else {
+    let Some(CountMismatch {
+        missing,
+        expected,
+        found,
+        colon_extra,
+        ..
+    }) = best
+    else {
         return;
     };
-    if is_missing {
+    if missing {
         if let Some(args_list) = call_expr.get_args_list() {
             context.add_diagnostic(
                 DiagnosticCode::MissingParameter,
@@ -488,6 +472,19 @@ pub(super) struct ArgCountRange {
     max: Option<usize>,
 }
 
+/// How a call's argument count misses a candidate's params (`ArgCountRange::mismatch`).
+#[derive(Debug, Clone, Copy)]
+struct CountMismatch {
+    /// how many slots it is off by
+    by: usize,
+    /// too few arguments (else too many)
+    missing: bool,
+    expected: usize,
+    found: usize,
+    /// 1 when a colon call's receiver fills the first param (`colon_receiver_param`)
+    colon_extra: usize,
+}
+
 impl ArgCountRange {
     pub(super) fn accepts(
         self,
@@ -495,13 +492,39 @@ impl ArgCountRange {
         func: &LuaFunctionType,
         colon_call: bool,
     ) -> bool {
+        self.mismatch(semantic_model, func, colon_call).is_none()
+    }
+
+    /// `None` when the call's argument count fits `func`.
+    fn mismatch(
+        self,
+        semantic_model: &SemanticModel<'_>,
+        func: &LuaFunctionType,
+        colon_call: bool,
+    ) -> Option<CountMismatch> {
         let range = param_count_range(semantic_model, func, colon_call);
         let colon_extra = usize::from(colon_receiver_param(func, colon_call));
         let call_min = self.min + colon_extra;
         let call_max = self.max.map(|max| max + colon_extra);
-        let enough = call_max.is_none_or(|max| max >= range.min);
-        let not_too_many = range.max.is_none_or(|max| call_min <= max);
-        enough && not_too_many
+        if let Some(max) = call_max
+            && max < range.min
+        {
+            return Some(CountMismatch {
+                by: range.min - max,
+                missing: true,
+                expected: range.min,
+                found: max,
+                colon_extra,
+            });
+        }
+        let max = range.max?;
+        (call_min > max).then(|| CountMismatch {
+            by: call_min - max,
+            missing: false,
+            expected: max,
+            found: call_min,
+            colon_extra,
+        })
     }
 }
 
@@ -611,7 +634,7 @@ pub(crate) fn call_arg_param_index(
 /// `obj:f(x)` on a plain function (`function M.f(a, x)`): the receiver fills the first declared
 /// parameter, which the explicit arguments then skip.
 pub(crate) fn colon_receiver_param(func: &LuaFunctionType, colon_call: bool) -> bool {
-    colon_call && !first_param_is_self(func) && !func.is_colon_define()
+    colon_call && !func.is_colon_define() && !first_param_is_self(func)
 }
 
 pub(crate) fn first_param_is_self(func: &LuaFunctionType) -> bool {
