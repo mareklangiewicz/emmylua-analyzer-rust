@@ -3836,6 +3836,34 @@ return t
         assert_eq!(hit, vec!["s1", "s2", "s3", "s4", "s5"], "{diags:#?}");
     }
 
+    /// A call whose argument fails the only candidate still gives its closure argument that
+    /// candidate's param types: the mismatch is `param-type-mismatch`'s to report, and nothing
+    /// else could be picked (#80; 0.25.1 types `s` too).
+    #[test]
+    fn test_closure_arg_params_survive_a_mismatching_argument_to_the_only_candidate() {
+        let source = r#"
+            ---@class CbN
+            local M = {}
+
+            ---@param a number
+            ---@param cb fun(s: string)
+            function M.plain(a, cb) end
+
+            M.plain('x', function(s1)
+                ---@type integer
+                local _ = s1 -- a dot call, `'x'` fails `a: number`
+            end)
+            M:plain(function(s2)
+                ---@type integer
+                local _ = s2 -- the receiver `CbN` fails `a: number` (#77's cell 1)
+            end)
+        "#;
+        let diags = check_source(source);
+        let mut hit = texts_by_code(source, &diags, DiagnosticCode::AssignTypeMismatch);
+        hit.sort();
+        assert_eq!(hit, vec!["s1", "s2"], "{diags:#?}");
+    }
+
     #[test]
     fn test_table_arg_elements_fit_a_constrained_generic_by_its_constraint() {
         // `T[]` with `---@generic T: {...}`: each literal element binds `T`, so it is checked

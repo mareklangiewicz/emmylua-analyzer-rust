@@ -1766,12 +1766,19 @@ impl<'a> InferVm<'a> {
         let match_receiver = callee.receiver.as_ref().map(|receiver| {
             receiver_class_type(self.model, receiver).unwrap_or_else(|| receiver.clone())
         });
-        let Some((callee_fun, mut bindings)) = self
+        let selected = self
             .select_callable(&candidates, args, colon_call, match_receiver.as_ref())
             .or_else(|| {
                 self.select_callable_partial(&candidates, args, colon_call, match_receiver.as_ref())
-            })
-        else {
+            });
+        // No candidate fits, and there is only one: its params still type the closure arguments
+        // (a mismatching argument is `param-type-mismatch`'s to report, #80), but the call itself
+        // stays `Unknown` (upstream's `test_concrete_union_argument_preserves_return`).
+        let only_for_closures = selected.is_none() && candidates.len() == 1;
+        let Some((callee_fun, mut bindings)) = selected.or_else(|| {
+            let only = candidates.first().filter(|_| only_for_closures)?;
+            Some((only.clone(), unify::TplBindings::new()))
+        }) else {
             return Value::plain(LuaType::Unknown);
         };
 
@@ -2037,6 +2044,9 @@ impl<'a> InferVm<'a> {
             }
         }
 
+        if only_for_closures {
+            return Value::plain(LuaType::Unknown);
+        }
         let mut ret = self.substituted_call_return(&callee, &callee_fun, &bindings);
         // Directly callable unions: when multiple same-priority candidates match (union types
         // or ordinary `---@overload` in higher-order callback return projections), take the
