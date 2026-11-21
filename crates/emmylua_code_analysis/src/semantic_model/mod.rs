@@ -130,6 +130,8 @@ pub(crate) struct CallSiteAnalysis {
     pub(crate) colon_call: bool,
     /// Type of the implicit receiver for colon calls (`Unknown` otherwise).
     pub(crate) receiver_ty: LuaType,
+    /// Where that receiver is written (`s` of `s:gsub(p)`); `None` without a colon call.
+    pub(crate) receiver_range: Option<rowan::TextRange>,
     /// Explicit generic arguments written in call syntax (`f<T>(...)`).
     pub(crate) explicit_generics: Vec<LuaSyntaxId>,
 }

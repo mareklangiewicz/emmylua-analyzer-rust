@@ -1017,6 +1017,7 @@ impl<'db> SemanticModel<'db> {
                 arg_types: Vec::new(),
                 colon_call: call_expr.is_colon_call(),
                 receiver_ty: LuaType::Unknown,
+                receiver_range: None,
                 explicit_generics: Vec::new(),
             };
         };
@@ -1027,6 +1028,7 @@ impl<'db> SemanticModel<'db> {
                 arg_types: Vec::new(),
                 colon_call: call_expr.is_colon_call(),
                 receiver_ty: LuaType::Unknown,
+                receiver_range: None,
                 explicit_generics: Vec::new(),
             };
         }
@@ -1039,14 +1041,15 @@ impl<'db> SemanticModel<'db> {
             .map(|arg| self.type_of_expr_at(arg.get_syntax_id(), arg.get_position()))
             .collect();
         let colon_call = call_expr.is_colon_call();
-        let receiver_ty = if colon_call {
-            LuaIndexExpr::cast(callee.syntax().clone())
-                .and_then(|index| index.get_prefix_expr())
-                .map(|prefix| self.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position()))
-                .unwrap_or(LuaType::Unknown)
-        } else {
-            LuaType::Unknown
-        };
+        let receiver = colon_call
+            .then(|| LuaIndexExpr::cast(callee.syntax().clone()))
+            .flatten()
+            .and_then(|index| index.get_prefix_expr());
+        let receiver_ty = receiver
+            .as_ref()
+            .map(|prefix| self.type_of_expr_at(prefix.get_syntax_id(), prefix.get_position()))
+            .unwrap_or(LuaType::Unknown);
+        let receiver_range = receiver.map(|prefix| prefix.get_range());
         // Class generics referenced by name in a method (`x: T`) are bound by the receiver
         // instance (`Box<integer>`), as the VM does for the call's result. Every checker reads
         // the candidates bound.
@@ -1063,6 +1066,7 @@ impl<'db> SemanticModel<'db> {
             arg_types,
             colon_call,
             receiver_ty,
+            receiver_range,
             explicit_generics,
         }
     }
