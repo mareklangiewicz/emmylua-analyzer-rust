@@ -108,27 +108,18 @@ fn check_call(
     let arg_range = expanded_arg_range(semantic_model, &args);
     let colon_call = analysis.colon_call;
 
-    for candidate in &candidates {
-        let range = param_count_range(semantic_model, candidate, colon_call);
-        let colon_extra = usize::from(
-            colon_call && !candidate.is_colon_define() && !first_param_is_self(candidate),
-        );
-        let call_min = arg_range.min + colon_extra;
-        let call_max = arg_range.max.map(|max| max + colon_extra);
-        let enough = call_max.is_none_or(|max| max >= range.min);
-        let not_too_many = range.max.is_none_or(|max| call_min <= max);
-        if enough && not_too_many {
-            return;
-        }
+    if candidates
+        .iter()
+        .any(|candidate| arg_range.accepts(semantic_model, candidate, colon_call))
+    {
+        return;
     }
 
     // Pick the smallest mismatch candidate; on equal mismatch, Missing wins.
     let mut best: Option<(usize, bool, usize, usize, usize)> = None; // (mismatch, is_missing, expected, found, colon_extra)
     for candidate in &candidates {
         let range = param_count_range(semantic_model, candidate, colon_call);
-        let colon_extra = usize::from(
-            colon_call && !candidate.is_colon_define() && !first_param_is_self(candidate),
-        );
+        let colon_extra = usize::from(colon_receiver_param(candidate, colon_call));
         let call_min = arg_range.min + colon_extra;
         let call_max = arg_range.max.map(|max| max + colon_extra);
         let candidate = if call_max.is_some_and(|max| max < range.min) {
@@ -505,8 +496,7 @@ impl ArgCountRange {
         colon_call: bool,
     ) -> bool {
         let range = param_count_range(semantic_model, func, colon_call);
-        let colon_extra =
-            usize::from(colon_call && !func.is_colon_define() && !first_param_is_self(func));
+        let colon_extra = usize::from(colon_receiver_param(func, colon_call));
         let call_min = self.min + colon_extra;
         let call_max = self.max.map(|max| max + colon_extra);
         let enough = call_max.is_none_or(|max| max >= range.min);
