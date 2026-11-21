@@ -33,6 +33,10 @@ read the section for the path you are on.
   (annotated or not, before or after the write, straight-line or conditional), then pin the
   smallest cells that tell the builds apart (#41: a 36-variant grid showed that on main, `---@type`
   on the write decides whether a read before it goes wrong).
+- A cause stays a hypothesis until its control goes green: the bug's own cell minus the suspected
+  feature, nothing else changed. A control that varies another feature says nothing about the cause
+  (#78 blamed the receiver of `M:f()`; its controls `M:g()` and `M.f()` changed the params and the
+  argument count, and `M.f(1)`, the bug without a receiver, stayed red).
 - `probe` and `reduce` run a fixture alone under an empty config, so a gate hit that needs the Lua
   repo's libraries (snacks, `$VIMRUNTIME`) does not show there: rebuild it in library form, a
   `lib/` dir with the library file and a `ws/.emmyrc.json` naming `../lib` (relative to the

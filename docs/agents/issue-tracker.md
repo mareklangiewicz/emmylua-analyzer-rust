@@ -22,9 +22,11 @@ Issues and specs for this fork live as GitHub issues on **mareklangiewicz/emmylu
 - **Create an issue**: `gh issue create --repo $R --title "..." --body "..."`. Use a heredoc for multi-line bodies.
 - **A repro runs as written**: a whole file that fires as-is (no trimmed context), the command that
   ran it, and each build it fired on. An abbreviated snippet tests something else (#26).
+- **A "Why" names its control**: the green cell that removes the suspected feature
+  (`measuring.md` "Fixtures and `probe`"). Without one, head it "Why (hypothesis)".
 - **Read an issue**: `gh issue view <number> --repo $R --json number,title,body,labels,comments`.
 - **List issues**: `gh issue list --repo $R --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Make an issue a sub-issue of a parent**: `gh api --method POST repos/$R/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>` (database id, as in **Blocking** below). With `gh` 2.94+, `gh issue create --parent <parent> ...` also works. Without sub-issues, put `Part of #<parent>` at the top of the child body.
+- **Make an issue a sub-issue of a parent**: `gh api --method POST repos/$R/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>` (database id, as in **Blocking** below). Its response is the parent issue: confirm the link by listing, `gh api "repos/$R/issues/<parent>/sub_issues?per_page=100"` (the default page is 30, and #15 has more). With `gh` 2.94+, `gh issue create --parent <parent> ...` also works. Without sub-issues, put `Part of #<parent>` at the top of the child body.
 - **Comment on an issue**: `gh issue comment <number> --repo $R --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --repo $R --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --repo $R --comment "..."`
