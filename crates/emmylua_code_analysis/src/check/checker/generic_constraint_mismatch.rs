@@ -584,14 +584,14 @@ fn check_str_tpl_params(
         return;
     }
     let colon_call = call_expr.is_colon_call();
-    let self_param = first_param_is_self(fun);
-    let param_start = usize::from(colon_call && self_param);
     let params = fun.get_params();
-    for (index, (_, param_ty)) in params[param_start..].iter().enumerate() {
-        let Some(param_ty) = param_ty else {
-            continue;
-        };
-        let Some(arg) = args.get(index) else {
+    // Each argument meets the parameter the shared receiver rule gives it, as in the bindings
+    // (`resolved_call_signatures`): `obj:f(x)` on `function M.f(a, x)` gives `x`, `M.m(obj, x)` on
+    // `function M:m(x)` gives `x` (#75).
+    for (index, arg) in args.iter().enumerate() {
+        let Some((_, Some(param_ty))) =
+            call_arg_param_index(fun, index, colon_call).and_then(|i| params.get(i))
+        else {
             continue;
         };
         for str_tpl in str_tpl_refs_in(param_ty) {

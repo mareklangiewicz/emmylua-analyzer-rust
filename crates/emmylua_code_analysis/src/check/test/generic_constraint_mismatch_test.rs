@@ -570,6 +570,49 @@ mod test {
         ));
     }
 
+    /// A string-template argument is the one the shared receiver rule (`call_arg_param_index`)
+    /// pairs with the `` `T` `` parameter (#75). Pairing by plain index skipped it on a colon call
+    /// to a dot-defined function, and checked the receiver on a dot call to a colon-defined method.
+    #[test]
+    fn test_str_tpl_arg_is_paired_through_the_receiver_rule() {
+        let source = r#"
+            ---@class Foo
+            ---@class M
+            local M = {}
+
+            ---@generic T
+            ---@param a M
+            ---@param name `T`
+            ---@return T
+            function M.make(a, name) end
+
+            ---@generic T
+            ---@param name `T`
+            ---@return T
+            function M:get(name) end
+
+            local r = {
+                M.make(M, "Nope1"), M.make(M, "Foo"),
+                M:make("Nope2"), M:make("Foo"),
+                M:get("Nope3"), M:get("Foo"),
+                M.get(M, "Nope4"), M.get(M, "Foo"),
+            }
+            return r
+        "#;
+        let diags = crate::check::test::check_source(source);
+        let mut ranges: Vec<&str> = diags
+            .iter()
+            .filter(|diag| diag.code == DiagnosticCode::GenericConstraintMismatch)
+            .map(|diag| &source[diag.range])
+            .collect();
+        ranges.sort();
+        assert_eq!(
+            ranges,
+            vec!["\"Nope1\"", "\"Nope2\"", "\"Nope3\"", "\"Nope4\""],
+            "{diags:#?}"
+        );
+    }
+
     #[test]
     fn test_str_tpl_ref_param() {
         let mut ws = VirtualWorkspace::new();
