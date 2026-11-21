@@ -191,10 +191,7 @@ fn check_call_as_arg(
         // Each argument meets the parameter the shared receiver rule gives it.
         let align = CallAlignment::of(fun, colon_call);
         for (arg_idx, arg) in args.iter().enumerate() {
-            let Some((_, Some(param_type))) = align
-                .param_of(arg_idx)
-                .and_then(|idx| fun.get_params().get(idx))
-            else {
+            let Some(param_type) = align.param(fun.get_params(), arg_idx) else {
                 continue;
             };
             if param_type_async_state(semantic_model, param_type) != Some(AsyncState::Sync) {
@@ -287,8 +284,9 @@ fn expected_arg_types(semantic_model: &SemanticModel<'_>, arg: &LuaSyntaxNode) -
     callee_candidates(semantic_model, &call_expr)
         .iter()
         .filter_map(|fun| {
-            let idx = CallAlignment::of(fun, colon_call).param_of(param_idx)?;
-            fun.get_params().get(idx)?.1.clone()
+            CallAlignment::of(fun, colon_call)
+                .param(fun.get_params(), param_idx)
+                .cloned()
         })
         .collect()
 }

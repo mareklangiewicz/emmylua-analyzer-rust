@@ -391,14 +391,11 @@ pub(crate) fn resolved_call_signatures(
         // through the shared receiver rule (`CallAlignment`).
         let align = CallAlignment::of(&fun, colon_call);
         let mut bindings = unify::TplBindings::new();
-        if align == CallAlignment::ReceiverIsParam0
-            && let Some((_, Some(param_ty))) = params.first()
-        {
+        if let Some((_, param_ty)) = align.receiver_param(params) {
             let _ = unify::unify_bindings(param_ty, receiver_ty, &mut bindings);
         }
         for (index, arg_ty) in arg_types.iter().enumerate() {
-            let Some((_, Some(param_ty))) = align.param_of(index).and_then(|i| params.get(i))
-            else {
+            let Some(param_ty) = align.param(params, index) else {
                 continue;
             };
             let _ = unify::unify_bindings(param_ty, arg_ty, &mut bindings);
@@ -592,7 +589,7 @@ fn check_str_tpl_params(
     // `function M:m(x)` gives `x` (#75).
     let align = CallAlignment::of(fun, colon_call);
     for (index, arg) in args.iter().enumerate() {
-        let Some((_, Some(param_ty))) = align.param_of(index).and_then(|i| params.get(i)) else {
+        let Some(param_ty) = align.param(params, index) else {
             continue;
         };
         let str_tpls = str_tpl_refs_in(param_ty);

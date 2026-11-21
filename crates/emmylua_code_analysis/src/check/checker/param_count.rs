@@ -407,10 +407,7 @@ fn closure_expected_functions(
         let colon_call = call_expr.is_colon_call();
         let mut out = Vec::new();
         for func in &candidates {
-            let Some(ty) = CallAlignment::of(func, colon_call)
-                .param_of(param_idx)
-                .and_then(|idx| func.get_params().get(idx))
-                .and_then(|(_, ty)| ty.as_ref())
+            let Some(ty) = CallAlignment::of(func, colon_call).param(func.get_params(), param_idx)
             else {
                 continue;
             };
@@ -503,9 +500,9 @@ impl ArgCountRange {
         func: &LuaFunctionType,
         colon_call: bool,
     ) -> Option<CountMismatch> {
-        let range = param_count_range(semantic_model, func, colon_call);
-        let colon_extra =
-            usize::from(CallAlignment::of(func, colon_call) == CallAlignment::ReceiverIsParam0);
+        let align = CallAlignment::of(func, colon_call);
+        let range = param_count_range(semantic_model, func, align);
+        let colon_extra = usize::from(align == CallAlignment::ReceiverIsParam0);
         let call_min = self.min + colon_extra;
         let call_max = self.max.map(|max| max + colon_extra);
         if let Some(max) = call_max
@@ -651,7 +648,7 @@ impl CallAlignment {
     }
 
     /// The declared params the receiver fills, before the one argument 0 fills.
-    pub(crate) fn param_skip(self) -> usize {
+    fn param_skip(self) -> usize {
         usize::from(matches!(
             self,
             Self::ReceiverIsSelf | Self::ReceiverIsParam0
@@ -660,13 +657,46 @@ impl CallAlignment {
 
     /// The arguments that fill no declared param, before the one param 0 takes: a dot call's
     /// receiver.
-    pub(crate) fn arg_skip(self) -> usize {
+    fn arg_skip(self) -> usize {
         usize::from(self == Self::ArgIsReceiver)
     }
 
     /// The declared param argument `arg_index` fills; `None` for `ArgIsReceiver`'s receiver.
     pub(crate) fn param_of(self, arg_index: usize) -> Option<usize> {
         (arg_index + self.param_skip()).checked_sub(self.arg_skip())
+    }
+
+    /// The declared type of the param argument `arg_index` fills; `None` for `ArgIsReceiver`'s
+    /// receiver, past the params, or for an untyped param.
+    pub(crate) fn param(
+        self,
+        params: &[(String, Option<LuaType>)],
+        arg_index: usize,
+    ) -> Option<&LuaType> {
+        params.get(self.param_of(arg_index)?)?.1.as_ref()
+    }
+
+    /// `ReceiverIsParam0`'s first param, typed: the one the receiver is checked against.
+    pub(crate) fn receiver_param(
+        self,
+        params: &[(String, Option<LuaType>)],
+    ) -> Option<(&String, &LuaType)> {
+        if self != Self::ReceiverIsParam0 {
+            return None;
+        }
+        let (name, ty) = params.first()?;
+        Some((name, ty.as_ref()?))
+    }
+
+    /// The declared params the explicit arguments meet, in order: those after the receiver's.
+    pub(crate) fn explicit_params<P>(self, params: &[P]) -> &[P] {
+        params.get(self.param_skip()..).unwrap_or(&[])
+    }
+
+    /// The arguments that meet declared params, in order: those after a dot call's receiver
+    /// (`args`, or their cached types).
+    pub(crate) fn explicit_args<T>(self, args: &[T]) -> &[T] {
+        args.get(self.arg_skip()..).unwrap_or(&[])
     }
 }
 
@@ -689,9 +719,8 @@ struct ParamCountRange {
 fn param_count_range(
     semantic_model: &SemanticModel<'_>,
     func: &LuaFunctionType,
-    colon_call: bool,
+    align: CallAlignment,
 ) -> ParamCountRange {
-    let align = CallAlignment::of(func, colon_call);
     let params = func.get_params();
     // The receiver's `self` is no argument slot; a plain param the receiver fills is one
     // (`ArgCountRange::mismatch` counts the receiver as an argument there).

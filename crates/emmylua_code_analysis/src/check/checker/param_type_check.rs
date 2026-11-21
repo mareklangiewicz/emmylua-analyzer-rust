@@ -474,20 +474,17 @@ fn quick_candidate_score(
         }
     };
 
-    if align == CallAlignment::ReceiverIsParam0
-        && let Some((_, Some(param_ty))) = params.first()
-    {
+    if let Some((_, param_ty)) = align.receiver_param(params) {
         check_pair(receiver_ty, param_ty);
     }
-    let param_start = align.param_skip().min(params.len());
-    for (index, (_, param_ty)) in params[param_start..].iter().enumerate() {
-        let Some(param_ty) = param_ty else {
-            continue;
-        };
-        let Some(arg_ty) = arg_types.get(index + align.arg_skip()) else {
-            break;
-        };
-        check_pair(arg_ty, param_ty);
+    let pairs = align
+        .explicit_params(params)
+        .iter()
+        .zip(align.explicit_args(arg_types));
+    for ((_, param_ty), arg_ty) in pairs {
+        if let Some(param_ty) = param_ty {
+            check_pair(arg_ty, param_ty);
+        }
     }
     score
 }
@@ -556,9 +553,7 @@ fn check_candidate(
     // `o:f(x)` on a plain function: the receiver is checked against param 0 like an argument,
     // reported at the receiver. A colon method's params hold no `self` to check it against.
     let mut mismatches = Vec::new();
-    if align == CallAlignment::ReceiverIsParam0
-        && let Some((name, Some(param_ty))) = params.first()
-    {
+    if let Some((name, param_ty)) = align.receiver_param(params) {
         let param_ty = effective_param(param_ty, receiver_ty);
         let _ = unify_call_bindings(semantic_model, &param_ty, receiver_ty, &mut bindings);
         if !is_compatible(semantic_model, receiver_ty, &param_ty) {
@@ -573,15 +568,14 @@ fn check_candidate(
     }
     // A dot call's receiver (`M.m(o, x)` on `function M:m(x)`, `pcall(o.m, o, x)`) fills no
     // param: skip it in `arg_types` too, or every cached type pairs with the wrong argument.
-    let arg_skip = align.arg_skip().min(args.len());
     mismatches.extend(check_arg_pairs(
         semantic_model,
-        &params[align.param_skip().min(params.len())..],
-        &args[arg_skip..],
+        align.explicit_params(params),
+        align.explicit_args(args),
         func.is_variadic(),
         &mut bindings,
         &constraints,
-        arg_types.map(|types| &types[align.arg_skip().min(types.len())..]),
+        arg_types.map(|types| align.explicit_args(types)),
     ));
     mismatches
 }

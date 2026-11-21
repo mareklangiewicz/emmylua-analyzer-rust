@@ -55,9 +55,10 @@ decided once per candidate by `CallAlignment::of(func, colon_call)`:
   `---@param x self`). `ReceiverIsParam0`: a colon call's receiver fills a plain function's param 0
   and is checked against it (`o:f(x)` on `function M.f(a, x)`). `ArgIsReceiver`: a dot call's
   argument 0 is a colon method's receiver and fills no param.
-- `param_of(i)`: the param argument `i` fills (`None` for `ArgIsReceiver`'s receiver);
-  `param_skip()` / `arg_skip()`: the leading params and arguments the receiver accounts for, for a
-  site that pairs slices.
+- `param_of(i)` / `param(params, i)`: the param argument `i` fills, or its declared type (`None`
+  for `ArgIsReceiver`'s receiver); `receiver_param(params)`: `ReceiverIsParam0`'s param 0, which the
+  receiver is checked against; `explicit_params` / `explicit_args`: the two slices a site that pairs
+  in order zips.
 
 On the rule: `resolved_call_signatures` and `check_str_tpl_params` (`generic_constraint_mismatch.rs`),
 `check_candidate` and `quick_candidate_score` (`param_type_check.rs`), `closure_expected_functions`,
