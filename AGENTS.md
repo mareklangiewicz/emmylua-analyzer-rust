@@ -46,6 +46,8 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   its date. `gndx emmylua corpus valid LABEL…` checks that (#67); before diffing, `corpus refresh LABEL…`
   re-runs only a STALE base's moved trees, with its own binary and config.
   `corpus diff` exit 2 means "not comparable", not "no difference".
+  A passed `emmylua gate` keeps its corpus step as the base `gate-<commit8>-<MMDD>`: the installed
+  build's base, with no second run.
 - `corpus diff` pairs hits by `file:line` and folds small line moves, so it reads a change to a
   diagnostic's range as no change. Judge a range or column change with `corpus diff --exact`, which
   keys on the whole range and folds nothing (#73: 0 changed lines by default, 144 +/- pairs exact).
