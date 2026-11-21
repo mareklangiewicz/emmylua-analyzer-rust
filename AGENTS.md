@@ -50,7 +50,7 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   `gndx emmylua test --filter=…` and `corpus run LABEL BIN --trees=a,b` (diffed against today's full
   run), and run the full corpus and the full test suite once, before the commit.
 - Porting a fork fix upstream: re-measure on upstream main (corpus diff with main as base, and
-  every "before" test run against main's source). Fork numbers do not carry over.
+  every "before" test run against main's source: `test --red-at=MAIN:FILE`). Fork numbers do not carry over.
   - Before the PR goes ready, land the same rule on the fork and diff the fork corpus too. It
     covers the trees main crashes or blows up on (tuis, neotest, bufferline, async.nvim,
     neovim-runtime), so upstream's diff is blind there: 1447 went ready with a rule the fork corpus
