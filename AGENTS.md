@@ -103,6 +103,10 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   `git show --stat` before pushing.
 - In tests, `std-zh_CN/*.lua` loads as MAIN-workspace code, so std definitions count as user writes.
   When a test and `emmylua_check` disagree on one snippet, suspect this before the engine.
+- `check_source` loads no std, so a call to std there checks against nothing and passes. A test
+  whose source calls std uses `check_source_with_std`. Tests load `std/` and `std-zh_CN/` both: a
+  std edit goes in both twins, and a narrowed red run reverts both
+  (`--red-revert=C:…/std/F,…/std-zh_CN/F`; the lab warns when one is left out).
 - `lint` verdicts depend on the toolchain: keep `rustup update stable` level with upstream CI.
 - Keep a current upstream main build: `gndx builds emmylua upstream --fetch` whenever origin/main
   moves. Its worktree `upstream-main` and target stay put.

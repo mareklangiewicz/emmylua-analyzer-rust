@@ -63,7 +63,9 @@ use crate::{DiagnosticCode, EmmyLuaAnalysis, Emmyrc, SemanticDatabase, SemanticM
 
 use super::{CheckConfig, check_file, checker::Diagnostic};
 
-/// Run all checks on a single source file and return diagnostics.
+/// Run all checks on a single source file and return diagnostics. No std is loaded: `string`,
+/// `math`, `("s"):gsub` and the rest type as nothing, so a std-dependent call passes whatever it
+/// is given. Such a test needs `check_source_with_std`.
 pub(crate) fn check_source(source: &str) -> Vec<Diagnostic> {
     check_source_with_emmyrc(source, Emmyrc::default())
 }
@@ -79,6 +81,15 @@ pub(crate) fn check_source_with_emmyrc(source: &str, emmyrc: Emmyrc) -> Vec<Diag
     let model = SemanticModel::new(&db, fid);
     let config = Arc::new(CheckConfig::new(&emmyrc));
     check_file(&model, config)
+}
+
+/// `check_source` with the std library loaded, as `emmylua_check` loads it: the helper for a
+/// test whose source calls std (the first #76 gsub test passed on the bug under `check_source`).
+pub(crate) fn check_source_with_std(source: &str) -> Vec<Diagnostic> {
+    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    let fid = ws.def(source);
+    let config = Arc::new(CheckConfig::new(&ws.analysis.get_emmyrc()));
+    check_file(&ws.analysis.semantic_model(fid), config)
 }
 
 /// Run all checks on the last of several files, the others being the rest of its workspace.
@@ -162,6 +173,32 @@ fn test_diagnose_semantic_end_to_end() {
     // Line 1 (0-based) `undefined_global` starts at col 10 (`local x = ` is 10 chars).
     assert_eq!(diagnostic.range.start.line, 0);
     assert_eq!(diagnostic.range.start.character, 10);
+}
+
+/// The trap `check_source_with_std` exists for: without std, a std call checks against nothing.
+#[test]
+fn test_check_source_with_std_types_std_calls() {
+    let source = r#"local n = math.floor("x")"#;
+    let bare = check_source(source);
+    assert_eq!(
+        count_by_code(&bare, DiagnosticCode::ParamTypeMismatch),
+        0,
+        "check_source loads std now: reword its doc and this test. {bare:#?}"
+    );
+    let diags = check_source_with_std(source);
+    assert_eq!(
+        texts_by_code(source, &diags, DiagnosticCode::ParamTypeMismatch),
+        vec![r#""x""#],
+        "{diags:#?}"
+    );
+    // #76's shape: std's `repl` is what makes a two-capture callback fit or not
+    let gsub = r#"local r = ("ab"):gsub("(a)(b)", function(x, y) return x .. y end)"#;
+    let diags = check_source_with_std(gsub);
+    assert_eq!(
+        texts_by_code(gsub, &diags, DiagnosticCode::RedundantParameter),
+        Vec::<&str>::new(),
+        "{diags:#?}"
+    );
 }
 
 #[test]
