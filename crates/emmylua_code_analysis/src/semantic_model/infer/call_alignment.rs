@@ -38,7 +38,7 @@ impl CallAlignment {
     }
 
     /// The declared params the receiver fills, before the one argument 0 fills.
-    pub(crate) fn param_skip(self) -> usize {
+    fn param_skip(self) -> usize {
         usize::from(matches!(
             self,
             Self::ReceiverIsSelf | Self::ReceiverIsParam0
@@ -47,13 +47,19 @@ impl CallAlignment {
 
     /// The arguments that fill no declared param, before the one param 0 takes: a dot call's
     /// receiver.
-    pub(crate) fn arg_skip(self) -> usize {
+    fn arg_skip(self) -> usize {
         usize::from(self == Self::ArgIsReceiver)
     }
 
     /// The declared param argument `arg_index` fills; `None` for `ArgIsReceiver`'s receiver.
     pub(crate) fn param_of(self, arg_index: usize) -> Option<usize> {
         (arg_index + self.param_skip()).checked_sub(self.arg_skip())
+    }
+
+    /// The argument that fills param `param_index` (`param_of`'s inverse); `None` for a param the
+    /// receiver fills. Past the params it is the argument count those params consume.
+    pub(crate) fn arg_of(self, param_index: usize) -> Option<usize> {
+        (param_index + self.arg_skip()).checked_sub(self.param_skip())
     }
 
     /// The declared type of the param argument `arg_index` fills; `None` for `ArgIsReceiver`'s

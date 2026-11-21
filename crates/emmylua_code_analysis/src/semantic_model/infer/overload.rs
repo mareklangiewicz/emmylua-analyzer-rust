@@ -520,22 +520,19 @@ fn match_call_candidate_impl(
     // read too (`CallAlignment`). A colon call's receiver that fills a plain param 0
     // (`ReceiverIsParam0`, `a:create()` on `function A.create(o)`) is matched against it as the
     // first argument, when its type is known.
-    let mut align = CallAlignment::of(fun, colon_call);
     let mut effective_args_storage: Vec<CallArg> = Vec::new();
-    let args: &[CallArg] = match receiver {
-        Some(receiver) if align == CallAlignment::ReceiverIsParam0 => {
-            effective_args_storage.push(CallArg::new(receiver.clone()));
-            effective_args_storage.extend(args.iter().cloned());
-            align = CallAlignment::Plain;
-            &effective_args_storage
-        }
-        _ => args,
-    };
-    // The first param matched: after those the receiver fills, and after a `self` param, which a
-    // dot call's receiver argument takes unchecked.
-    let param_start = align
-        .param_skip()
-        .max(usize::from(first_param_is_self(fun)));
+    let (args, align): (&[CallArg], CallAlignment) =
+        match (CallAlignment::of(fun, colon_call), receiver) {
+            (CallAlignment::ReceiverIsParam0, Some(receiver)) => {
+                effective_args_storage.push(CallArg::new(receiver.clone()));
+                effective_args_storage.extend(args.iter().cloned());
+                (&effective_args_storage, CallAlignment::Plain)
+            }
+            (align, _) => (args, align),
+        };
+    // A `self` param is never matched: a colon call's receiver fills it (`arg_of` gives no
+    // argument), and a dot call's receiver argument takes it unchecked.
+    let self_skip = usize::from(first_param_is_self(fun));
     // A multi-return call as the last argument passes all its values, one per remaining
     // param: `id(f())` binds `act: T` to `f()`'s first value only, not the whole tuple.
     let mut spread_args_storage: Vec<CallArg> = Vec::new();
@@ -550,18 +547,19 @@ fn match_call_candidate_impl(
     } else {
         args
     };
-    let arg_start = param_start + align.arg_skip() - align.param_skip();
 
     // Handle call-site variadic generic args (`... T...`) first. When callback params
     // (`fun(...: T...)`) contain the same T, the actual T value must be taken from the
     // tail of the call-site args so consecutive variadic generic slots like
     // `fun(_: T1..., _: T2...)` can be sliced correctly.
-    prebind_variadic_generics(fun, args, param_start, arg_start, &mut bindings);
+    prebind_variadic_generics(fun, args, align, self_skip, &mut bindings);
 
     // Also set in the loop: an alias param can expand to `T...`.
     let mut takes_rest = fun.takes_rest();
-    for (param_index, (name, param_ty)) in params.iter().enumerate().skip(param_start) {
-        let index = arg_start + (param_index - param_start);
+    for (param_index, (name, param_ty)) in params.iter().enumerate().skip(self_skip) {
+        let Some(index) = align.arg_of(param_index) else {
+            continue;
+        };
         let Some(param_ty) = param_ty else {
             continue;
         };
@@ -752,7 +750,7 @@ fn match_call_candidate_impl(
         0
     } else {
         args.len()
-            .saturating_sub(arg_start + params.len().saturating_sub(param_start))
+            .saturating_sub(align.arg_of(params.len()).unwrap_or(0))
     };
 
     Some((
@@ -773,11 +771,11 @@ fn match_call_candidate_impl(
 fn prebind_variadic_generics(
     fun: &LuaFunctionType,
     args: &[CallArg],
-    param_start: usize,
-    arg_start: usize,
+    align: CallAlignment,
+    self_skip: usize,
     bindings: &mut TplBindings,
 ) {
-    for (param_index, (name, param_ty)) in fun.get_params().iter().enumerate().skip(param_start) {
+    for (param_index, (name, param_ty)) in fun.get_params().iter().enumerate().skip(self_skip) {
         let Some(param_ty) = param_ty else {
             continue;
         };
@@ -791,7 +789,9 @@ fn prebind_variadic_generics(
         if bindings.contains_key(&tpl.get_tpl_id()) {
             continue;
         }
-        let index = arg_start + (param_index - param_start);
+        let Some(index) = align.arg_of(param_index) else {
+            continue;
+        };
         let rest_types: Vec<LuaType> = args
             .get(index..)
             .unwrap_or(&[])
