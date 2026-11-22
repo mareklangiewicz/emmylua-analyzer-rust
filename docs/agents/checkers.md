@@ -56,15 +56,12 @@ decided once per candidate by `CallAlignment::of(func, colon_call)`:
   and is checked against it (`o:f(x)` on `function M.f(a, x)`). `ArgIsReceiver`: a dot call's
   argument 0 is a colon method's receiver and fills no param.
 - `param_of(i)` / `param(params, i)`: the param argument `i` fills, or its declared type (`None`
-  for `ArgIsReceiver`'s receiver); `receiver_param(params)`: `ReceiverIsParam0`'s param 0, which the
+  for `ArgIsReceiver`'s receiver); `arg_of(p)`: the argument that fills param `p`; `receiver_param(params)`: `ReceiverIsParam0`'s param 0, which the
   receiver is checked against; `explicit_params` / `explicit_args`: the two slices a site that pairs
   in order zips.
 
-On the rule: `resolved_call_signatures` and `check_str_tpl_params` (`generic_constraint_mismatch.rs`),
-`check_candidate` and `quick_candidate_score` (`param_type_check.rs`), `closure_expected_functions`,
-`check_call`, `ArgCountRange::mismatch` and `param_count_range` (`param_count.rs`),
-`expected_arg_types` and `check_call_as_arg` (`await_in_sync.rs`); in inference, `vm.rs`'s four
-closure-argument sites (#77) and `overload.rs` `match_call_candidate_impl`, which still prepends a
-`ReceiverIsParam0` receiver as argument 0 when its type is known, as 0.25.1 did. A new site reads
-`CallAlignment`, with a test per cell: a hand-written argument → param map that reused the param →
-argument offsets was #76's bug, and in `vm.rs`, #77's.
+The sites on the rule: `grep -rn CallAlignment crates/ --exclude='*_test.rs'`. One reads it
+differently: `overload.rs` `match_call_candidate_impl` still prepends a `ReceiverIsParam0` receiver
+as argument 0 when its type is known, as 0.25.1 did. A new site that pairs arguments with params
+reads `CallAlignment`, with a test per cell: a hand-written argument → param map that reused the
+param → argument offsets was #76's bug, and in `vm.rs`, #77's.
