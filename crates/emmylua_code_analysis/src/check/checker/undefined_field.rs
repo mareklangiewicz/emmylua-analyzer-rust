@@ -248,8 +248,7 @@ fn is_valid_member(
         }
         LuaType::Array(_) => {
             let key_ty = key_type(semantic_model, index_key);
-            numeric_key_expanded(semantic_model, &key_ty)
-                || enum_key_fits(semantic_model, &key_ty, &LuaType::Integer)
+            key_matches(semantic_model, &key_ty, &LuaType::Integer)
                 || is_unknown_key(&key_ty)
                 || in_conditional_statement(index_expr)
         }
