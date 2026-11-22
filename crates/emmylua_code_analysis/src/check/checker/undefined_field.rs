@@ -249,6 +249,7 @@ fn is_valid_member(
         LuaType::Array(_) => {
             let key_ty = key_type(semantic_model, index_key);
             numeric_key_expanded(semantic_model, &key_ty)
+                || enum_key_fits(semantic_model, &key_ty, &LuaType::Integer)
                 || is_unknown_key(&key_ty)
                 || in_conditional_statement(index_expr)
         }
@@ -523,12 +524,15 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
     }
     match table_key {
         LuaType::String | LuaType::StringConst(_) | LuaType::DocStringConst(_) => {
-            is_string_key(key)
+            is_string_key(key) || enum_key_fits(semantic_model, key, table_key)
         }
         LuaType::Integer
         | LuaType::Number
         | LuaType::IntegerConst(_)
-        | LuaType::DocIntegerConst(_) => numeric_key_expanded(semantic_model, key),
+        | LuaType::DocIntegerConst(_) => {
+            numeric_key_expanded(semantic_model, key)
+                || enum_key_fits(semantic_model, key, table_key)
+        }
         LuaType::Union(union) => union
             .into_vec()
             .iter()
@@ -539,6 +543,12 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
         }
         _ => true,
     }
+}
+
+/// An enum value fits a table key the way it fits a param of that type (#82): the type check
+/// knows an integer enum is an `integer` and a `(key)` enum a `string`, and rejects a mixed one.
+fn enum_key_fits(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &LuaType) -> bool {
+    is_enum_like_key(semantic_model, key) && is_compatible(semantic_model, key, table_key)
 }
 
 /// Unconstrained generic parameter name (`Ref("T")` with no constraint on T in the signature): allow any member access.

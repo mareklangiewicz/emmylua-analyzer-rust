@@ -1682,6 +1682,83 @@ fn class_global_table_members_via_a_value() {
     assert_that!(ws.expr_ty("R"), eq(&ws.ty("integer")));
 }
 
+/// #82: an enum value keys a `table<K,V>` or `V[]` whose `K` its values fit, as it fits a
+/// param of type `K` (an integer enum is an `integer`, a `(key)` enum a `string`).
+#[googletest::gtest]
+fn enum_value_keys_a_table_of_its_base_type() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    let decls = r#"
+        ---@enum ek.E
+        local E = { A = 0, B = 1 }
+        ---@enum (key) ek.K
+        local K = { P = 1, Q = 2 }
+        ---@type table<integer, string>
+        local ints = {}
+        ---@type table<number, string>
+        local nums = {}
+        ---@type table<string, integer>
+        local strs = {}
+        ---@type string[]
+        local arr = {}
+        ---@type table<string,integer> | table<integer,string>
+        local both = {}
+        ---@type ek.E
+        local e
+        ---@type ek.K
+        local k
+    "#;
+    for read in ["ints[e]", "nums[e]", "strs[k]", "arr[e]", "both[e]"] {
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::UndefinedField,
+                &format!("{decls}\nreturn {read}")
+            ),
+            eq(true),
+            "{read}"
+        );
+    }
+}
+
+/// #82's guard: an enum whose values do not fit the table's key is still reported.
+#[googletest::gtest]
+fn enum_value_of_another_base_type_is_still_an_undefined_key() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    let decls = r#"
+        ---@enum ek2.E
+        local E = { A = 0, B = 1 }
+        ---@enum ek2.S
+        local S = { X = 'x', Y = 'y' }
+        ---@enum ek2.M
+        local M = { A = 0, B = 'b' }
+        ---@type table<integer, string>
+        local ints = {}
+        ---@type table<string, integer>
+        local strs = {}
+        ---@type string[]
+        local arr = {}
+        ---@type ek2.E
+        local e
+        ---@type ek2.S
+        local s
+        ---@type ek2.M
+        local m
+    "#;
+    for read in ["ints[s]", "strs[e]", "arr[s]", "ints[m]"] {
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::UndefinedField,
+                &format!("{decls}\nreturn {read}")
+            ),
+            eq(false),
+            "{read}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod table_field_param_docs {
     use crate::{DiagnosticCode, VirtualWorkspace};
