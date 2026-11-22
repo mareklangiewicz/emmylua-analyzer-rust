@@ -1759,6 +1759,77 @@ fn enum_value_of_another_base_type_is_still_an_undefined_key() {
     }
 }
 
+/// A class whose base is `string` keys a `table<string,V>` the way `test_super_integer`'s
+/// `---@class NewKey: integer` keys a `table<integer,V>`: through its base, transitively.
+#[googletest::gtest]
+fn named_key_keys_a_table_of_its_base_type() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    let decls = r#"
+        ---@class nk.Name: string
+        ---@class nk.SubName: nk.Name
+        ---@class nk.Id: integer
+        ---@type table<string, integer>
+        local strs = {}
+        ---@type table<integer, string>
+        local ints = {}
+        ---@type string[]
+        local arr = {}
+        ---@type nk.Name
+        local n
+        ---@type nk.SubName
+        local sn
+        ---@type nk.Id
+        local i
+    "#;
+    for read in ["strs[n]", "strs[sn]", "ints[i]", "arr[i]"] {
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::UndefinedField,
+                &format!("{decls}\nreturn {read}")
+            ),
+            eq(true),
+            "{read}"
+        );
+    }
+}
+
+/// The named-key guard: a class whose base does not fit the table's key is still reported.
+#[googletest::gtest]
+fn named_key_of_another_base_type_is_still_an_undefined_key() {
+    use crate::{DiagnosticCode, VirtualWorkspace};
+    use googletest::prelude::*;
+    let mut ws = VirtualWorkspace::new();
+    let decls = r#"
+        ---@class nk2.Name: string
+        ---@class nk2.Id: integer
+        ---@class nk2.Plain
+        ---@type table<string, integer>
+        local strs = {}
+        ---@type table<integer, string>
+        local ints = {}
+        ---@type string[]
+        local arr = {}
+        ---@type nk2.Name
+        local n
+        ---@type nk2.Id
+        local i
+        ---@type nk2.Plain
+        local p
+    "#;
+    for read in ["ints[n]", "arr[n]", "strs[i]", "strs[p]", "ints[p]"] {
+        expect_that!(
+            ws.has_no_diagnostic(
+                DiagnosticCode::UndefinedField,
+                &format!("{decls}\nreturn {read}")
+            ),
+            eq(false),
+            "{read}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod table_field_param_docs {
     use crate::{DiagnosticCode, VirtualWorkspace};
