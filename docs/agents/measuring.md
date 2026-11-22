@@ -48,16 +48,17 @@ read the section for the path you are on.
 ## Mutation evidence for a test
 
 `gndx emmylua test --filter=… --red-patch=FILE.diff` runs the filtered tests on HEAD with a mutant
-applied, in the scratch worktree. Write the mutant outside the worktree: `git show HEAD:F > a/F`,
-edit a copy as `b/F`, `diff -u a/F b/F > FILE.diff`. Each filter must catch it: a NOT RED filter is
+applied, in the scratch worktree. `gndx emmylua mutant F OLD NEW` writes FILE.diff: F as of HEAD
+with the literal OLD (exactly once) replaced by NEW. Each filter must catch it: a NOT RED filter is
 a test that cannot see that mutation (`colon_extra = 0` in `param_count.rs` is caught by
 `redundant_parameter_test` alone).
 
 A refactor has no red phase: its evidence is a mutant of the refactored code that the EXISTING tests
 catch (RED with the patch, all green on HEAD), recorded in the commit message. A new guard test earns
 its place only by going RED on some mutant. `--red-patch` refuses a mutant of a file with uncommitted
-changes, so commit the refactor first, run the mutant, then amend the message (c0e09ab1: the `V[]`
-arm put back to bare `numeric_key_expanded` goes RED in `enum_value_keys_a_table_of_its_base_type`).
+changes (`mutant` warns), so commit the refactor first, run the mutant, then amend the message
+(c0e09ab1: the `V[]` arm put back to bare `numeric_key_expanded` goes RED in
+`enum_value_keys_a_table_of_its_base_type`).
 
 ## A `resources/std` annotation edit
 
