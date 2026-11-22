@@ -29,6 +29,10 @@ read the section for the path you are on.
 - `probe DIR… --bin=CANDIDATE` prints the three-way table (plus the candidate) for any fixture.
   Each row ends with its source line. With several cells on one line, add `--exact` so each row
   carries its `L:C-L:C` range. Parsing the JSON by hand is a sign that `probe` lacks a flag.
+- A fixture reduced from a corpus line stands in for that line only until the fix: the fix is
+  confirmed when the original FILE:LINE leaves the corpus diff (`corpus diff A B
+  --line=FILE:LINE`). #83's reduction kept the message and slid onto another mechanism; its fix
+  turned the fixture green while snacks `lsp/init.lua:452` kept firing (#84).
 - Before pinning a fixture as a test, map its class: `probe` variants that each change one feature
   (annotated or not, before or after the write, straight-line or conditional), then pin the
   smallest cells that tell the builds apart (#41: a 36-variant grid showed that on main, `---@type`

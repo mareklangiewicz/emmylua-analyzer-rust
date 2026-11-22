@@ -21,6 +21,15 @@ under `crates/emmylua_code_analysis/src/`. Add a code here when a session had to
    into a `LuaObjectType` first). It walks the fields in key order (#59: hash order made the line
    move between runs). `check_constructor_value` builds the `TypeNotMatchAtField`.
 
+## `param-type-mismatch` on a table-literal argument
+
+`check/checker/param_type_check.rs` `table_argument_mismatches` reports the whole literal when
+`check_type_at(literal, expected)` returns any `Err`, `Unresolved` included. When the field types
+look compatible, ask `semantic_model::type_check::check_type_detail(model, actual, expected)` for
+the reason first. `Unresolved` comes from an expected type that reaches an undeclared name (an
+alias of `Missing|{…}`) or a recursive alias, and is reported on purpose: upstream 1361c218's
+recursive-alias tests (`test_recursive_scalar_alias_rejects_table_arguments`) pin it (#84).
+
 ## Generic binding from call args (`param-type-mismatch`, `V` left unbound)
 
 `semantic_model/infer/overload.rs` converts each arg before unifying it with the param (a table
