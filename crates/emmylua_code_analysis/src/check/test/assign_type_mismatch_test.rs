@@ -3865,9 +3865,9 @@ return t
     }
 
     /// A member read through a name that resolves to no declaration is `unknown`, not `nil`:
-    /// nothing is known about such a type's members (0.25.1 reads it that way). The missing
-    /// name is `type-not-found`'s, the read `undefined-field`'s; neither the sink nor a closure
-    /// returning the read reports it again (#83). A declared class's missing member stays `nil`.
+    /// nothing is known about such a type's members. The missing name is `type-not-found`'s, the
+    /// read `undefined-field`'s; neither the sink nor a closure returning the read reports it
+    /// again (#83). A declared class's missing member stays `nil`.
     #[test]
     fn test_member_of_an_unresolved_type_is_unknown_not_nil() {
         let source = r#"
@@ -3920,7 +3920,8 @@ return t
         let param = texts_by_code(source, &diags, DiagnosticCode::ParamTypeMismatch);
         assert!(param.is_empty(), "{diags:#?}");
         let undefined = texts_by_code(source, &diags, DiagnosticCode::UndefinedField);
-        assert_eq!(undefined.len(), 7, "{diags:#?}");
+        // One per read (the range is the key): m, item ×2, a, it, d, s.
+        assert_eq!(undefined, vec!["kind"; 7], "{diags:#?}");
     }
 
     #[test]
