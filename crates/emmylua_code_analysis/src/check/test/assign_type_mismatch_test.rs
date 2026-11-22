@@ -3864,6 +3864,65 @@ return t
         assert_eq!(hit, vec!["s1", "s2"], "{diags:#?}");
     }
 
+    /// A member read through a name that resolves to no declaration is `unknown`, not `nil`:
+    /// nothing is known about such a type's members (0.25.1 reads it that way). The missing
+    /// name is `type-not-found`'s, the read `undefined-field`'s; neither the sink nor a closure
+    /// returning the read reports it again (#83). A declared class's missing member stays `nil`.
+    #[test]
+    fn test_member_of_an_unresolved_type_is_unknown_not_nil() {
+        let source = r#"
+            ---@param m Missing
+            local function h(m)
+                ---@type boolean
+                local z = m.kind
+                return z
+            end
+
+            ---@param filter fun(result: Missing): boolean
+            local function g(filter) return filter end
+            g(function(item) return item.kind end)
+
+            ---@param opts? { filter?: (fun(result: Missing): boolean) }
+            local function f(opts) return opts end
+            f({ filter = function(item) return item.kind end })
+
+            ---@alias Alias83 Missing
+            ---@type Alias83
+            local a
+            ---@type boolean
+            local w = a.kind
+
+            -- An alias of a union holding an unresolved name reads like the inline union.
+            ---@alias Item83 Missing|{ text?: string }
+            ---@type Item83
+            local it
+            ---@type boolean
+            local v = it.kind
+
+            ---@class Declared83
+            ---@param d Declared83
+            local function k(d)
+                ---@type boolean
+                local y = d.kind
+                return y
+            end
+
+            ---@alias Shape83 { text?: string }
+            ---@type Shape83
+            local s
+            ---@type boolean
+            local x = s.kind
+            return h, g, f, k, w, v, x
+        "#;
+        let diags = check_source(source);
+        let assign = texts_by_code(source, &diags, DiagnosticCode::AssignTypeMismatch);
+        assert_eq!(assign, vec!["d.kind", "s.kind"], "{diags:#?}");
+        let param = texts_by_code(source, &diags, DiagnosticCode::ParamTypeMismatch);
+        assert!(param.is_empty(), "{diags:#?}");
+        let undefined = texts_by_code(source, &diags, DiagnosticCode::UndefinedField);
+        assert_eq!(undefined.len(), 7, "{diags:#?}");
+    }
+
     #[test]
     fn test_table_arg_elements_fit_a_constrained_generic_by_its_constraint() {
         // `T[]` with `---@generic T: {...}`: each literal element binds `T`, so it is checked
