@@ -477,42 +477,6 @@ fn numeric_key(ty: &LuaType) -> bool {
     }
 }
 
-/// Numeric key after alias expansion (`IntegerPartIndex = 1|2`, `NewKey: integer`).
-fn numeric_key_expanded(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> bool {
-    numeric_key_expanded_inner(semantic_model, ty, &mut Vec::new())
-}
-
-fn numeric_key_expanded_inner(
-    semantic_model: &SemanticModel<'_>,
-    ty: &LuaType,
-    visited: &mut Vec<LuaTypeDeclId>,
-) -> bool {
-    if numeric_key(ty) {
-        return true;
-    }
-    let Some(def) = named_type_def(semantic_model, ty) else {
-        return false;
-    };
-    let id = match ty {
-        LuaType::Ref(id) | LuaType::Def(id) => id,
-        _ => return false,
-    };
-    if visited.contains(id) {
-        return false;
-    }
-    visited.push(id.clone());
-    match def.kind {
-        TypeDefKind::Alias => semantic_model
-            .alias_target(&def)
-            .is_some_and(|target| numeric_key_expanded_inner(semantic_model, &target, visited)),
-        TypeDefKind::Class => semantic_model
-            .base_types(&def.type_decl_id())
-            .iter()
-            .any(|ty| matches!(ty, LuaType::Integer | LuaType::Number)),
-        TypeDefKind::Enum => false,
-    }
-}
-
 /// Whether `key` can be a key of `table<K,V>` (M0: basic expansion of string/integer and unions/aliases).
 fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &LuaType) -> bool {
     if table_key.is_unknown() || table_key.is_any() {
@@ -532,8 +496,7 @@ fn key_matches(semantic_model: &SemanticModel<'_>, key: &LuaType, table_key: &Lu
         | LuaType::IntegerConst(_)
         | LuaType::DocIntegerConst(_) => {
             // Likewise an integer enum (#82); a mixed enum stays rejected.
-            numeric_key_expanded(semantic_model, key)
-                || is_compatible(semantic_model, key, table_key)
+            numeric_key(key) || is_compatible(semantic_model, key, table_key)
         }
         LuaType::Union(union) => union
             .into_vec()
