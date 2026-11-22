@@ -53,6 +53,12 @@ edit a copy as `b/F`, `diff -u a/F b/F > FILE.diff`. Each filter must catch it: 
 a test that cannot see that mutation (`colon_extra = 0` in `param_count.rs` is caught by
 `redundant_parameter_test` alone).
 
+A refactor has no red phase: its evidence is a mutant of the refactored code that the EXISTING tests
+catch (RED with the patch, all green on HEAD), recorded in the commit message. A new guard test earns
+its place only by going RED on some mutant. `--red-patch` refuses a mutant of a file with uncommitted
+changes, so commit the refactor first, run the mutant, then amend the message (c0e09ab1: the `V[]`
+arm put back to bare `numeric_key_expanded` goes RED in `enum_value_keys_a_table_of_its_base_type`).
+
 ## A `resources/std` annotation edit
 
 It goes through the narrow loop too. First `probe` fixtures of the callers' shapes (a callback
