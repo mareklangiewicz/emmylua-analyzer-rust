@@ -47,7 +47,8 @@ read the section for the path you are on.
   config's dir), probe it with `--root=ws --config=DIR/ws/.emmyrc.json`, then shrink the library
   file. The same goes for a one-file `VirtualWorkspace` test: a hit that needs the class in another
   file (`ws.def`) or a `@class` name other than its local (`---@class vim.Iter` on `local Iter`)
-  passes in one file.
+  passes in one file. Such a workspace fixture reduces whole: `reduce DIR CODE --mark=TEXT` cuts
+  files, then lines, keeping the hit in the first file holding TEXT (`--line` takes a file only).
 
 ## Mutation evidence for a test
 
