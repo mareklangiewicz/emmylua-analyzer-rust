@@ -19,6 +19,9 @@ read the section for the path you are on.
 - `corpus run` of a `+dirty` build (`gndx emmylua build .` with uncommitted changes) skips
   mason.nvim and says so before the first tree. Its commit is unknown, so the lab vouches for no
   blowup fix. The run is a subset run, and `corpus diff BASE LABEL` counts mason as skipped (#87).
+- Run-to-run noise: `corpus repeat LABEL BIN` (#61), then `corpus diff A B --noise=LABEL` folds
+  each changed hit whose key varies between those runs on the same checkout (#90). Matching is per
+  key, so a real change in a noisy file still shows. The diff also prints each side's summed CPU.
 - A scratch run goes with `corpus drop LABEL… --apply` (a plan without it); it refuses `gate-*` runs
   and #1's base set.
 - Every corpus run keeps its binary at `~/.cache/gndx/emmylua-corpus/<LABEL>/emmylua_check`: probe
