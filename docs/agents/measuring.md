@@ -16,9 +16,9 @@ read the section for the path you are on.
   diagnostic's range as no change. Judge a range or column change with `corpus diff --exact`,
   which keys on the whole range and folds nothing (#73: 0 changed lines by default, 144 +/- pairs
   exact).
-- `corpus run` of a `+dirty` build (`gndx emmylua build .` with uncommitted changes) refuses
-  mason.nvim, and says so before the first tree: its commit is unknown, so the lab vouches for no
-  blowup fix. Diff it against a base on the trees it ran.
+- `corpus run` of a `+dirty` build (`gndx emmylua build .` with uncommitted changes) skips
+  mason.nvim and says so before the first tree. Its commit is unknown, so the lab vouches for no
+  blowup fix. The run is a subset run, and `corpus diff BASE LABEL` counts mason as skipped (#87).
 - A scratch run goes with `corpus drop LABEL… --apply` (a plan without it); it refuses `gate-*` runs
   and #1's base set.
 - Every corpus run keeps its binary at `~/.cache/gndx/emmylua-corpus/<LABEL>/emmylua_check`: probe
