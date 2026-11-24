@@ -4833,19 +4833,31 @@ return t
         }
     }
 
-    // Fork #86: each member read on a module's class table resolved by scanning every member of
-    // the owner, merged in O(N²): N methods reading `self.x` took O(N³) (4000 took 23 s). A name
-    // key now reads the owner's by-name bucket. The hit below proves `C.x` still resolves to its
-    // `@field`.
+    // Fork #86: resolving a member use must not scan every member of a large module class, and
+    // `C.x` must still resolve to its `@field` (the one hit).
     #[test]
     #[ntest::timeout(5000)]
     fn test_many_member_reads_on_a_module_class_stay_fast() {
+        const METHODS: u32 = 1500;
         let mut src = String::from("---@class C\n---@field x integer\nlocal C = {}\n");
-        for i in 0..1500 {
+        for i in 0..METHODS {
             src.push_str(&format!("function C:m{i}() return self.x end\n"));
         }
         src.push_str("---@type string\nlocal s = C.x\nreturn C\n");
+        // Only this checker: running all of them over 1500 methods is slow in a debug build.
         let mut ws = VirtualWorkspace::new();
-        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &src));
+        ws.analysis
+            .diagnostic
+            .enable_only(DiagnosticCode::AssignTypeMismatch);
+        let file_id = ws.def(&src);
+        let lines: Vec<u32> = ws
+            .analysis
+            .diagnose_file(file_id, CancellationToken::new())
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.range.start.line)
+            .collect();
+        // 0-based: 3 header lines, the methods, `---@type string`, then `local s = C.x`.
+        assert_eq!(lines, [METHODS + 4]);
     }
 }
