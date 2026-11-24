@@ -98,6 +98,12 @@ Other agents load this machine.
 `outcome` on all three builds → `stack` the failing one → `gndx emmylua fork` for the fix touching
 those frames → cherry-pick onto upstream in a scratch worktree, re-run `outcome` → `reduce` last.
 
+- `stack` ends with the fork-only commits touching each busy frame's file. Read those first: the 1361
+  hang was upstream's, and a fork fix in `comparison.rs` was the answer.
+- A hang or blowup reduces with `reduce TREE --slow=S --bin=B --out=DIR`. It cuts files, then lines, while
+  B still runs past S seconds, and refuses any cut that breaks a file's syntax. `outcome` and `bisect
+  --tree` take that DIR. `bisect --timeout=S` stops each probe at S rather than the 120 s cap.
+
 ## An editor fix (completion, hover, gd)
 
 Pin it as a `myemmylab.FEATURE_PROBES` probe and prove it RED on a revert build. For `gd`/hover
