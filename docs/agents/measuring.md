@@ -102,8 +102,9 @@ those frames → cherry-pick onto upstream in a scratch worktree, re-run `outcom
 - `stack` ends with the fork-only commits touching each busy frame's file. Read those first: the 1361
   hang was upstream's, and a fork fix in `comparison.rs` was the answer.
 - A hang or blowup reduces with `reduce TREE --slow=S --bin=B --out=DIR`. It cuts files, then lines, while
-  B still runs past S seconds, and refuses any cut that breaks a file's syntax. `outcome` and `bisect
-  --tree` take that DIR. `bisect --timeout=S` stops each probe at S rather than the 120 s cap.
+  B still runs past S seconds, and refuses any cut that breaks a file's syntax. `outcome`, `ab`,
+  `stack`, `bisect --tree` and `profile` take that DIR (named by its basename); a labelled
+  `corpus run` takes tree names only, since `corpus diff` matches runs by tree name. `bisect --timeout=S` stops each probe at S rather than the 120 s cap.
 
 ## An editor fix (completion, hover, gd)
 
