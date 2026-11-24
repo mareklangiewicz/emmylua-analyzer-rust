@@ -4832,4 +4832,20 @@ return t
             assert_eq!(lines, [10].into(), "{target}");
         }
     }
+
+    // Fork #86: each member read on a module's class table resolved by scanning every member of
+    // the owner, merged in O(N²): N methods reading `self.x` took O(N³) (4000 took 23 s). A name
+    // key now reads the owner's by-name bucket. The hit below proves `C.x` still resolves to its
+    // `@field`.
+    #[test]
+    #[ntest::timeout(5000)]
+    fn test_many_member_reads_on_a_module_class_stay_fast() {
+        let mut src = String::from("---@class C\n---@field x integer\nlocal C = {}\n");
+        for i in 0..1500 {
+            src.push_str(&format!("function C:m{i}() return self.x end\n"));
+        }
+        src.push_str("---@type string\nlocal s = C.x\nreturn C\n");
+        let mut ws = VirtualWorkspace::new();
+        assert!(!ws.has_no_diagnostic(DiagnosticCode::AssignTypeMismatch, &src));
+    }
 }

@@ -436,7 +436,14 @@ pub(crate) fn resolve_member_id(
         return Some(member.id.clone());
     }
     for resolved in resolve_owner_set(db, owner.clone()) {
-        for member in members_of_owner(db, resolved).iter() {
+        // A name key asks the owner's by-name bucket: the same members, in the same order, as the whole
+        // list filtered by that key. Scanning the whole list per use cost O(N) here and O(N²) in
+        // `merge_canonical_members` for an N-member module owner, so O(N³) per file (fork #86).
+        let members = match &member_use.key {
+            LuaMemberKey::Name(name) => members_of_owner_named(db, resolved, name.clone()),
+            _ => members_of_owner(db, resolved),
+        };
+        for member in members.iter() {
             let member_facts = if member.file_id == facts.file_id {
                 Some(facts)
             } else {
