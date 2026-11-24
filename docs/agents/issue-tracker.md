@@ -11,6 +11,10 @@ Issues and specs for this fork live as GitHub issues on **mareklangiewicz/emmylu
 - Scope: fork engine work, flagged engine quirks, and the `gndx emmylua` lab, whose code lives in
   neospector (`~/code/vimstuff/myvi/myspectors/neospector/lua/myemmylab*.lua`, part of myvi).
   A lab issue says so in its first line.
+- **A lab issue's location is grepped**: before writing or working one, find the code that emits
+  the behaviour (`grep` the message text, read the caller). A handoff's or memory's "it lives in X"
+  is a lead: #92 blamed myaihook for what Claude's own LSP plugin emits, and #91 asked for a
+  `(under claude)` tag that already existed.
 - Start at issue #1 ("Start here"), then pick `ready-for-agent`.
 - Refer to upstream as plain text ("upstream #1370", "upstream commit 7bf34a75"), never as a link
   or `EmmyLuaLs/emmylua-analyzer-rust#N`: a link shows on their thread, which is interaction.
