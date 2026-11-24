@@ -75,6 +75,14 @@ added 11 hits (snacks, plenary, sidekick, lspconfig, argparse);
 
 ## Porting a fork fix upstream
 
+- Move the code by diff, not by `cherry-pick`. `cherry-pick --abort` throws away conflict
+  resolutions already made (#89). From the main checkout:
+  `git fetch origin && git worktree add -b T ../emmylua-analyzer-rust-worktrees/T origin/main`,
+  then, in it, for the fork range A..B, one file at a time:
+  `git -C <fork worktree> diff A^ B -- F | git apply -3`. Leave out the fork-only paths
+  (`AGENTS.md`, `docs/agents/`). A conflicted file keeps its markers in place and the others stay
+  applied. Resolve it, `git add` it and go on: no step undoes another. Starting over is
+  `git worktree remove --force` on T, and the fork commits are untouched. The first push is `git push -u marek T` (Layout in AGENTS.md).
 - Re-measure on upstream main (corpus diff with main as base, and every "before" test run against
   main's source: `test --red-at=MAIN:FILE`). Fork numbers do not carry over.
 - Before the PR goes ready, land the same rule on the fork and diff the fork corpus too. It covers
