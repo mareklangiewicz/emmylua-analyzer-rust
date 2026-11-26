@@ -239,10 +239,13 @@ fn expr_access_path(expr: &LuaExpr) -> Option<String> {
 }
 
 /// The flow-aware type of `expr` read as one value: a call's result list gives its first slot, as
-/// the VM reads an operand, so a call that may return nothing (`string|()`) may be nil here.
+/// the VM reads an operand, so a call that may return nothing (`string|()`) may be nil here. Only
+/// a call is projected: another expression's type is already a value, and on upstream main
+/// projecting a flow type built from a result list brings back a nil its guard removed (blink.cmp
+/// `docs.lua`; upstream 1472/1473 carry this same rule).
 fn value_type_at(semantic_model: &SemanticModel<'_>, expr: &LuaExpr) -> LuaType {
     let ty = semantic_model.type_of_expr_at(expr.get_syntax_id(), expr.get_range().start());
-    if !ty.contain_multi_return() {
+    if !matches!(expr, LuaExpr::CallExpr(_)) || !ty.contain_multi_return() {
         return ty;
     }
     ty.get_result_slot_type(0).unwrap_or(ty)

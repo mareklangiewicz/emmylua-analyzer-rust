@@ -1853,5 +1853,25 @@ mod test {
             print(h() + 1, -h())
             "#
         ));
+        // A name keeps its flow type: a local from a result list, guarded, is not nil again
+        // (blink.cmp `docs.lua`, reduced; projecting names reported both operands on main).
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            --- @param lines string[]
+            --- @return number?, number?
+            function docs.get_code_block_range(lines, row)
+            end
+            function docs.extract_detail_from_doc(detail, documentation)
+              local doc_lines = docs.split_lines(documentation)
+              local code_block_start, code_block_end = docs.get_code_block_range(doc_lines, detail_line)
+              if code_block_start ~= nil and code_block_end ~= nil then
+                detail_lines = vim.list_slice(doc_lines, code_block_start + 1, code_block_end - 1)
+              end
+            end
+            function docs.split_lines(text)
+            end
+            "#
+        ));
     }
 }
