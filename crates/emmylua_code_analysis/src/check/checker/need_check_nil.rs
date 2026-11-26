@@ -141,7 +141,7 @@ fn check_arithmetic_operand(
     semantic_model: &SemanticModel<'_>,
     operand: &LuaExpr,
 ) {
-    let ty = semantic_model.type_of_expr_at(operand.get_syntax_id(), operand.get_range().start());
+    let ty = value_type_at(semantic_model, operand);
     // Only a value that may be nil: a bare `nil` operand is an inference gap far more often than
     // nil arithmetic (a field of a `table` call result, `select` over unknown values, a member
     // the class lacks), and its result type is unchanged, so nothing is hidden by skipping it.
@@ -238,10 +238,20 @@ fn expr_access_path(expr: &LuaExpr) -> Option<String> {
     }
 }
 
+/// The flow-aware type of `expr` read as one value: a call's result list gives its first slot, as
+/// the VM reads an operand, so a call that may return nothing (`string|()`) may be nil here.
+fn value_type_at(semantic_model: &SemanticModel<'_>, expr: &LuaExpr) -> LuaType {
+    let ty = semantic_model.type_of_expr_at(expr.get_syntax_id(), expr.get_range().start());
+    if !ty.contain_multi_return() {
+        return ty;
+    }
+    ty.get_result_slot_type(0).unwrap_or(ty)
+}
+
 /// Prefix type: the flow-aware expression type (conditional narrowing, inline casts).
 /// VM inference for array indices may degrade to Unknown; here use `T | nil` as a fallback for `T[]` indexing.
 fn prefix_type(semantic_model: &SemanticModel<'_>, prefix: &LuaExpr) -> LuaType {
-    let ty = semantic_model.type_of_expr_at(prefix.get_syntax_id(), prefix.get_range().start());
+    let ty = value_type_at(semantic_model, prefix);
     if !matches!(ty, LuaType::Unknown) {
         return ty;
     }

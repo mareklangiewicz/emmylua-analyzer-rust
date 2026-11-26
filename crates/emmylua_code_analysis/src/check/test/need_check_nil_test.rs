@@ -1819,4 +1819,39 @@ mod test {
             "#
         ));
     }
+
+    /// A call that may return nothing is a nilable value where it is used as one (a prefix, an
+    /// operand of arithmetic or `#`): its first result slot decides, as in the VM's operands.
+    /// Read raw, `string|()` hid its nil (plenary `filetype.lua`, `s:find(..) + 1`).
+    #[test]
+    fn test_call_that_may_return_nothing_may_be_nil_as_a_value() {
+        let mut ws = VirtualWorkspace::new();
+        let maybe = r#"
+            local function g(x)
+              if x then
+                return 1
+              end
+            end
+        "#;
+        for use_ in [
+            "print(g(1).x)",
+            "print(g(1) + 1)",
+            "print(-g(1))",
+            "print(#g(1))",
+        ] {
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &format!("{maybe}\n{use_}")),
+                "{use_}"
+            );
+        }
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            local function h()
+              return 1
+            end
+            print(h() + 1, -h())
+            "#
+        ));
+    }
 }
