@@ -42,8 +42,11 @@ start at pinned issue #1. Commands: `gndx emmylua --help`, `gndx builds emmylua 
   run), and run the full corpus and the full test suite once, before the commit.
 - `docs/agents/measuring.md`, one section per path: a corpus base or diff (stale base, exit 2,
   `--exact`, `+dirty`); a `probe` fixture (flags, mapping a class, library form); mutation
-  evidence (`test --red-patch`); a `resources/std` edit; porting a fix upstream; timings; a crash,
-  hang or blowup; an editor fix.
+  evidence (`test --red-patch`); a `resources/std` edit; timings; a crash, hang or blowup; an
+  editor fix.
+- **Porting a fork fix upstream:** read `measuring.md` § Porting before the first git command. The
+  code moves by `git diff A^ B -- F | git apply -3`, one file at a time, into a fresh worktree off
+  `origin/main`, so conflict resolutions already made survive (#89).
 
 ## Building and testing
 
