@@ -9,7 +9,9 @@ read the section for the path you are on.
 - Corpus trees are live plugin checkouts: a base run is valid while no tree moved since it ran,
   whatever its date. `gndx emmylua corpus valid LABEL…` checks that (#67); before diffing,
   `corpus refresh LABEL…` re-runs only a STALE base's moved trees, with its own binary and config.
-- `corpus diff` exit 2 means "not comparable", not "no difference".
+- `corpus diff` exit 2 means "not comparable", not "no difference". A tree that failed the same way on
+  both sides (both `crash`, both `refused`) is excluded and named, not refused (#39); a tree whose
+  outcome differs, or `unknown` on both, still refuses.
 - A passed `emmylua gate` keeps its corpus step as the base `gate-<commit8>-<MMDD>`: the installed
   build's base, with no second run.
 - `corpus diff` pairs hits by `file:line` and folds small line moves, so it reads a change to a
