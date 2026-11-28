@@ -153,37 +153,57 @@ Assumption:
   other places with two answers (the VM's `Nil` for a plain table, A3; the checker's special case
   for a union), and the read layer gives a third (the present components' type).
 
-## 7. Widening a local: loop-carried and captured reads (`widen_loop_carried`, flow.rs:203)
+## 7. Widening a local: loop-carried and captured reads (`widen_loop_carried`, flow.rs)
 
-Line numbers in this section are at fork `b73b7f6c`. Two reads of an un-annotated, reassigned local
-can't trust the backward walk, so both keep only the value's **kind**:
+One rule underlies both: a read's type is the join of every value that can reach it. Loops and
+closures are the two places where this flow graph misses some of those values, so a read there
+gets a stand-in. A stand-in may be wider than the true join (it costs precision); it must not be
+narrower (it hides a value that reaches).
 
-- **Loop-carried** (`widen_if_loop_carried`, flow.rs:165): a read inside a loop that assigns the
-  local, or after such a loop in the same function. Not a fixpoint: no body write is evaluated.
-- **Captured** (`decl_position_type`, flow.rs:2710, `captured = true`): a read that a closure
-  writing the local may run before. Its base is the type **at the declaration**, the initializer's
-  kind (716f9638).
+- **Loop-carried** (`widen_if_loop_carried`): a read inside a loop that assigns the local, or
+  after such a loop in the same function. The graph has no back edges, so the read sees the first
+  pass only; the value from before the loop does reach it. Not a fixpoint: no body write is
+  evaluated, the value keeps its **kind** instead (`false` → `boolean`, `0` → `integer`).
+- **Captured** (`decl_position_type`, `captured` = the `capturing_closure` range): a read that a
+  closure writing the local may run before (in the local's own function), or a read inside a
+  closure that captures it. Its base is the type **at the declaration**, the initializer's kind
+  (716f9638).
 
-`widen_loop_carried` maps a constant to its kind and `nil`/`never` to `unknown`. Inside a union
-that `unknown` is absorbed, so `string?` becomes `string`. On the captured path, a bare `unknown`
-becomes `any`.
+`widen_loop_carried` keeps a `nil` beside other values (`string?` stays `string?`) and widens only
+a bare `nil`/`never` to `unknown`. It once widened the `nil` inside a union too; the union
+absorbs that `unknown`, so `string?` read as `string`: narrower than the value, on every path.
 
-Assumptions, each broken by one of #72's parked fixes (branch `park-72-captured-nil`):
-- **W1.** Losing a union's `nil` is harmless. It isn't on the captured path: #72's repro
-  (`local function change() value = nil end`) misses the `need-check-nil` that 0.25.1 and
-  upstream report.
-- **W2.** Keeping the `nil` for every caller is the fix. 92b26137 did, and the loop path paid:
-  105 corpus lines, almost all loop reads of a correlated pair (lazy.nvim `view/text.lua:138`,
-  `from, to = s:find(p)` then `while from do … to + 1`). A loop read sees no correlation across
-  passes, and the old `nil` → `unknown` was hiding that.
-- **W3.** The declaration's type stands for every captured read. fc1704a0 kept the `nil` on the
-  captured path only. 26 of its 28 lines were false: the code rules the nil out *before* the closure
-  exists (`if not w then w = api.nvim_get_current_win() end`, neovim `treesitter/dev.lua:411`),
-  but the base is still the initializer's `integer?`.
+The assumptions, as measured (#72):
+- **W1.** Losing a union's `nil` is harmless. False: #72's repro (`local function change()
+  value = nil end`, then `value:upper()` after `change()`) missed the `need-check-nil` that 0.25.1
+  and upstream report. That read is in the local's own function and reaches the declaration
+  along its own flow, so the declaration's `nil` really reaches it. Fixed: it keeps the `nil`.
+- **W2.** Keeping the `nil` costs loop reads. Mostly false: the lazy.nvim `view/text.lua:138`
+  lines that 92b26137 and 3692eaa2 added are reported by 0.25.1 and upstream alike (there an inner
+  `find` may return nil). In the plain correlated pair (`from, to = s:find(p)`, `while from do …
+  to + 1`) upstream's hit is false, because a join per variable loses the link, but that loss is
+  upstream's design. The old widening instead gave a fork-only false `param-type-mismatch`
+  (`integer?` / `number`) there. Both earlier attempts changed the captured path as well, through
+  the shared function, and the captured half is where their false hits came from (W3).
+- **W3.** The declaration's type stands for a read inside a capturing closure. False: the code
+  often rules the `nil` out *before* the closure exists (neovim `vim/text.lua:204`, `prefix =
+  prefix and prefix or ' '`; `treesitter/dev.lua:411`), but the base is still the initializer's
+  `string?`. **Still unsound, kept on purpose:** such a read turns a union's `nil` into `unknown`
+  (`union_nil_to_unknown`). That hides those false `nil`s and, with them, any true one.
 
-The sound direction (not started): a captured read's base is the local's type **where the closure
-is created**, joined with the kinds of the closure's writes. That needs a trace at the closure's
-position for each captured read, which is a new concept under the policy.
+The sound direction for W3 (not started): a captured read's base is the local's type **where the
+closure is created** (the flow builder inlines a closure's body at its creation point, so the
+backward walk already passes it), joined with the kinds of every write that can run while the
+closure may: the closure's own writes, writes in other closures, and the outer writes after the
+creation or in a loop around it. It is a new concept for a small gain: fc1704a0, which kept the
+`nil` on every captured read, found 1 true hit for 26 false ones (2026-11-20), and the
+own-function reads it covered now keep the `nil` anyway (W1). The gain left is unmeasured, so
+the policy parks it.
+
+Pins: `test_loop_carried_nullable_keeps_its_nil`, `test_loop_carried_find_pair_keeps_integer_kind`,
+`test_closure_read_after_nil_is_ruled_out` (W3, red on 3692eaa2), the `value = nil` row of
+`test_correlated_guards_keep_nil_after_captured_write` (W1), and upstream's five #1466
+saved-type-guard tests.
 
 ## Bug placement (#43 step 3)
 
