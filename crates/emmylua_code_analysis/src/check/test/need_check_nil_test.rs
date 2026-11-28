@@ -1079,10 +1079,7 @@ mod test {
             "#,
         );
 
-        // Fork: upstream expects ["stale", "after_loop"]. A local a loop writes reads as loop-carried, whose
-        // `nil` -> `unknown` widening also drops the `nil` of `string?` (flow.md §7 W2, #72):
-        // the read is `string`, so no saved guard is needed to hide it.
-        assert_nil_checks_at(&ws, file_id, &[]);
+        assert_nil_checks_at(&ws, file_id, &["stale", "after_loop"]);
     }
 
     #[test]
@@ -1131,10 +1128,7 @@ mod test {
                 "#,
             ));
 
-            // Fork: upstream expects ["on_break"]. A local a loop writes reads as loop-carried, whose
-            // `nil` -> `unknown` widening also drops the `nil` of `string?` (flow.md §7 W2, #72):
-            // the read is `string`, so no saved guard is needed to hide it.
-            assert_nil_checks_at(&ws, file_id, &[]);
+            assert_nil_checks_at(&ws, file_id, &["on_break"]);
         }
     }
 
@@ -1167,10 +1161,7 @@ mod test {
                 "#,
             ));
 
-            // Fork: upstream expects ["stale"]. A local a loop writes reads as loop-carried, whose
-            // `nil` -> `unknown` widening also drops the `nil` of `string?` (flow.md §7 W2, #72):
-            // the read is `string`, so no saved guard is needed to hide it.
-            assert_nil_checks_at(&ws, file_id, &[]);
+            assert_nil_checks_at(&ws, file_id, &["stale"]);
         }
     }
 
@@ -1219,10 +1210,7 @@ mod test {
             "#,
         );
 
-        // Fork: upstream expects ["forward", "indirect"]. A local a loop writes reads as loop-carried, whose
-        // `nil` -> `unknown` widening also drops the `nil` of `string?` (flow.md §7 W2, #72):
-        // the read is `string`, so no saved guard is needed to hide it.
-        assert_nil_checks_at(&ws, file_id, &[]);
+        assert_nil_checks_at(&ws, file_id, &["forward", "indirect"]);
     }
 
     #[test]
@@ -1290,10 +1278,11 @@ mod test {
             "#,
         );
 
-        // Fork: upstream expects also `loop_value`. A local a loop writes reads as loop-carried, whose
-        // `nil` -> `unknown` widening also drops the `nil` of `string?` (flow.md §7 W2, #72):
-        // the read is `string`, so no saved guard is needed to hide it.
-        assert_nil_checks_at(&ws, file_id, &["replaced", "through_environment"]);
+        assert_nil_checks_at(
+            &ws,
+            file_id,
+            &["replaced", "through_environment", "loop_value"],
+        );
     }
 
     #[test]
@@ -2652,5 +2641,81 @@ mod test {
             end
             "#
         ));
+    }
+
+    /// A loop that writes `nil` to a `string?` local widens its read as loop-carried, and the
+    /// widening once turned the `nil` inside `string?` into `unknown`: the read was `string`, so
+    /// `stale:upper()` went unreported, guarded or not, where 0.25.1 and upstream report it
+    /// (flow.md §7 W2, #72).
+    #[test]
+    fn test_loop_carried_nullable_keeps_its_nil() {
+        let mut ws = VirtualWorkspace::new();
+        for body in ["stale:upper()", "if run then stale:upper() end"] {
+            assert!(
+                !ws.has_no_diagnostic(
+                    DiagnosticCode::NeedCheckNil,
+                    &format!(
+                        r#"
+                        ---@param stale string?
+                        ---@param run boolean
+                        local function read(stale, run)
+                            while run do
+                                {body}
+                                stale = nil
+                            end
+                        end
+                        "#
+                    ),
+                ),
+                "{body}"
+            );
+        }
+    }
+
+    /// The loop-carried kind of `to` in a `find` loop is `integer?`, not a widened `number`: the
+    /// old `nil` -> `unknown` widening made `to + 1` a `number` and reported a fork-only
+    /// `param-type-mismatch` on `s:find(p, to + 1)` (lazy.nvim `view/text.lua`, reduced; #72).
+    #[test]
+    fn test_loop_carried_find_pair_keeps_integer_kind() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::ParamTypeMismatch,
+            r#"
+            ---@param s string
+            ---@param p string
+            local function f(s, p)
+                local from, to = s:find(p)
+                while from do
+                    print(from + 1, to + 1)
+                    from, to = s:find(p, to + 1)
+                end
+            end
+            "#
+        ));
+    }
+
+    /// A closure that only reads a local sees the value it has where the closure is created:
+    /// `prefix` is a `string` by then, though its declaration is `string?` (neovim `vim/text.lua`
+    /// `indent`, reduced; flow.md §7 W3, #72).
+    #[test]
+    fn test_closure_read_after_nil_is_ruled_out() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let source = r#"
+            ---@param text string
+            ---@param tabs boolean
+            local function f(text, tabs)
+                local prefix = tabs and ' ' or nil
+                for line in text:gmatch('[^\n]+') do
+                    prefix = prefix and prefix or line:sub(1, 1)
+                end
+                prefix = prefix and prefix or ' '
+                local function replace_line(line)
+                    return prefix:rep(2) .. line
+                end
+                return (text:gsub('[^\n]+', replace_line))
+            end
+            "#;
+        assert!(ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, source));
+        assert!(ws.has_no_diagnostic(DiagnosticCode::ParamTypeMismatch, source));
     }
 }

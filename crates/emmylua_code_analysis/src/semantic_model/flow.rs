@@ -161,8 +161,9 @@ fn type_of_decl_read_at(
 /// it in the first pass: `local s = false; for … do if s then … end; s = true end` reads `false`.
 /// When an enclosing loop assigns the local anywhere in its body (a later statement, or an
 /// earlier one in a sibling branch), the next pass may see that value: the read keeps its kind
-/// but not its exact value (`false` → `boolean`, `0` → `integer`, `nil`
-/// → `unknown`). Deliberately not a fixpoint: no body write is evaluated here.
+/// but not its exact value (`false` → `boolean`, `0` → `integer`, a bare `nil` → `unknown`; a
+/// `nil` beside other values, as in `string?`, stays). Deliberately not a fixpoint: no body write
+/// is evaluated here.
 ///
 /// Nor does a dynamic loop merge into the flow after it, so a read after the loop sees only the
 /// value from before it: `for … do if … then s = true end end; if s` reads `false`. A loop of the
@@ -205,11 +206,28 @@ fn widen_if_loop_carried(
     if carries { widen_loop_carried(ty) } else { ty }
 }
 
+/// A value's kind, standing in for the writes a read cannot see. It must not be narrower than the
+/// value: a `nil` beside other values reaches the read, so it stays (`string?` keeps its nil);
+/// only a bare `nil`, which says nothing about the unseen writes, becomes `unknown`.
+/// Changing what this keeps: read flow.md §7 first (W1–W3, #72).
 fn widen_loop_carried(ty: LuaType) -> LuaType {
+    match ty {
+        LuaType::Union(union) => LuaType::union(union.iter().cloned().map(|member| {
+            if member.is_nil() {
+                member
+            } else {
+                widen_kind(member)
+            }
+        })),
+        ty => widen_kind(ty),
+    }
+}
+
+fn widen_kind(ty: LuaType) -> LuaType {
     match ty {
         LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
         LuaType::Nil | LuaType::Never => LuaType::Unknown,
-        LuaType::Union(union) => LuaType::union(union.iter().cloned().map(widen_loop_carried)),
+        LuaType::Union(union) => widen_loop_carried(LuaType::Union(union)),
         ty => widen_const_type(ty),
     }
 }
@@ -2743,6 +2761,12 @@ fn decl_trace_key(
 /// The type a local has at its declaration. With no value and no declared type it reads nil on
 /// that path. A captured read may see any of the local's values, so it keeps only the kind; with
 /// no kind to keep (`local x`, `= nil`), it can be anything.
+///
+/// KNOWN UNSOUND (flow.md §7 W1/W3, #72): a captured read also turns a union's `nil` into
+/// `unknown`, as the shared widening once did, which the union mostly absorbs. The sound
+/// base is the local's type where the closure is created; the declaration is too early, so its
+/// `nil` is often one the code ruled out before the closure existed (W3). Dropping it hides that,
+/// and also hides a `nil` a closure really writes (W1).
 fn decl_position_type(
     model: &SemanticModel,
     facts: &semantic_db::facts::FileFacts,
@@ -2756,8 +2780,23 @@ fn decl_position_type(
     if !captured {
         return declared;
     }
-    match widen_loop_carried(widen_variadic_const(&declared)) {
+    match union_nil_to_unknown(widen_loop_carried(widen_variadic_const(&declared))) {
         LuaType::Unknown => LuaType::Any,
+        ty => ty,
+    }
+}
+
+/// A union's `nil` becomes `unknown`: `string?` → `string` where the union absorbs it, which it
+/// does not always do (`any|unknown|integer` stays). A bare `nil` stays: it is no union member.
+fn union_nil_to_unknown(ty: LuaType) -> LuaType {
+    match ty {
+        LuaType::Union(union) => LuaType::union(union.iter().cloned().map(|member| {
+            if member.is_nil() {
+                LuaType::Unknown
+            } else {
+                member
+            }
+        })),
         ty => ty,
     }
 }
