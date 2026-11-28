@@ -11,6 +11,7 @@ use emmylua_code_analysis::LuaType;
 use tera::Tera;
 
 use crate::OutputDestination;
+use crate::doc_links::DocLinkIndex;
 use crate::doc_model::{DocGlobal, DocModel, DocTypeKey};
 use crate::markdown_generator::escape_type_name;
 use types::{HtmlDoc, NavGroup, NavItem, NavModel, NavTreeNode};
@@ -48,6 +49,7 @@ pub fn generate_html(
     // Build a map of documented type full-names -> root-relative page hrefs so
     // signatures can link to them.
     let link_map = build_link_map(&model);
+    let doc_links = DocLinkIndex::build(&model);
 
     // Item pages live one level below the root, so links inside signatures use
     // the "../" prefix.
@@ -56,6 +58,7 @@ pub fn generate_html(
     let ctx = GenContext {
         model: &model,
         linker: &sub_linker,
+        links: &doc_links,
     };
 
     let mut pages: Vec<(String, HtmlDoc)> = Vec::new();
@@ -178,9 +181,15 @@ fn global_documented(global: &DocGlobal) -> bool {
 }
 
 fn sort_nav(nav: &mut NavModel) {
-    nav.types.sort_by(|a, b| a.name.cmp(&b.name));
-    nav.modules.sort_by(|a, b| a.name.cmp(&b.name));
-    nav.globals.sort_by(|a, b| a.name.cmp(&b.name));
+    // Type display names carry a `class ` / `enum ` / `alias ` prefix, so sort
+    // by the bare name first; `kind` keeps same-named items deterministic.
+    nav.types.sort_by(|a, b| {
+        a.short_name
+            .cmp(&b.short_name)
+            .then_with(|| a.kind.cmp(&b.kind))
+    });
+    nav.modules.sort_by(|a, b| a.short_name.cmp(&b.short_name));
+    nav.globals.sort_by(|a, b| a.short_name.cmp(&b.short_name));
 }
 
 /// Fills the `kind_letter` badge field on every nav item.
@@ -238,9 +247,18 @@ fn build_groups(items: &[NavItem]) -> Vec<NavGroup> {
             None => groups.push((letter, vec![item.clone()])),
         }
     }
+    // Items arrive sorted, but sort again so group creation never depends on
+    // the caller's ordering. Keep `#` (non-alphabetic names) first, like the
+    // type tree sidebar.
+    groups.sort_by(|(a, _), (b, _)| a.cmp(b));
     groups
         .into_iter()
-        .map(|(letter, group_items)| {
+        .map(|(letter, mut group_items)| {
+            group_items.sort_by(|a, b| {
+                a.short_name
+                    .cmp(&b.short_name)
+                    .then_with(|| a.kind.cmp(&b.kind))
+            });
             let open = group_items.iter().any(|item| item.active);
             let anchor = if letter == "#" {
                 "num".to_string()

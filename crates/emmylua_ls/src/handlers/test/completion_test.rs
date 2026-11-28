@@ -3256,6 +3256,53 @@ items.<??>
     }
 
     #[gtest]
+    fn test_member_completion_merges_stdlib_with_workspace_class() -> Result<()> {
+        // (global module name, a member declared by the stdlib module)
+        let modules = [
+            ("os", "date"),
+            ("table", "insert"),
+            ("math", "abs"),
+            ("io", "open"),
+            ("package", "searchpath"),
+            ("coroutine", "create"),
+            ("debug", "traceback"),
+            ("utf8", "len"),
+            // The stdlib class has the same name as the global here.
+            ("string", "format"),
+        ];
+        for with_assignment in [false, true] {
+            let mut ws = ProviderVirtualWorkspace::new_with_init_std_lib();
+            let mut sources = Vec::new();
+            for (module, _) in modules {
+                let mut source =
+                    format!("---@meta\n---@class {module}\n---@field custom_extra fun(): string\n");
+                if with_assignment {
+                    source.push_str(&format!("\n---@type {module}\n{module} = {{}}\n"));
+                }
+                ws.def_file(&format!("{module}.lua"), &source);
+                sources.push((module, source));
+            }
+
+            for ((module, std_member), (_, source)) in modules.into_iter().zip(sources) {
+                let items = get_completion_items(
+                    &mut ws,
+                    &format!("{module}.<??>"),
+                    CompletionTriggerKind::INVOKED,
+                )?;
+                let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+                for expected in [std_member, "custom_extra"] {
+                    assert!(
+                        labels.contains(&expected),
+                        "missing {expected} after `{module}.` \
+                         (assignment: {with_assignment})\nstub:\n{source}\nlabels: {labels:?}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[gtest]
     fn test_doc_alias_type_completion() -> Result<()> {
         let mut ws = ProviderVirtualWorkspace::new();
         ws.def_file(
@@ -3303,6 +3350,100 @@ items.<??>
                     ..Default::default()
                 }],
             ));
+        }
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_intra_doc_link_completion() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file(
+            "widget.lua",
+            "---@class Widget
+---@field name string",
+        );
+        check!(ws.check_completion(
+            r#"
+                --- See [`Wid<??>`].
+            "#,
+            vec![
+                VirtualCompletionItem {
+                    label: "Widget".to_string(),
+                    kind: CompletionItemKind::CLASS,
+                    ..Default::default()
+                },
+                VirtualCompletionItem {
+                    label: "virtual_0".to_string(),
+                    kind: CompletionItemKind::FILE,
+                    ..Default::default()
+                },
+                VirtualCompletionItem {
+                    label: "widget".to_string(),
+                    kind: CompletionItemKind::FILE,
+                    ..Default::default()
+                },
+            ],
+        ));
+        Ok(())
+    }
+
+    #[gtest]
+    fn test_intra_doc_link_member_completion() -> Result<()> {
+        let mut ws = ProviderVirtualWorkspace::new();
+        ws.def_file(
+            "types.lua",
+            "---@class Widget
+---@field name string",
+        );
+        ws.def_file(
+            "fio.lua",
+            r#"
+local fio = {}
+function fio.open() end
+return fio
+"#,
+        );
+        ws.def_file(
+            "globals.lua",
+            r#"
+g_config = {}
+function g_config.get() end
+"#,
+        );
+
+        for (block, expected) in [
+            (
+                r#"
+                    --- See [`Widget.n<??>`].
+                "#,
+                vec![VirtualCompletionItem {
+                    label: "name".to_string(),
+                    kind: CompletionItemKind::VARIABLE,
+                    ..Default::default()
+                }],
+            ),
+            (
+                r#"
+                    --- See [`fio.<??>`].
+                "#,
+                vec![VirtualCompletionItem {
+                    label: "open".to_string(),
+                    kind: CompletionItemKind::FUNCTION,
+                    label_detail: Some("()".to_string()),
+                }],
+            ),
+            (
+                r#"
+                    --- See [`g_config.<??>`].
+                "#,
+                vec![VirtualCompletionItem {
+                    label: "get".to_string(),
+                    kind: CompletionItemKind::FUNCTION,
+                    label_detail: Some("()".to_string()),
+                }],
+            ),
+        ] {
+            check!(ws.check_completion(block, expected), "block: {block}");
         }
         Ok(())
     }

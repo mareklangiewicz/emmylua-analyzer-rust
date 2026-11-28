@@ -206,6 +206,280 @@ mod test {
         assert_eq!(actual, expected, "{diagnostics:#?}");
     }
 
+    #[track_caller]
+    fn assert_nil_checks_at(ws: &VirtualWorkspace, file_id: FileId, expected: &[&str]) {
+        let model = ws.analysis.semantic_model(file_id);
+        let document = model.document_current().expect("test document");
+        let diagnostics = ws
+            .analysis
+            .diagnose_file(file_id, CancellationToken::new())
+            .expect("diagnostics");
+        let code = Some(NumberOrString::String(
+            DiagnosticCode::NeedCheckNil.get_name().to_string(),
+        ));
+        let mut ranges = diagnostics
+            .iter()
+            .filter(|d| d.code == code)
+            .map(|d| document.to_rowan_range(d.range).expect("diagnostic range"))
+            .collect::<Vec<_>>();
+        ranges.sort_by_key(|range| range.start());
+        let actual = ranges
+            .into_iter()
+            .map(|range| document.get_text_slice(range))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn test_pairs_only_yields_stored_values() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@class Entry
+            ---@field name string
+
+            ---@param entries table<string, Entry?>
+            ---@param key string
+            local function read(entries, key)
+                for _, entry in pairs(entries) do
+                    visited = entry
+                    print(entry.name)
+                end
+
+                local iterate = pairs
+                for _, entry in iterate(entries) do
+                    print(entry.name)
+                end
+
+                -- A lookup can still miss.
+                print(entries[key].name)
+            end
+            "#,
+        );
+        assert_nil_checks_at(&ws, file_id, &["entries[key]"]);
+        assert_eq!(ws.expr_ty("visited"), ws.ty("Entry"));
+    }
+
+    #[test]
+    fn test_pairs_keeps_nil_from_custom_iterators() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@return integer?, { name: string }?
+            local function step(_, previous)
+                if not previous then return 1, nil end
+                return nil, nil
+            end
+
+            for _, direct in step do
+                print(direct.name)
+            end
+
+            ---@return fun(t: table, previous: integer?): integer?, { name: string }?
+            ---@return table
+            ---@return nil
+            local function pairs(t)
+                return step, t, nil
+            end
+            for _, shadowed in pairs({}) do
+                print(shadowed.name)
+            end
+            "#,
+        );
+        assert_nil_checks_at(&ws, file_id, &["direct", "shadowed"]);
+    }
+
+    #[test]
+    fn test_shadowed_next_and_ipairs_use_their_own_iterators() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@class Entries
+            local mt = {}
+
+            ---@return fun(): integer?, { name: string }
+            function mt:__pairs() end
+
+            ---@return fun(): integer?, { name: string }
+            function mt:__ipairs() end
+
+            ---@return integer?, { name: string }?
+            local function step(_, previous)
+                if not previous then return 1, nil end
+                return nil, nil
+            end
+
+            ---@return fun(t: table, previous: integer?): integer?, { name: string }?
+            ---@return table
+            local function replacement(t)
+                return step, t
+            end
+
+            local next = replacement
+            local ipairs = replacement
+
+            ---@param entries Entries
+            local function read(entries)
+                for _, by_next in next(entries) do
+                    print(by_next.name)
+                end
+                for _, by_ipairs in ipairs(entries) do
+                    print(by_ipairs.name)
+                end
+            end
+            "#,
+        );
+        assert_nil_checks_at(&ws, file_id, &["by_next", "by_ipairs"]);
+    }
+
+    #[test]
+    fn test_pairs_keeps_nil_from_metamethod() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            local mt = {}
+
+            ---@return integer?, { name: string }?
+            local function step(_, previous)
+                if not previous then return 1, nil end
+                return nil, nil
+            end
+
+            ---@return fun(t: table, previous: integer?): integer?, { name: string }?
+            ---@return table
+            ---@return nil
+            function mt:__pairs()
+                return step, self, nil
+            end
+
+            for _, entry in pairs(setmetatable({}, mt)) do
+                print(entry.name)
+            end
+
+            ---@type table<integer, { name: string }?>
+            local entries = {}
+            for _, inline in pairs(setmetatable(entries, mt)) do
+                print(inline.name)
+            end
+
+            ---@type table<integer, { name: string }?>
+            local assigned = setmetatable({}, mt)
+            for _, initialized in pairs(assigned) do
+                print(initialized.name)
+            end
+
+            ---@type table<integer, { name: string }?>
+            local changed = {}
+            for _, before_attachment in pairs(changed) do
+                print(before_attachment.name)
+            end
+
+            setmetatable(changed, mt)
+            for _, attached in pairs(changed) do
+                print(attached.name)
+            end
+
+            ---@param values table<integer, { name: string }?>
+            ---@param unknown_mt table
+            local function read(values, unknown_mt)
+                local decorated = setmetatable(values, mt)
+                for _, forwarded in pairs(decorated) do
+                    print(forwarded.name)
+                end
+
+                for _, unknown in pairs(setmetatable(values, unknown_mt)) do
+                    print(unknown.name)
+                end
+            end
+            "#,
+        );
+        assert_nil_checks_at(
+            &ws,
+            file_id,
+            &[
+                "entry",
+                "inline",
+                "initialized",
+                "attached",
+                "forwarded",
+                "unknown",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_pairs_uses_the_metatables_stored_fields() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@class Entry
+            ---@field name string
+
+            local mt = setmetatable({}, {
+                ---@return (fun(): (fun(): integer, Entry?))
+                __index = function()
+                    return function()
+                        return function() return 1, nil end
+                    end
+                end,
+            })
+
+            ---@type table<integer, Entry>
+            local entries = setmetatable({ { name = 'stored' } }, mt)
+            for _, entry in pairs(entries) do
+                print(entry.name)
+            end
+            "#,
+        );
+        assert_nil_checks_at(&ws, file_id, &[]);
+    }
+
+    #[test]
+    fn test_pairs_metatable_follows_aliases_and_branches() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@return integer?, { name: string }?
+            local function step(_, previous)
+                if not previous then return 1, nil end
+                return nil, nil
+            end
+
+            local mt = {}
+            ---@return fun(t: table, previous: integer?): integer?, { name: string }?
+            ---@return table
+            ---@return nil
+            function mt:__pairs()
+                return step, self, nil
+            end
+
+            ---@param flag boolean
+            local function read(flag)
+                ---@type table<integer, { name: string }>
+                local entries = { { name = "stored" } }
+                local alias = entries
+                local attach = setmetatable
+                if flag then
+                    assert(attach(alias, mt))
+                    for _, attached in pairs(entries) do print(attached.name) end
+                else
+                    for _, plain in pairs(entries) do print(plain.name) end
+                end
+
+                for _, merged in pairs(entries) do print(merged.name) end
+
+                setmetatable(alias, nil)
+                for _, cleared in pairs(entries) do print(cleared.name) end
+
+                if attach(alias, mt) then
+                    for _, conditioned in pairs(entries) do print(conditioned.name) end
+                end
+            end
+            "#,
+        );
+        assert_nil_checks_at(&ws, file_id, &["attached", "merged", "conditioned"]);
+    }
+
     #[test]
     fn test_dynamic_index_uses_metatable_value() {
         let mut ws = VirtualWorkspace::new_with_init_std_lib();
@@ -623,6 +897,431 @@ mod test {
             "#,
         );
         assert_nil_checks(&ws, file_id, 0);
+    }
+
+    #[test]
+    fn test_type_guards_follow_the_builtin_function() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@param aliased string?
+            ---@param reassigned string?
+            local function check_alias(aliased, reassigned)
+                local classify = type
+                if classify(aliased) == 'string' then aliased:upper() end
+
+                local kind = classify(aliased)
+                if kind == 'string' then aliased:upper() end
+
+                local is_string = classify(aliased) == 'string'
+                if is_string then aliased:upper() end
+
+                classify = function(_) return 'string' end
+                if classify(reassigned) == 'string' then reassigned:upper() end
+            end
+
+            local function type(_) return 'string' end
+
+            ---@param shadowed string?
+            local function check_shadowing(shadowed)
+                if type(shadowed) == 'string' then shadowed:upper() end
+
+                local kind = type(shadowed)
+                if kind == 'string' then shadowed:upper() end
+
+                local is_other = type(shadowed) ~= 'string'
+                if is_other then return end
+                shadowed:upper()
+            end
+            "#,
+        );
+
+        assert_nil_checks_at(
+            &ws,
+            file_id,
+            &["reassigned", "shadowed", "shadowed", "shadowed"],
+        );
+    }
+
+    #[test]
+    fn test_saved_type_guards_keep_nil_after_writes() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@param by_kind string?
+            ---@param by_flag string?
+            ---@param changed string?
+            ---@param unchanged string?
+            ---@param replacement string?
+            local function read(by_kind, by_flag, changed, unchanged, replacement)
+                local classify = type
+                local kind = classify(by_kind)
+                kind = 'string'
+                if kind == 'string' then by_kind:upper() end
+
+                local flag = classify(by_flag) == 'string'
+                flag = true
+                if flag then by_flag:upper() end
+
+                local function replace() changed = replacement end
+                local was_string = classify(changed) == 'string'
+                replace()
+                if was_string then changed:upper() end
+
+                unchanged = replacement
+                local saved_kind = classify(unchanged)
+                classify = function(_) return 'number' end
+                if saved_kind == 'string' then unchanged:upper() end
+                unchanged = replacement
+            end
+            "#,
+        );
+
+        assert_nil_checks_at(&ws, file_id, &["by_kind", "by_flag", "changed"]);
+    }
+
+    #[test]
+    fn test_saved_type_guard_keeps_correlated_nil_after_write() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@param flag boolean
+            ---@return string | integer, string?
+            ---@return_overload string, string
+            ---@return_overload integer, nil
+            local function pick(flag)
+                if flag then return 'tag', 'text' end
+                return 1, nil
+            end
+
+            ---@param flag boolean
+            local function read(flag)
+                local classify = type
+                local tag, result = pick(flag)
+                local kind = classify(tag)
+                kind = 'string'
+                if kind == 'string' then result:upper() end
+            end
+            "#,
+        );
+
+        assert_nil_checks_at(&ws, file_id, &["result"]);
+    }
+
+    #[test]
+    fn test_saved_type_guard_keeps_all_table_return_rows() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        ws.def(
+            r#"
+            ---@class GuardRecord
+            ---@field name string
+
+            ---@param table_row boolean
+            ---@param record_row boolean
+            ---@return table | GuardRecord | string, string?
+            ---@return_overload table, string
+            ---@return_overload GuardRecord, nil
+            ---@return_overload string, string
+            local function pick(table_row, record_row)
+                if table_row then return {}, 'text' end
+                if record_row then
+                    ---@type GuardRecord
+                    local tag = { name = 'name' }
+                    return tag, nil
+                end
+                return 'tag', 'text'
+            end
+
+            ---@param table_row boolean
+            ---@param record_row boolean
+            local function read(table_row, record_row)
+                local classify = type
+                local tag, result = pick(table_row, record_row)
+                local kind = classify(tag)
+                if kind == 'table' then
+                    table_result = result
+                else
+                    string_result = result
+                end
+            end
+            "#,
+        );
+
+        assert_eq!(ws.expr_ty("table_result"), ws.ty("string?"));
+        assert_eq!(ws.expr_ty("string_result"), ws.ty("string"));
+    }
+
+    #[test]
+    fn test_saved_type_guard_tracks_loop_writes() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@param refreshed string?
+            ---@param stale string?
+            ---@param after_loop string?
+            ---@param run boolean
+            local function read(refreshed, stale, after_loop, run)
+                local classify = type
+                local stale_kind = classify(stale)
+                local before_loop = classify(after_loop)
+
+                while run do
+                    local fresh_kind = classify(refreshed)
+                    if fresh_kind == 'string' then refreshed:upper() end
+                    if stale_kind == 'string' then stale:upper() end
+                    refreshed = nil
+                    stale = nil
+                    after_loop = nil
+                end
+
+                if before_loop == 'string' then after_loop:upper() end
+            end
+            "#,
+        );
+
+        assert_nil_checks_at(&ws, file_id, &["stale", "after_loop"]);
+    }
+
+    #[test]
+    fn test_saved_type_guard_follows_loop_exits() {
+        for header in [
+            "while run do",
+            "for _ = 1, count do",
+            "for _ in pairs(entries) do",
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file_id = ws.def(&format!(
+                r#"
+                ---@param on_other_branch string?
+                ---@param on_return string?
+                ---@param on_break string?
+                ---@param stop boolean
+                ---@param run boolean
+                ---@param count integer
+                ---@param entries table
+                local function read(on_other_branch, on_return, on_break, stop, run, count, entries)
+                    local classify = type
+                    local branch_kind = classify(on_other_branch)
+                    if stop then
+                        {header}
+                            on_other_branch = nil
+                            break
+                        end
+                        return
+                    end
+                    if branch_kind == 'string' then on_other_branch:upper() end
+
+                    local return_kind = classify(on_return)
+                    {header}
+                        on_return = nil
+                        return
+                    end
+                    if return_kind == 'string' then on_return:upper() end
+
+                    local break_kind = classify(on_break)
+                    {header}
+                        on_break = nil
+                        break
+                    end
+                    if break_kind == 'string' then on_break:upper() end
+                end
+                "#,
+            ));
+
+            assert_nil_checks_at(&ws, file_id, &["on_break"]);
+        }
+    }
+
+    #[test]
+    fn test_saved_type_guard_follows_loop_back_edges() {
+        for (header, footer) in [
+            ("for _ in pairs(entries) do", "end"),
+            ("repeat", "until done"),
+        ] {
+            let mut ws = VirtualWorkspace::new_with_init_std_lib();
+            let file_id = ws.def(&format!(
+                r#"
+                ---@param stale string?
+                ---@param refreshed string?
+                ---@param entries table
+                ---@param done boolean
+                local function read(stale, refreshed, entries, done)
+                    local kind = type(stale)
+                    {header}
+                        if kind == 'string' then stale:upper() end
+                        stale = nil
+                    {footer}
+
+                    {header}
+                        local fresh_kind = type(refreshed)
+                        if fresh_kind == 'string' then refreshed:upper() end
+                        refreshed = nil
+                    {footer}
+                end
+                "#,
+            ));
+
+            assert_nil_checks_at(&ws, file_id, &["stale"]);
+        }
+    }
+
+    #[test]
+    fn test_saved_type_guard_follows_goto_paths() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@param forward string?
+            ---@param indirect string?
+            ---@param skipped string?
+            ---@param run boolean
+            local function read(forward, indirect, skipped, run)
+                local forward_kind = type(forward)
+                while run do
+                    goto write
+                    ::write::
+                    forward = nil
+                    break
+                end
+                if forward_kind == 'string' then forward:upper() end
+
+                local indirect_kind = type(indirect)
+                while run do
+                    goto start
+                    ::write::
+                    indirect = nil
+                    goto leave
+                    ::start::
+                    goto write
+                    ::leave::
+                    break
+                end
+                if indirect_kind == 'string' then indirect:upper() end
+
+                local skipped_kind = type(skipped)
+                while run do
+                    goto leave
+                    ::unused::
+                    skipped = nil
+                    ::leave::
+                    break
+                end
+                if skipped_kind == 'string' then skipped:upper() end
+            end
+            "#,
+        );
+
+        assert_nil_checks_at(&ws, file_id, &["forward", "indirect"]);
+    }
+
+    #[test]
+    fn test_saved_type_guard_ignores_writes_in_unused_local_function() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@param value string?
+            local function read(value)
+                local kind = type(value)
+                local function unused() value = nil end
+                if kind == 'string' then value:upper() end
+            end
+            "#,
+        );
+
+        assert_nil_checks_at(&ws, file_id, &[]);
+    }
+
+    #[test]
+    fn test_saved_nil_check_narrows_global() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            ---@type string?
+            value = nil
+
+            local function read()
+                local present = value ~= nil
+                if present then value:upper() end
+            end
+            "#,
+        ));
+    }
+
+    #[test]
+    fn test_saved_type_guard_tracks_global_writes() {
+        let mut ws = VirtualWorkspace::new_with_init_std_lib();
+        let file_id = ws.def(
+            r#"
+            ---@param optional string?
+            ---@param run boolean
+            local function read(optional, run)
+                unchanged = optional
+                local unchanged_kind = type(unchanged)
+                if unchanged_kind == 'string' then unchanged:upper() end
+
+                replaced = optional
+                local old_kind = type(replaced)
+                replaced = nil
+                if old_kind == 'string' then replaced:upper() end
+
+                through_environment = optional
+                local classify = type
+                local environment_kind = classify(through_environment)
+                _G.through_environment = nil
+                if environment_kind == 'string' then through_environment:upper() end
+
+                loop_value = optional
+                local before_loop = classify(loop_value)
+                while run do loop_value = nil; break end
+                if before_loop == 'string' then loop_value:upper() end
+            end
+            "#,
+        );
+
+        assert_nil_checks_at(
+            &ws,
+            file_id,
+            &["replaced", "through_environment", "loop_value"],
+        );
+    }
+
+    #[test]
+    fn test_type_guard_comparison_operators() {
+        for (operator, when_true, when_false) in [
+            ("==", "string", "nil"),
+            ("~=", "nil", "string"),
+            ("<", "string?", "string?"),
+            ("<=", "string?", "string?"),
+            (">", "string?", "string?"),
+            (">=", "string?", "string?"),
+        ] {
+            for (setup, left, right) in [
+                ("", "type(value)", "'string'"),
+                ("local classify = type", "('string')", "(classify(value))"),
+                ("local kind = type(value)", "kind", "'string'"),
+            ] {
+                let mut ws = VirtualWorkspace::new_with_init_std_lib();
+                ws.def(&format!(
+                    r#"
+                    ---@param value string?
+                    local function compare(value)
+                        {setup}
+                        if {left} {operator} {right} then
+                            on_true = value
+                        else
+                            on_false = value
+                        end
+                    end
+                    "#,
+                ));
+
+                assert_eq!(
+                    (ws.expr_ty("on_true"), ws.expr_ty("on_false")),
+                    (ws.ty(when_true), ws.ty(when_false)),
+                    "{left} {operator} {right}",
+                );
+            }
+        }
     }
 
     #[test]
@@ -1855,6 +2554,75 @@ mod test {
         ));
         // A name keeps its flow type: a local from a result list, guarded, is not nil again
         // (blink.cmp `docs.lua`, reduced; projecting names reported both operands on main).
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            --- @param lines string[]
+            --- @return number?, number?
+            function docs.get_code_block_range(lines, row)
+            end
+            function docs.extract_detail_from_doc(detail, documentation)
+              local doc_lines = docs.split_lines(documentation)
+              local code_block_start, code_block_end = docs.get_code_block_range(doc_lines, detail_line)
+              if code_block_start ~= nil and code_block_end ~= nil then
+                detail_lines = vim.list_slice(doc_lines, code_block_start + 1, code_block_end - 1)
+              end
+            end
+            function docs.split_lines(text)
+            end
+            "#
+        ));
+    }
+
+    fn nil_messages(source: &str) -> Vec<String> {
+        check_source(source)
+            .into_iter()
+            .filter(|d| d.code == DiagnosticCode::NeedCheckNil)
+            .map(|d| d.message)
+            .collect()
+    }
+
+    /// A length is never nil, so arithmetic on it adds nothing: `#w - 1` reports `w`, not `#w`.
+    #[test]
+    fn test_arithmetic_on_length_reports_the_operand_once() {
+        let source = r#"
+            ---@param w string?
+            local function f(w) return #w - 1 end
+            return f
+        "#;
+        assert_eq!(nil_messages(source), vec!["w may be nil".to_string()]);
+    }
+
+    /// A call that may return nothing is a nilable arithmetic operand: its first result slot
+    /// decides, as in the VM's operands. Read raw, `(integer?,integer?,string?...)` hid its nil
+    /// (`s:find(..) + 1`), while the parenthesized `(s:find(..)) + 1` was reported.
+    #[test]
+    fn test_call_that_may_return_nothing_may_be_nil_as_an_operand() {
+        let mut ws = VirtualWorkspace::new();
+        let maybe = r#"
+            local function g(x)
+              if x then
+                return 1
+              end
+            end
+        "#;
+        for use_ in ["print(g(1) + 1)", "print(-g(1))"] {
+            assert!(
+                !ws.has_no_diagnostic(DiagnosticCode::NeedCheckNil, &format!("{maybe}\n{use_}")),
+                "{use_}"
+            );
+        }
+        assert!(ws.has_no_diagnostic(
+            DiagnosticCode::NeedCheckNil,
+            r#"
+            local function h()
+              return 1
+            end
+            print(h() + 1, -h())
+            "#
+        ));
+        // A name keeps its flow type: a local from a result list, guarded, is not nil again
+        // (blink.cmp `docs.lua`, reduced; projecting names reported both operands here).
         assert!(ws.has_no_diagnostic(
             DiagnosticCode::NeedCheckNil,
             r#"

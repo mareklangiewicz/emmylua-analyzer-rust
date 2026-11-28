@@ -1,12 +1,13 @@
 #[cfg(test)]
 mod test {
+    use crate::check;
     use crate::{DiagnosticCode, VirtualWorkspace};
     use lsp_types::NumberOrString;
     use tokio_util::sync::CancellationToken;
 
     #[test]
     fn test_vararg_first_function_is_callable() {
-        let diagnostics = crate::check::test::check_source(
+        let diagnostics = check::test::check_source(
             r#"
             ---@param ... fun(value: integer): integer
             local function apply(...)
@@ -23,7 +24,7 @@ mod test {
     /// progress; the answer was cached, so the later checkers saw an untyped `w`.
     #[test]
     fn test_closure_arg_param_typed_after_param_type_check() {
-        let diagnostics = crate::check::test::check_source(
+        let diagnostics = check::test::check_source(
             r#"
             ---@param f fun(prev: integer): integer?
             local function plain(f) return f(1) end
@@ -38,7 +39,7 @@ mod test {
         "#,
         );
         assert_eq!(
-            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
+            check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
             2,
             "{diagnostics:#?}"
         );
@@ -46,7 +47,7 @@ mod test {
 
     #[test]
     fn test_vararg_first_function_checks_arguments() {
-        let diagnostics = crate::check::test::check_source(
+        let diagnostics = check::test::check_source(
             r#"
             ---@param ... fun(value: integer): integer
             local function apply(...)
@@ -56,18 +57,18 @@ mod test {
         "#,
         );
         assert_eq!(
-            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
+            check::test::count_by_code(&diagnostics, DiagnosticCode::ParamTypeMismatch),
             1
         );
         assert_eq!(
-            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
+            check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
             0
         );
     }
 
     #[test]
     fn test_vararg_first_number_is_not_callable() {
-        let diagnostics = crate::check::test::check_source(
+        let diagnostics = check::test::check_source(
             r#"
             ---@param ... integer
             local function apply(...)
@@ -77,7 +78,7 @@ mod test {
         "#,
         );
         assert_eq!(
-            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
+            check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
             1
         );
     }
@@ -503,7 +504,7 @@ mod test {
     /// #1334: a `table<string, integer>` read is `integer`, which is not callable.
     #[test]
     fn test_index_signature_value_is_not_callable() {
-        let diagnostics = crate::check::test::check_source(
+        let diagnostics = check::test::check_source(
             r#"
             ---@param pt table<string, integer>
             local function g(pt)
@@ -513,7 +514,7 @@ mod test {
         "#,
         );
         assert_eq!(
-            crate::check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
+            check::test::count_by_code(&diagnostics, DiagnosticCode::CallNonCallable),
             1
         );
     }

@@ -392,6 +392,10 @@ impl<'db> SemanticModel<'db> {
     }
     /// 表达式所在词法作用域内的泛型约束, 同名声明由内向外遮蔽.
     pub(crate) fn generic_constraint_at(&self, ty: &LuaType, expr: &LuaExpr) -> Option<LuaType> {
+        // A template carries its own constraint (the fork types a generic param as its `TplRef`).
+        if let LuaType::TplRef(tpl) = ty {
+            return tpl.get_param().constraint.clone();
+        }
         let (LuaType::Ref(id) | LuaType::Def(id)) = ty else {
             return None;
         };
@@ -527,33 +531,30 @@ impl<'db> SemanticModel<'db> {
             .position(|var| var.get_name_text() == decl.name.as_str())?;
         let iter_expr = stat.get_expr_list().next()?;
 
-        // Standard `pairs(x)` / `ipairs(x)` / `next(x)`.
-        if let LuaExpr::CallExpr(call) = &iter_expr
-            && let LuaExpr::NameExpr(name_expr) = call.get_prefix_expr()?
-            && let Some(name) = name_expr.get_name_text()
-            && matches!(name.as_str(), "pairs" | "ipairs" | "next")
-        {
-            let arg = call.get_args_list()?.get_args().next()?;
-            let arg_ty = self.type_of_expr(arg.get_syntax_id());
-            let member = if name.as_str() == "ipairs" {
-                "__ipairs"
-            } else {
-                "__pairs"
-            };
-            // 1. Custom `__pairs` / `__ipairs`.
-            if let Some(gen_ty) =
-                self.member_type(&arg_ty, &LuaMemberKey::Name(SmolStr::new(member)))
-                && let LuaType::DocFunction(generator) = gen_ty
-            {
-                if let Some(slot) = generator.get_ret().get_result_slot_type(index) {
+        if let LuaExpr::CallExpr(call) = &iter_expr {
+            let callee = call.get_prefix_expr()?;
+            if self.resolves_to_builtin(callee.clone(), "pairs").is_some() {
+                let table = call.get_args_list()?.get_args().next()?;
+                return self.infer_pairs_slot(&table, index);
+            }
+
+            if self.resolves_to_builtin(callee, "ipairs").is_some() {
+                let arg = call.get_args_list()?.get_args().next()?;
+                let arg_ty = self.type_of_expr_node(&arg);
+                let key = LuaMemberKey::Name(SmolStr::new("__ipairs"));
+                if let Some(LuaType::DocFunction(generator)) = self.member_type(&arg_ty, &key)
+                    && let Some(slot) = generator.get_ret().get_result_slot_type(index)
+                {
                     return Some(slot);
                 }
+                let callee = self.global_decl("ipairs").filter(
+                    |decl| matches!(decl, SemanticId::Decl(key) if self.is_std_file(key.file_id)),
+                );
+                // `ipairs` stops at the first nil, so neither slot is nil.
+                return self
+                    .infer_standard_iter_slot(callee, &arg_ty, index)
+                    .map(remove_nil_from_type);
             }
-            // 2. Standard global pairs/ipairs: bind K/V from the parameter structure, then take the return function slot.
-            // `pairs`/`next` skip nil values and `ipairs` stops at the first, so no slot is nil.
-            return self
-                .infer_standard_iter_slot(call.get_prefix_expr()?.clone(), &arg_ty, index)
-                .map(remove_nil_from_type);
         }
 
         // Generic iterator functions: `for k in test()` / `for k in iter_fn`.
@@ -613,27 +614,127 @@ impl<'db> SemanticModel<'db> {
         } else {
             iter_fun.get_ret().clone()
         };
-        let slot = ret.get_result_slot_type(index)?;
+        let mut slot = ret.get_result_slot_type(index)?;
+        // A custom `pairs` signature can leave K/V unbound for an indexed table.
+        if slot.contain_tpl()
+            && let LuaExpr::CallExpr(call) = &iter_expr
+            && let LuaExpr::NameExpr(callee) = call.get_prefix_expr()?
+            && callee.get_name_text().as_deref() == Some("pairs")
+            && let Some(table) = call.get_args_list()?.get_args().next()
+        {
+            let table_ty = self.type_of_expr(table.get_syntax_id());
+            let callee = self.resolve_name(callee.get_position());
+            if let Some(bound) = self.infer_standard_iter_slot(callee, &table_ty, index) {
+                slot = bound;
+            }
+        }
+        let slot = type_eval::expand_alias_head(self, &slot)?;
         if index == 0 {
             Some(remove_nil_from_type(slot))
         } else {
             Some(slot)
         }
     }
-    /// Standard `pairs(x)` / `ipairs(x)`: take the type from the inner slot of the global function signature's return function.
-    pub(crate) fn infer_standard_iter_slot(
+    fn infer_pairs_slot(&self, table: &LuaExpr, index: usize) -> Option<LuaType> {
+        let table_ty = self.type_of_expr_node(table);
+        let literal = match &table_ty {
+            LuaType::TableConst(literal) => Some(literal),
+            _ => None,
+        };
+        let metatable = member::metatable_type(self, Some(table), literal);
+        if let Some(LuaType::Union(alternatives)) = &metatable {
+            let slots = alternatives
+                .iter()
+                .map(|meta| self.infer_pairs_slot_with_metatable(&table_ty, Some(meta), index))
+                .collect::<Option<Vec<_>>>()?;
+            return Some(LuaType::from_vec(slots));
+        }
+        self.infer_pairs_slot_with_metatable(&table_ty, metatable.as_ref(), index)
+    }
+
+    fn infer_pairs_slot_with_metatable(
         &self,
-        callee: LuaExpr,
+        table_ty: &LuaType,
+        metatable: Option<&LuaType>,
+        index: usize,
+    ) -> Option<LuaType> {
+        let key = LuaMemberKey::Name(SmolStr::new("__pairs"));
+        let receiver =
+            metatable.or_else(|| (!matches!(table_ty, LuaType::TableConst(_))).then_some(table_ty));
+        let generator = receiver
+            .and_then(|ty| match ty {
+                // Lua reads the metatable's stored field directly.
+                LuaType::TableConst(_) => member::direct_member_info(self, ty, &key),
+                _ => self.member_info(ty, &key),
+            })
+            .filter(|info| !info.typ.is_nil());
+        if let (Some(receiver), Some(generator)) = (receiver, &generator) {
+            let slot = self.infer_pairs_metamethod_slot(receiver, generator, index);
+            if slot.is_some() || metatable.is_none() {
+                return slot;
+            }
+        }
+
+        let callee = self
+            .global_decl("pairs")
+            .filter(|decl| matches!(decl, SemanticId::Decl(key) if self.is_std_file(key.file_id)));
+        let slot = self.infer_standard_iter_slot(callee, table_ty, index)?;
+        // The default iterator visits stored entries. Assigning nil removes an entry.
+        let default_iterator = generator.is_none()
+            && matches!(
+                metatable,
+                None | Some(LuaType::Nil | LuaType::TableConst(_) | LuaType::Object(_))
+            );
+        Some(if index == 1 && default_iterator {
+            remove_nil_from_type(slot)
+        } else {
+            slot
+        })
+    }
+
+    fn infer_pairs_metamethod_slot(
+        &self,
+        receiver: &LuaType,
+        generator: &member::MemberInfo,
+        index: usize,
+    ) -> Option<LuaType> {
+        let ret = match &generator.typ {
+            LuaType::DocFunction(fun) => fun.get_ret().clone(),
+            LuaType::Function => {
+                let file = generator.file_id?;
+                let member = self
+                    .file_facts_of(file)?
+                    .member_by_id(generator.id.as_ref()?)?;
+                let ret = self
+                    .type_of_signature_in_file(file, member.value_syntax?)?
+                    .get_ret()
+                    .clone();
+                type_eval::class_generic_map(self, receiver)
+                    .map(|bindings| substitute_named_refs(&ret, &bindings))
+                    .unwrap_or(ret)
+            }
+            _ => return None,
+        };
+        // The first result is the iterator. Its second result can be nil.
+        let iterator = type_eval::expand_alias_head(self, &ret.get_result_slot_type(0)?)?;
+        let LuaType::DocFunction(iterator) = iterator else {
+            return None;
+        };
+        let slot = iterator.get_ret().get_result_slot_type(index)?;
+        Some(if index == 0 {
+            remove_nil_from_type(slot)
+        } else {
+            slot
+        })
+    }
+
+    /// Take a slot from the iterator returned by the standard function signature.
+    fn infer_standard_iter_slot(
+        &self,
+        callee: Option<SemanticId>,
         arg_ty: &LuaType,
         index: usize,
     ) -> Option<LuaType> {
-        let LuaExpr::NameExpr(name_expr) = callee else {
-            return None;
-        };
-        let name = name_expr.get_name_text()?;
-        if !matches!(name.as_str(), "pairs" | "ipairs" | "next") {
-            return None;
-        }
         // Integer-index members of named types (`@field [integer] string` / `@field [1] string`)
         // do not need global pairs/ipairs signatures; infer directly from the type definition.
         if let LuaType::Ref(id) | LuaType::Def(id) = &arg_ty {
@@ -641,7 +742,7 @@ impl<'db> SemanticModel<'db> {
                 return Some(ty);
             }
         }
-        let callee_decl = self.resolve_name(name_expr.get_position())?;
+        let callee_decl = callee?;
         let decl_file = match &callee_decl {
             SemanticId::Decl(key) => key.file_id,
             _ => self.view.file_id(),
@@ -751,14 +852,14 @@ impl<'db> SemanticModel<'db> {
                 } else if keys.len() == 1 {
                     keys.pop()?
                 } else {
-                    LuaType::Union(Rc::new(LuaUnionType::from_vec(keys)))
+                    LuaType::union(keys)
                 };
                 let value_ty = if values.is_empty() {
                     LuaType::Unknown
                 } else if values.len() == 1 {
                     values.pop()?
                 } else {
-                    LuaType::Union(Rc::new(LuaUnionType::from_vec(values)))
+                    LuaType::union(values)
                 };
                 (key_ty, value_ty)
             }
@@ -846,7 +947,7 @@ impl<'db> SemanticModel<'db> {
         let value_ty = if values.len() == 1 {
             values.pop()?
         } else {
-            LuaType::Union(Rc::new(LuaUnionType::from_vec(values)))
+            LuaType::union(values)
         };
         Some(if index == 0 {
             LuaType::Integer
@@ -1781,7 +1882,7 @@ impl<'db> SemanticModel<'db> {
                     continue;
                 }
                 LuaType::Union(union) => {
-                    pending.extend(union.into_vec().into_iter().rev());
+                    pending.extend(union.iter().rev().cloned());
                     continue;
                 }
                 _ => continue,
@@ -1809,10 +1910,10 @@ fn project_base_type(model: &SemanticModel<'_>, def: &TypeDef, doc_type: LuaDocT
                 ])));
             }
             Some(LuaTypeBinaryOperator::Union) => {
-                return LuaType::Union(Rc::new(LuaUnionType::from_vec(vec![
+                return LuaType::union(vec![
                     project_base_type(model, def, left),
                     project_base_type(model, def, right),
-                ])));
+                ]);
             }
             _ => {}
         }
@@ -1834,9 +1935,7 @@ fn inferred_assignment_contract(ty: LuaType) -> LuaType {
 
 fn widen_assignment_type(ty: LuaType) -> LuaType {
     match ty {
-        LuaType::Union(union) => {
-            LuaType::from_vec(union.iter().cloned().map(widen_assignment_type).collect())
-        }
+        LuaType::Union(union) => LuaType::union(union.iter().cloned().map(widen_assignment_type)),
         // A table literal is a table to fill in: `local rows = {}` then `rows = parse(out)`.
         LuaType::TableConst(_) => LuaType::Table,
         _ => widen_literal_type(ty),
@@ -1846,9 +1945,7 @@ fn widen_assignment_type(ty: LuaType) -> LuaType {
 /// Scalar literals widen to their base type (`1.5` → `number`); a table literal keeps its shape.
 fn widen_literal_type(ty: LuaType) -> LuaType {
     match ty {
-        LuaType::Union(union) => {
-            LuaType::from_vec(union.iter().cloned().map(widen_literal_type).collect())
-        }
+        LuaType::Union(union) => LuaType::union(union.iter().cloned().map(widen_literal_type)),
         LuaType::FloatConst(_) => LuaType::Number,
         _ => infer::vm::widen_variadic_const(&ty),
     }
@@ -1856,21 +1953,14 @@ fn widen_literal_type(ty: LuaType) -> LuaType {
 
 /// Removes nil from a type (used for generic for loop keys: the loop stops when the first value is nil).
 fn remove_nil_from_type(ty: LuaType) -> LuaType {
-    match ty {
-        LuaType::Union(union) => {
-            let types: Vec<LuaType> = union
-                .into_vec()
-                .into_iter()
-                .filter(|t| !t.is_nil())
-                .collect();
-            match types.len() {
-                0 => LuaType::Unknown,
-                1 => types.into_iter().next().expect("len checked"),
-                _ => LuaType::Union(Rc::new(LuaUnionType::from_vec(types))),
-            }
-        }
-        LuaType::Nil => LuaType::Unknown,
-        other => other,
+    if ty.is_never() {
+        return ty;
+    }
+    let filtered = ty.filter_components(|component| !component.is_nil());
+    if filtered.is_never() {
+        LuaType::Unknown
+    } else {
+        filtered
     }
 }
 

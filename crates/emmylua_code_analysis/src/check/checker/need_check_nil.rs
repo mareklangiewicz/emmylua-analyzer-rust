@@ -1,16 +1,13 @@
 //! # need_check_nil - direct call / member access on a possibly nil prefix
 //!
-//! M0: if the call callee type is nullable, the index prefix is nullable, the operand of `#` is
-//! nullable, or an arithmetic operand is nullable, report NeedCheckNil; safe navigation (`?.`/`?:`) skips.
-
-use std::rc::Rc;
+//! M0: if the call callee type is nullable, the index prefix is nullable, or the operand of `#`
+//! or of arithmetic is nullable, report NeedCheckNil; safe navigation (`?.`/`?:`) skips.
 
 use emmylua_parser::{
     BinaryOperator, LuaAssignStat, LuaAstNode, LuaBinaryExpr, LuaCallExpr, LuaExpr, LuaIndexExpr,
     LuaUnaryExpr, PathTrait, UnaryOperator,
 };
 
-use crate::LuaUnionType;
 use crate::semantic_model::SemanticModel;
 use crate::{DiagnosticCode, LuaType};
 
@@ -31,10 +28,10 @@ impl Checker for NeedCheckNilChecker {
             match expr {
                 LuaExpr::CallExpr(call_expr) => check_call(context, semantic_model, &call_expr),
                 LuaExpr::IndexExpr(index_expr) => check_index(context, semantic_model, &index_expr),
-                LuaExpr::UnaryExpr(unary_expr) => check_len(context, semantic_model, &unary_expr),
                 LuaExpr::BinaryExpr(binary_expr) => {
                     check_arithmetic(context, semantic_model, &binary_expr);
                 }
+                LuaExpr::UnaryExpr(unary_expr) => check_unary(context, semantic_model, &unary_expr),
                 _ => {}
             }
         }
@@ -86,7 +83,7 @@ fn check_index(
 }
 
 /// `#x` and `-x` raise on a nil `x` just as `x.y` does.
-fn check_len(
+fn check_unary(
     context: &mut CheckContext<'_>,
     semantic_model: &SemanticModel<'_>,
     unary_expr: &LuaUnaryExpr,
@@ -240,9 +237,8 @@ fn expr_access_path(expr: &LuaExpr) -> Option<String> {
 
 /// The flow-aware type of `expr` read as one value: a call's result list gives its first slot, as
 /// the VM reads an operand, so a call that may return nothing (`string|()`) may be nil here. Only
-/// a call is projected: another expression's type is already a value, and on upstream main
-/// projecting a flow type built from a result list brings back a nil its guard removed (blink.cmp
-/// `docs.lua`; upstream 1472/1473 carry this same rule).
+/// a call is projected: another expression's type is already a value, and projecting a flow type
+/// built from a result list (`string.find(..) or n`) brings back a nil the flow had removed.
 fn value_type_at(semantic_model: &SemanticModel<'_>, expr: &LuaExpr) -> LuaType {
     let ty = semantic_model.type_of_expr_at(expr.get_syntax_id(), expr.get_range().start());
     if !matches!(expr, LuaExpr::CallExpr(_)) || !ty.contain_multi_return() {
@@ -282,21 +278,13 @@ fn prefix_type(semantic_model: &SemanticModel<'_>, prefix: &LuaExpr) -> LuaType 
         LuaType::Union(union) => {
             let mut types = Vec::new();
             let mut found = false;
-            for component in union.into_vec() {
+            for component in union.iter() {
                 if let LuaType::Array(array) = component {
                     found = true;
                     types.push(semantic_model.array_index_element(array.get_base().clone()));
                 }
             }
-            if found {
-                if types.len() == 1 {
-                    types.pop().expect("len checked")
-                } else {
-                    LuaType::Union(Rc::new(LuaUnionType::from_vec(types)))
-                }
-            } else {
-                ty
-            }
+            if found { LuaType::union(types) } else { ty }
         }
         _ => ty,
     }

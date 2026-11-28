@@ -1,5 +1,8 @@
 //! Infer-layer tests: faithful projection + name/member/expression inference.
 
+use crate::LuaTupleStatus;
+use crate::LuaTupleType;
+use crate::VirtualWorkspace;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -626,9 +629,9 @@ fn test_vararg_packing_distinguishes_tuple_values_and_sequences() {
     "#,
     );
     let model = env.model();
-    let tuple = LuaType::Tuple(Rc::new(crate::LuaTupleType::new(
+    let tuple = LuaType::Tuple(Rc::new(LuaTupleType::new(
         vec![LuaType::String, LuaType::Integer],
-        crate::LuaTupleStatus::DocResolve,
+        LuaTupleStatus::DocResolve,
     )));
     for name in [
         "tuple_first",
@@ -697,7 +700,7 @@ fn test_vararg_packing_expands_only_the_last_unkeyed_field() {
 
 #[test]
 fn test_vararg_return_lists_preserve_value_positions() {
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@param ... integer
@@ -769,9 +772,9 @@ fn test_vararg_pcall_keeps_repeated_result_types() {
     "#,
     );
     let model = env.model();
-    let pair = LuaType::Tuple(Rc::new(crate::LuaTupleType::new(
+    let pair = LuaType::Tuple(Rc::new(LuaTupleType::new(
         vec![LuaType::String, LuaType::Integer],
-        crate::LuaTupleStatus::DocResolve,
+        LuaTupleStatus::DocResolve,
     )));
     for name in ["selected_tuple", "extended_tuple"] {
         assert_eq!(
@@ -839,9 +842,9 @@ fn test_vararg_generic_callback_keeps_result_tail() {
     "#,
     );
     let model = env.model();
-    let pair = LuaType::Tuple(Rc::new(crate::LuaTupleType::new(
+    let pair = LuaType::Tuple(Rc::new(LuaTupleType::new(
         vec![LuaType::String, LuaType::Integer],
-        crate::LuaTupleStatus::DocResolve,
+        LuaTupleStatus::DocResolve,
     )));
     for (name, expected) in [
         ("third_pair", pair),
@@ -876,7 +879,7 @@ fn test_vararg_index_keys_take_the_first_value() {
 
 #[test]
 fn test_vararg_nested_returns_do_not_change_outer_result_types() {
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@param ... integer
@@ -1448,7 +1451,7 @@ fn test_cross_file_member_cycles_keep_independent_fields() {
         ("42", LuaType::IntegerConst(42)),
         ("a.value", LuaType::Unknown),
     ] {
-        let mut ws = crate::VirtualWorkspace::new();
+        let mut ws = VirtualWorkspace::new();
         ws.def_files(vec![
             (
                 "a.lua",
@@ -1872,7 +1875,7 @@ fn test_operator_len() {
 
 #[test]
 fn expression_casts_use_the_current_file() {
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     let plain = ws.def_file(
         "plain.lua",
         "local first = 1\nlocal other = 2 --[[@as boolean]]",
@@ -1910,7 +1913,7 @@ fn expression_casts_use_the_current_file() {
 fn test_unbound_generic_in_call_result_type_argument_degrades_to_unknown() {
     // `from(unknown)` can't bind `V`; the result is `Box<unknown>`, not `Box<V>` with the
     // callee's own generic leaking into the caller.
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@class Box<T>
@@ -1932,7 +1935,7 @@ fn test_unbound_generic_in_call_result_type_argument_degrades_to_unknown() {
 fn test_unbound_generics_of_two_candidates_merge_into_one_result() {
     // A union callee takes the union of its matching candidates' results. Each leaves its own
     // generic unbound; once degraded, the two `Box<unknown>` results are one type.
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@class Box<T>
@@ -1952,7 +1955,7 @@ fn test_unbound_generics_of_two_candidates_merge_into_one_result() {
 fn test_callback_returning_table_literal_binds_array_return_pattern() {
     // `fun(v): U[]`: a callback returning `{ s }` binds `U` by the literal's element type, as a
     // table literal passed straight to a `U[]` param does.
-    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
     ws.def(
         r#"
         ---@class Box<T>
@@ -1972,7 +1975,7 @@ fn test_callback_returning_table_literal_binds_array_return_pattern() {
 fn test_callback_returning_optional_binds_through_union_return_pattern() {
     // A callback returning `List<string>?` is a two-member union against a four-member one: each
     // of its members binds through some member of the pattern.
-    let mut ws = crate::VirtualWorkspace::new_with_init_std_lib();
+    let mut ws = VirtualWorkspace::new_with_init_std_lib();
     ws.def(
         r#"
         ---@class Box<T>
@@ -1996,7 +1999,7 @@ fn test_callback_returning_optional_binds_through_union_return_pattern() {
 fn test_call_result_keeps_object_array_element() {
     // `fun(): { t: string }[]` called is an array of `{ t: string }`, so an element's `t` reads
     // `string`; the element is not erased to `table`.
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@return { t: string }[]
@@ -2012,7 +2015,7 @@ fn test_call_result_keeps_object_array_element() {
 fn test_unsigned_integer_key_is_one_member_for_write_and_read() {
     // A LuaJIT `ULL` literal past i64 is one integer key, whether the facts record the write or
     // the VM reads it back.
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     let mut config = Emmyrc::default();
     config.runtime.version = crate::EmmyrcLuaVersion::LuaJIT;
     ws.analysis.update_config(config.into());
@@ -2035,7 +2038,7 @@ fn test_unsigned_integer_key_is_one_member_for_write_and_read() {
 fn test_intersection_member_merges_behind_a_generic_alias() {
     // A generic alias of an intersection merges it like a plain alias does: `m` is the
     // narrower `string`, not `P`'s `string?`.
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@class P
@@ -2056,7 +2059,7 @@ fn test_intersection_member_merges_behind_a_generic_alias() {
 fn test_intersection_member_is_the_narrower_component() {
     // `P & { m: string }` reads `m` as `string`: an intersection value is both, so a member both
     // components declare has the narrower type, not the first component's `string?`.
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@class P
@@ -2086,7 +2089,7 @@ fn test_intersection_member_is_the_narrower_component() {
 fn test_nullable_object_annotation_keeps_its_fields() {
     // `{ a: integer }?` is `{ a: integer } | nil`, as the spelled-out union is: not `table?`, so
     // `o.a` behind a nil guard reads `integer`, for a `---@type` and a `---@param` alike.
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@type { a: integer }?
@@ -2108,7 +2111,7 @@ fn test_nullable_object_annotation_keeps_its_fields() {
 fn test_optional_object_field_is_nullable() {
     // `{ r?: boolean }`'s `r` may be absent: it reads `boolean?`, as `---@field r? boolean` does,
     // also behind the object's own `?`.
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         ---@type { r?: boolean }
@@ -2128,7 +2131,7 @@ fn test_optional_object_field_is_nullable() {
 /// of itself. Its value reads the member, which must not evaluate that value again.
 #[test]
 fn test_global_path_member_assigned_from_itself() {
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         G = {}
@@ -2145,7 +2148,7 @@ fn test_global_path_member_assigned_from_itself() {
 /// the parameter's type needs that call, and the call's argument needs the member.
 #[test]
 fn test_closure_param_and_call_argument_through_one_member() {
-    let mut ws = crate::VirtualWorkspace::new();
+    let mut ws = VirtualWorkspace::new();
     ws.def(
         r#"
         local state = {}

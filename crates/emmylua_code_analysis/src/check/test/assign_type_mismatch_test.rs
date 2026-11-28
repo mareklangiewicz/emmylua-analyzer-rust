@@ -79,9 +79,8 @@ mod tests {
             return add
             "#,
         );
-        // Fork: the unchecked `value + 1` reports need-check-nil, as 0.25.1 does, where upstream
-        // reports assign-type-mismatch (`integer?` + 1 as `number`). The inline cast's line stays
-        // clean either way.
+        // The unchecked read stays nullable: `value + 1` reports need-check-nil on `value` (as
+        // 0.25.1 does). Its result is an integer, so neither line is an assign mismatch.
         assert_eq!(
             count_by_code(&diagnostics, DiagnosticCode::AssignTypeMismatch),
             0,

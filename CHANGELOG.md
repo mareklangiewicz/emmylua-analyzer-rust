@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Intra-doc links**: Support Rust-like `[`Widget`]` references in documentation comments. The language server resolves them for goto definition, completion and document links, and `emmylua_doc_cli` renders them as links in HTML/Markdown output.
+
 ### Changed
 
 - **Performance**: Avoid rebuilding large inferred unions during analysis.
@@ -15,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Flow analysis**: Handle array length guards that compare against smaller lengths.
 - **Member id description**: Fixed an issue with member id description rendering.
 - **emmylua_doc_cli**: Render Markdown tables in HTML documentation descriptions.
+- **emmylua_doc_cli**: Sort HTML member lists and type index groups alphabetically.
 
 ### Removed
 

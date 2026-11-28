@@ -4,6 +4,7 @@
 //! All consumers (renderer / type_check / member access / pcall) should reuse this module as much as possible,
 //! instead of duplicating the same evaluation logic in the display or call layers.
 
+use crate::semantic_model;
 use std::rc::Rc;
 
 use hashbrown::HashMap;
@@ -12,8 +13,8 @@ use smol_str::SmolStr;
 use crate::{
     GenericParam, GenericTpl, GenericTplId, LuaAliasCallKind, LuaAliasCallType, LuaArrayType,
     LuaConditionalType, LuaFunctionType, LuaGenericType, LuaIntersectionType, LuaMappedType,
-    LuaMemberKey, LuaObjectType, LuaTupleStatus, LuaTupleType, LuaType, LuaTypeNode, LuaUnionType,
-    SemanticId, TypeDef, TypeDefKind, VariadicType,
+    LuaMemberKey, LuaObjectType, LuaTupleStatus, LuaTupleType, LuaType, LuaTypeNode, SemanticId,
+    TypeDef, TypeDefKind, VariadicType,
 };
 
 use super::SemanticModel;
@@ -37,7 +38,7 @@ pub fn literal_keys(ty: &LuaType) -> Vec<(LuaMemberKey, LuaType)> {
         DocStringConst(s) => vec![(LuaMemberKey::Name(SmolStr::new(s.as_str())), ty.clone())],
         IntegerConst(i) => vec![(LuaMemberKey::Integer(*i), ty.clone())],
         DocIntegerConst(i) => vec![(LuaMemberKey::Integer(*i), ty.clone())],
-        Union(union) => union.into_vec().iter().flat_map(literal_keys).collect(),
+        Union(union) => union.iter().flat_map(literal_keys).collect(),
         _ => Vec::new(),
     }
 }
@@ -183,8 +184,8 @@ pub fn eval_index_access(model: &SemanticModel, base: &LuaType, key: &LuaType) -
                 continue;
             }
             LuaType::Union(union) => {
-                for component in union.into_vec().into_iter().rev() {
-                    pending.push(Task::Enter(component));
+                for component in union.iter().rev() {
+                    pending.push(Task::Enter(component.clone()));
                 }
                 continue;
             }
@@ -518,8 +519,7 @@ pub(super) fn map_type(
 /// Normalize existing structures and resolve computations to their outer shape.
 /// Fields produced by an alias stay lazy until a consumer reads them.
 pub fn expand_alias_generic(model: &SemanticModel, ty: &LuaType) -> LuaType {
-    let Some(evaluation) = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)
-    else {
+    let Some(evaluation) = semantic_model::cache::TypeEvaluationScope::new(&model.cache) else {
         return ty.clone();
     };
     let result = map_type(ty, &mut |current| {
@@ -564,9 +564,7 @@ fn map_alias_children<'a>(
             tuple.get_types().iter().map(&mut *map).collect(),
             tuple.status,
         ))),
-        Union(union) => Union(Rc::new(LuaUnionType::from_vec(
-            union.iter().map(&mut *map).collect(),
-        ))),
+        Union(union) => LuaType::union(union.iter().map(&mut *map)),
         Intersection(intersection) => Intersection(Rc::new(LuaIntersectionType::new(
             intersection.get_types().iter().map(&mut *map).collect(),
         ))),
@@ -675,13 +673,13 @@ fn eval_conditional_alias(
         && let LuaType::Union(union) = &resolved_bound
     {
         let mut results = Vec::new();
-        for member in union.into_vec() {
-            let result = evaluate(member);
+        for member in union.iter() {
+            let result = evaluate(member.clone());
             if !result.is_never() && !results.contains(&result) {
                 results.push(result);
             }
         }
-        LuaType::from_vec(results)
+        LuaType::union(results)
     } else {
         evaluate(resolved_bound)
     }
@@ -689,8 +687,7 @@ fn eval_conditional_alias(
 
 /// Evaluate conditional types (internal `infer` pattern matching). Recursively handle conditional types in structures.
 pub fn eval_conditionals(model: &SemanticModel, ty: &LuaType) -> LuaType {
-    let Some(evaluation) = crate::semantic_model::cache::TypeEvaluationScope::new(&model.cache)
-    else {
+    let Some(evaluation) = semantic_model::cache::TypeEvaluationScope::new(&model.cache) else {
         return ty.clone();
     };
     if !evaluation.visit(ty) {
@@ -730,7 +727,7 @@ fn eval_conditional_once(model: &SemanticModel, conditional: &LuaConditionalType
     // Distributive conditional types: when a naked type parameter is instantiated as a union, evaluate each union member separately.
     if let LuaType::Union(union) = checked {
         let mut results = Vec::new();
-        for member in union.into_vec() {
+        for member in union.iter() {
             let member_conditional = LuaConditionalType::new(
                 member.clone(),
                 extends.clone(),
@@ -852,9 +849,9 @@ fn check_conditional_extends(
     }
     if let LuaType::Union(union) = source {
         let mut result = ConditionalCheck::False;
-        for member in union.into_vec() {
+        for member in union.iter() {
             result =
-                merge_conditional_check(result, check_conditional_extends(model, &member, target));
+                merge_conditional_check(result, check_conditional_extends(model, member, target));
             if result == ConditionalCheck::Unresolved {
                 break;
             }
@@ -863,8 +860,8 @@ fn check_conditional_extends(
     }
     if let LuaType::Union(union) = target {
         let mut unresolved = false;
-        for member in union.into_vec() {
-            match check_conditional_extends(model, source, &member) {
+        for member in union.iter() {
+            match check_conditional_extends(model, source, member) {
                 ConditionalCheck::True | ConditionalCheck::Both => return ConditionalCheck::True,
                 ConditionalCheck::Unresolved => unresolved = true,
                 ConditionalCheck::False => {}

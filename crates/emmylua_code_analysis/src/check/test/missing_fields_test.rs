@@ -26,14 +26,18 @@ mod tests {
         }
     }
 
-    /// LuaLS spells an optional field `T|?`; the bare `?` is `nil` (as in 0.25.1), so the field is
-    /// as optional as `T?` and `T|nil`. The shell lowering once read the `?` literal as `unknown`.
+    /// LuaLS spells an optional field `T|?`; the bare `?` is `nil`, so the field is as optional as
+    /// `T?` and `T|nil`. The shell lowering previously read the `?` literal as `unknown`.
     #[test]
     fn test_union_with_bare_question_is_optional() {
         for (ty, expected) in [
             ("integer|?", vec![]),
             ("integer?", vec![]),
             ("integer|nil", vec![]),
+            ("integer|?|nil", vec![]),
+            ("integer?|?", vec![]),
+            // A standalone `?` is not a type: the parser rejects it before any lowering.
+            ("?", vec![DiagnosticCode::DocSyntaxError]),
             ("integer", vec![DiagnosticCode::MissingFields]),
         ] {
             let diagnostics = check_source(&format!(

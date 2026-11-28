@@ -7,6 +7,8 @@
 //! Values = `LuaType` + optional owner (for member lookup). Cross-file member/declaration
 //! resolution is delegated to semantic queries.
 
+use crate::semantic_db;
+use crate::semantic_model;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -30,7 +32,7 @@ use crate::semantic_model::flow::{
 };
 use crate::semantic_model::member::{
     MemberInfo, attached_global_table_member, index_signature_type, member_key_type,
-    table_const_class_type, table_metatable_index_info, table_metatable_type, table_owners,
+    metatable_type, table_const_class_type, table_metatable_index_info, table_owners,
 };
 use crate::semantic_model::type_eval::{
     eval_conditionals, expand_alias_generic, expand_alias_head, instantiate_for_receiver,
@@ -40,8 +42,7 @@ use crate::semantic_model::type_eval::{
 use crate::{
     AsyncState, FileId, GenericTpl, GenericTplId, InFiled, LuaAliasCallKind, LuaArrayType,
     LuaFunctionType, LuaGenericType, LuaMemberKey, LuaObjectType, LuaTupleStatus, LuaTupleType,
-    LuaType, LuaTypeDeclId, LuaTypeNode, LuaUnionType, TypeDef, TypeDefKind, TypeScope,
-    VariadicType,
+    LuaType, LuaTypeDeclId, LuaTypeNode, TypeDef, TypeDefKind, TypeScope, VariadicType,
 };
 
 use super::call_alignment::CallAlignment;
@@ -839,7 +840,7 @@ impl<'a> InferVm<'a> {
                 let mut types = Vec::new();
                 let mut any_string = false;
                 let mut any_numeric = false;
-                for component in union.into_vec() {
+                for component in union.iter() {
                     match component {
                         LuaType::StringConst(s) | LuaType::DocStringConst(s) => {
                             any_string = true;
@@ -855,7 +856,8 @@ impl<'a> InferVm<'a> {
                         }
                         LuaType::IntegerConst(i) | LuaType::DocIntegerConst(i) => {
                             any_numeric = true;
-                            let value = self.index_member(owner.clone(), &LuaMemberKey::Integer(i));
+                            let value =
+                                self.index_member(owner.clone(), &LuaMemberKey::Integer(*i));
                             if !matches!(value.ty, LuaType::Unknown) && !types.contains(&value.ty) {
                                 types.push(value.ty);
                             }
@@ -950,9 +952,9 @@ impl<'a> InferVm<'a> {
                 }
                 if let LuaType::Union(union) = &owner.ty {
                     let mut types = Vec::new();
-                    for component in union.into_vec() {
+                    for component in union.iter() {
                         let component_owner = Value {
-                            ty: component,
+                            ty: component.clone(),
                             owner: owner.owner.clone(),
                             closure_syntax: None,
                             receiver: owner.receiver.clone(),
@@ -2332,7 +2334,7 @@ impl<'a> InferVm<'a> {
             }
         }
         if self.model.file_facts().is_some_and(|facts| !facts.is_meta)
-            && crate::semantic_db::query::closure_can_fall_through(
+            && semantic_db::query::closure_can_fall_through(
                 self.model.db(),
                 self.model.file_id(),
                 &closure,
@@ -2692,7 +2694,7 @@ impl<'a> InferVm<'a> {
         model: &SemanticModel,
         table: &InFiled<rowan::TextRange>,
     ) -> Option<LuaFunctionType> {
-        let metatable_ty = table_metatable_type(model, table)?;
+        let metatable_ty = metatable_type(model, None, Some(table))?;
         let call_info =
             model.member_info(&metatable_ty, &LuaMemberKey::Name(SmolStr::new("__call")))?;
         let call_file = call_info.file_id?;
@@ -2960,22 +2962,6 @@ impl<'a> InferVm<'a> {
         ))
     }
 
-    /// Multi-return projection: a single return keeps its type; multiple / variadic returns
-    /// are packed as `Variadic::Multi`.
-    fn return_types_lua(&self, returns: &[LuaSyntaxId], scope: &DocTypeScope) -> LuaType {
-        if returns.is_empty() {
-            return LuaType::Unknown;
-        }
-        let mut types = returns
-            .iter()
-            .map(|syntax| self.model.project_doc_type_in_scope(*syntax, scope))
-            .collect::<Vec<_>>();
-        if types.len() == 1 {
-            return types.pop().unwrap_or(LuaType::Unknown);
-        }
-        LuaType::Variadic(Rc::new(VariadicType::Multi(types)))
-    }
-
     /// `---@return_overload` multi-return slot merge (union across rows, missing slots
     /// filled with nil).
     fn return_overload_types_lua(
@@ -2985,7 +2971,9 @@ impl<'a> InferVm<'a> {
         bindings: Option<&unify::TplBindings>,
     ) -> LuaType {
         if docs.return_overload_rows.is_empty() {
-            return self.return_types_lua(&docs.returns, scope);
+            return self
+                .model
+                .project_return_types_in_scope(&docs.returns, scope);
         }
 
         fn flatten_row_types(
@@ -3084,9 +3072,9 @@ impl<'a> InferVm<'a> {
                 };
                 match ty {
                     LuaType::Union(union) => {
-                        for member in union.into_vec() {
-                            if !components.contains(&member) {
-                                components.push(member);
+                        for member in union.iter() {
+                            if !components.contains(member) {
+                                components.push(member.clone());
                             }
                         }
                     }
@@ -3097,11 +3085,7 @@ impl<'a> InferVm<'a> {
                     }
                 }
             }
-            if components.len() == 1 {
-                slots.push(components.pop().expect("len checked"));
-            } else {
-                slots.push(LuaType::Union(Rc::new(LuaUnionType::from_vec(components))));
-            }
+            slots.push(LuaType::union(components));
         }
 
         if has_variadic {
@@ -3119,9 +3103,9 @@ impl<'a> InferVm<'a> {
                 if let Some(base) = tail {
                     match base {
                         LuaType::Union(union) => {
-                            for member in union.into_vec() {
-                                if !tail_components.contains(&member) {
-                                    tail_components.push(member);
+                            for member in union.iter() {
+                                if !tail_components.contains(member) {
+                                    tail_components.push(member.clone());
                                 }
                             }
                         }
@@ -3135,11 +3119,7 @@ impl<'a> InferVm<'a> {
                     tail_components.push(LuaType::Nil);
                 }
             }
-            let tail_ty = if tail_components.len() == 1 {
-                tail_components.pop().expect("len checked")
-            } else {
-                LuaType::Union(Rc::new(LuaUnionType::from_vec(tail_components)))
-            };
+            let tail_ty = LuaType::union(tail_components);
             slots.push(LuaType::Variadic(Rc::new(VariadicType::Base(tail_ty))));
         }
 
@@ -3723,13 +3703,7 @@ pub(crate) fn replace_self_type(ty: &LuaType, self_ty: &LuaType) -> LuaType {
                 })
                 .collect(),
         ))),
-        Union(union) => Union(Rc::new(LuaUnionType::from_vec(
-            union
-                .into_vec()
-                .iter()
-                .map(|t| replace_self_type(t, self_ty))
-                .collect(),
-        ))),
+        Union(union) => LuaType::union(union.iter().map(|t| replace_self_type(t, self_ty))),
         Intersection(intersection) => Intersection(Rc::new(LuaIntersectionType::new(
             intersection
                 .get_types()
@@ -3813,13 +3787,9 @@ fn resolve_function_ret_defaults(ty: &LuaType, fun: &LuaFunctionType) -> LuaType
             }
             ty.clone()
         }
-        LuaType::Union(union) => LuaType::Union(Rc::new(LuaUnionType::from_vec(
-            union
-                .into_vec()
-                .iter()
-                .map(|t| resolve_function_ret_defaults(t, fun))
-                .collect(),
-        ))),
+        LuaType::Union(union) => {
+            LuaType::union(union.iter().map(|t| resolve_function_ret_defaults(t, fun)))
+        }
         LuaType::Variadic(variadic) => {
             let resolved = match variadic.as_ref() {
                 VariadicType::Base(base) => {
@@ -4646,7 +4616,7 @@ fn type_fully_covered_by(model: &SemanticModel, ty: &LuaType, target: &LuaType) 
             | LuaType::DocIntegerConst(_)
     ) {
         return match ty {
-            LuaType::Union(union) => union.into_vec().iter().all(|c| c == target),
+            LuaType::Union(union) => union.iter().all(|c| c == target),
             other => other == target,
         };
     }
@@ -4818,8 +4788,7 @@ pub(crate) fn binary_type(
             if let (Some(left_i), Some(right_i)) =
                 (integer_const_value(left), integer_const_value(&right))
             {
-                let value =
-                    crate::semantic_db::types::checked_integer_arithmetic(op, left_i, right_i);
+                let value = semantic_db::types::checked_integer_arithmetic(op, left_i, right_i);
                 return value.map(LuaType::IntegerConst).unwrap_or(LuaType::Number);
             }
             // Addition like `integer + 1` (one side is the integer base type, the other is an
@@ -4839,7 +4808,7 @@ pub(crate) fn binary_type(
                 && right != 0
             {
                 // Lua `/` converts both operands to floating-point before division.
-                crate::semantic_db::types::checked_integer_arithmetic(op, left, right)
+                semantic_db::types::checked_integer_arithmetic(op, left, right)
                     .map(LuaType::IntegerConst)
                     .unwrap_or(LuaType::Number)
             } else if matches!(op, OpIDiv | OpMod)
@@ -5074,13 +5043,11 @@ pub(crate) fn bind_signature_generics(ty: &LuaType, generics: &[GenericTpl]) -> 
                     .collect(),
             )))
         }
-        LuaType::Union(union) => LuaType::Union(Rc::new(LuaUnionType::from_vec(
+        LuaType::Union(union) => LuaType::union(
             union
-                .into_vec()
                 .iter()
-                .map(|component| bind_signature_generics(component, generics))
-                .collect(),
-        ))),
+                .map(|component| bind_signature_generics(component, generics)),
+        ),
         LuaType::Array(array) => LuaType::Array(Rc::new(LuaArrayType::from_base_type(
             bind_signature_generics(array.get_base(), generics),
         ))),
@@ -5263,12 +5230,12 @@ fn raised_on_nil(operand: &LuaType) -> LuaType {
 /// Resolve only the outer operand shape. Expanding array elements or restarting
 /// the recursive alias evaluator here can lose flow bounds or grow aliases forever.
 fn length_type(model: &SemanticModel, operand: &LuaType) -> Option<LuaType> {
-    let operand = crate::semantic_model::type_eval::expand_alias_branches(model, operand)?;
+    let operand = semantic_model::type_eval::expand_alias_branches(model, operand)?;
     let mut pending = vec![operand];
     let mut results = Vec::new();
     while let Some(ty) = pending.pop() {
         if let LuaType::Union(union) = ty {
-            pending.extend(union.into_vec());
+            pending.extend(union.iter().cloned());
         } else if ty.is_nil() {
             // `#nil` raises: a nullable operand's length is the length of the rest (need-check-nil reports it).
         } else if ty.is_table() || ty.is_object() || ty.is_string() {
@@ -5351,11 +5318,7 @@ fn remove_false_from_type(ty: LuaType) -> LuaType {
                     other => Some(other),
                 })
                 .collect::<Vec<_>>();
-            match types.len() {
-                0 => LuaType::Never,
-                1 => types.into_iter().next().unwrap_or(LuaType::Never),
-                _ => LuaType::Union(Rc::new(LuaUnionType::from_vec(types))),
-            }
+            LuaType::union(types)
         }
         // Mirror `remove_nil_from_type`: for `assert(f())` the first value of a
         // multi-return is the one whose falsy result aborts the call.
@@ -5391,20 +5354,20 @@ fn merge(a: LuaType, b: LuaType) -> LuaType {
     }
     let mut types = Vec::new();
     match &a {
-        LuaType::Union(union) => types.extend(union.into_vec()),
+        LuaType::Union(union) => types.extend(union.iter().cloned()),
         _ => types.push(a),
     }
     match &b {
-        LuaType::Union(union) => types.extend(union.into_vec()),
+        LuaType::Union(union) => types.extend(union.iter().cloned()),
         _ => types.push(b),
     }
-    LuaType::Union(Rc::new(LuaUnionType::from_vec(types)))
+    LuaType::union(types)
 }
 
 /// Lua semantics: an uninitialized local (`local x`) reads as nil until assigned. Not for
 /// iteration variables, `---@type`, or module/class-associated declarations.
 pub(crate) fn uninitialized_local_reads_nil(
-    facts: &crate::semantic_db::facts::FileFacts,
+    facts: &semantic_db::facts::FileFacts,
     decl: &SemanticId,
 ) -> bool {
     facts.decl_by_id(decl).is_some_and(|info| {

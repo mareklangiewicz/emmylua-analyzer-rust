@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod test {
+    use crate::LuaType;
     use crate::{DiagnosticCode, VirtualWorkspace};
 
     #[test]
@@ -2157,8 +2158,8 @@ mod test {
             "#,
         );
 
-        assert_eq!(ws.expr_ty("A"), crate::LuaType::Never);
-        assert_eq!(ws.expr_ty("B"), crate::LuaType::Nil);
+        assert_eq!(ws.expr_ty("A"), LuaType::Never);
+        assert_eq!(ws.expr_ty("B"), LuaType::Nil);
     }
 
     #[test]
@@ -2181,8 +2182,8 @@ mod test {
             "#,
         );
 
-        assert_eq!(ws.expr_ty("A"), crate::LuaType::Never);
-        assert_eq!(ws.expr_ty("B"), crate::LuaType::Nil);
+        assert_eq!(ws.expr_ty("A"), LuaType::Never);
+        assert_eq!(ws.expr_ty("B"), LuaType::Nil);
     }
 
     #[test]

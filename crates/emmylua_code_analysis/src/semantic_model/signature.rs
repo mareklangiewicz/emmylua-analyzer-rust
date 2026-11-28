@@ -1,6 +1,6 @@
 use crate::semantic_model::infer::vm::expand_callable_types_in_model;
 use crate::semantic_model::type_check::TypeCheckFailReason;
-use crate::types::TypeCandidate;
+use crate::types::{TypeCandidate, TypeShell};
 use crate::{InFiled, IndexInfo, OperatorDef};
 
 use super::prelude::*;
@@ -16,6 +16,20 @@ pub(crate) fn needs_rich_doc_type(ty: &LuaType) -> bool {
         LuaType::Array(array) => needs_rich_doc_type(array.get_base()),
         _ => false,
     }
+}
+
+fn has_generic_result(shell: &TypeShell) -> bool {
+    shell.candidates.iter().any(|candidate| match candidate {
+        TypeCandidate::Generic(_) => true,
+        TypeCandidate::Multi(slots) | TypeCandidate::Tuple(slots) => {
+            slots.iter().any(has_generic_result)
+        }
+        TypeCandidate::Variadic(base)
+        | TypeCandidate::Repeat(base)
+        | TypeCandidate::Array(base) => has_generic_result(base),
+        TypeCandidate::GenericInstance(instance) => instance.args.iter().any(has_generic_result),
+        _ => false,
+    })
 }
 
 impl<'db> SemanticModel<'db> {
@@ -405,10 +419,7 @@ impl<'db> SemanticModel<'db> {
                 && docs.return_overloads.is_empty()
                 && docs.overloads.is_empty()
                 && docs.return_cast.is_none()
-        }) && return_shells
-            .iter()
-            .flat_map(|shell| shell.first_result().candidates)
-            .any(|candidate| matches!(candidate, TypeCandidate::Generic(_)));
+        }) && return_shells.iter().any(has_generic_result);
         if nullable_here || unbound_generic {
             let inferred = infer::closure_return_lua(&self.model_for(file_id), closure_syntax);
             if !matches!(inferred, LuaType::Unknown | LuaType::Any) {
@@ -889,7 +900,7 @@ impl<'db> SemanticModel<'db> {
         match &doc_ty {
             LuaType::DocFunction(fun) => docs_out.push(fun.as_ref().clone()),
             LuaType::Union(union) => {
-                for ty in union.into_vec() {
+                for ty in union.iter() {
                     if let LuaType::DocFunction(fun) = ty {
                         docs_out.push(fun.as_ref().clone());
                     }

@@ -328,7 +328,7 @@ fn param_type_async_state(semantic_model: &SemanticModel<'_>, ty: &LuaType) -> O
         LuaType::DocFunction(fun) => Some(fun.get_async_state()),
         LuaType::Union(union) => {
             let mut state = None;
-            for ty in union.into_vec() {
+            for ty in union.iter() {
                 if let LuaType::DocFunction(fun) = ty {
                     state = Some(fun.get_async_state());
                 }
