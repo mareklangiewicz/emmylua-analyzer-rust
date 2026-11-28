@@ -783,12 +783,9 @@ mod test {
 
     #[test]
     fn test_correlated_guards_keep_nil_after_captured_write() {
-        // Fork: upstream expects 1 for `value = nil`. A local some closure assigns reads with
-        // its initializer's kind (716f9638), and `widen_loop_carried` widens the `nil` inside
-        // `string?` to `unknown`, which the union absorbs: the read is `string`, guards or not.
         for (body, call, nil_checks) in [
             ("b = true", "change()", 1),
-            ("value = nil", "change()", 0),
+            ("value = nil", "change()", 1),
             ("print(a)", "change()", 0),
             ("b = b", "change()", 0),
             ("b = true", "", 0),

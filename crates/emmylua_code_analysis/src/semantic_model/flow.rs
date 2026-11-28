@@ -2762,25 +2762,38 @@ fn decl_trace_key(
 /// that path. A captured read may see any of the local's values, so it keeps only the kind; with
 /// no kind to keep (`local x`, `= nil`), it can be anything.
 ///
-/// KNOWN UNSOUND (flow.md §7 W1/W3, #72): a captured read also turns a union's `nil` into
-/// `unknown`, as the shared widening once did, which the union mostly absorbs. The sound
-/// base is the local's type where the closure is created; the declaration is too early, so its
-/// `nil` is often one the code ruled out before the closure existed (W3). Dropping it hides that,
-/// and also hides a `nil` a closure really writes (W1).
+/// `captured` is the capture range (`capturing_closure`). A read in the local's own function,
+/// which a writing closure may have run before, reached the declaration along its own flow: the
+/// declaration's value really reaches it, `nil` included (W1).
+///
+/// KNOWN UNSOUND (flow.md §7 W3, #72): a read inside a closure that captures the local turns a
+/// union's `nil` into `unknown`, as the shared widening once did, which the union mostly absorbs.
+/// Its sound base is the local's type where the closure is created; the declaration is too early,
+/// and its `nil` is often one the code ruled out before the closure existed. Dropping it hides
+/// that false `nil`, and with it any true one.
 fn decl_position_type(
     model: &SemanticModel,
     facts: &semantic_db::facts::FileFacts,
     decl: &SemanticId,
-    captured: bool,
+    captured: Option<rowan::TextRange>,
 ) -> LuaType {
     let declared = match model.type_of_decl(decl) {
         None | Some(LuaType::Unknown) if uninitialized_local_reads_nil(facts, decl) => LuaType::Nil,
         declared => declared.unwrap_or(LuaType::Unknown),
     };
-    if !captured {
+    let Some(capture) = captured else {
         return declared;
-    }
-    match union_nil_to_unknown(widen_loop_carried(widen_variadic_const(&declared))) {
+    };
+    let widened = widen_loop_carried(widen_variadic_const(&declared));
+    let in_capturing_closure = facts
+        .decl_by_id(decl)
+        .is_some_and(|info| !capture.contains(info.name_range.start()));
+    let widened = if in_capturing_closure {
+        union_nil_to_unknown(widened)
+    } else {
+        widened
+    };
+    match widened {
         LuaType::Unknown => LuaType::Any,
         ty => ty,
     }
@@ -3121,8 +3134,12 @@ fn trace_decl_uncached(
                         .get_decl_multi_return_ref_on_flow(decl, *pos, current)
                         .and_then(|at| at.reference.as_ref());
                     let initial_path = path.for_origin(reference);
-                    let captured =
-                        matches!(purpose, DeclTracePurpose::ReadValue { capture: Some(_) });
+                    let captured = match purpose {
+                        DeclTracePurpose::ReadValue {
+                            capture: Some(range),
+                        } => Some(*range),
+                        _ => None,
+                    };
                     break 'trace match purpose {
                         DeclTracePurpose::OriginalSignatures(_) => Some(
                             decl_trace_base(model, decl, purpose, &initial_path)
