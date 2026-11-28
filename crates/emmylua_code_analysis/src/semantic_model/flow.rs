@@ -161,9 +161,8 @@ fn type_of_decl_read_at(
 /// it in the first pass: `local s = false; for … do if s then … end; s = true end` reads `false`.
 /// When an enclosing loop assigns the local anywhere in its body (a later statement, or an
 /// earlier one in a sibling branch), the next pass may see that value: the read keeps its kind
-/// but not its exact value (`false` → `boolean`, `0` → `integer`, a bare `nil` → `unknown`; a
-/// `nil` beside other values, as in a `string?` param, stays). Deliberately not a fixpoint: no
-/// body write is evaluated here.
+/// but not its exact value (`false` → `boolean`, `0` → `integer`, `nil`
+/// → `unknown`). Deliberately not a fixpoint: no body write is evaluated here.
 ///
 /// Nor does a dynamic loop merge into the flow after it, so a read after the loop sees only the
 /// value from before it: `for … do if … then s = true end end; if s` reads `false`. A loop of the
@@ -210,14 +209,7 @@ fn widen_loop_carried(ty: LuaType) -> LuaType {
     match ty {
         LuaType::BooleanConst(_) | LuaType::DocBooleanConst(_) => LuaType::Boolean,
         LuaType::Nil | LuaType::Never => LuaType::Unknown,
-        // A nil beside other values is a value the first pass may read: it stays nil.
-        LuaType::Union(union) => LuaType::union(union.iter().cloned().map(|ty| {
-            if ty.is_nil() {
-                ty
-            } else {
-                widen_loop_carried(ty)
-            }
-        })),
+        LuaType::Union(union) => LuaType::union(union.iter().cloned().map(widen_loop_carried)),
         ty => widen_const_type(ty),
     }
 }
